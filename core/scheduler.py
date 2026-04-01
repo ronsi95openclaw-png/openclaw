@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -129,7 +130,7 @@ def add_reminder(chat_id: int, time_str: str, text: str) -> dict:
         raise ValueError(f"Time out of range: {time_str}")
 
     tasks = _load_tasks()
-    task_id = f"reminder_{chat_id}_{int(datetime.now(timezone.utc).timestamp())}"
+    task_id = f"reminder_{chat_id}_{time.time_ns()}"
     task = {
         "id": task_id,
         "chat_id": chat_id,
