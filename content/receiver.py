@@ -59,7 +59,7 @@ from core.conversation import add_message, clear_history, get_history
 from core import scheduler as sched
 from security.whitelist import is_authorized
 
-load_dotenv()
+load_dotenv(override=True)
 
 logger = logging.getLogger("openclaw.receiver")
 
