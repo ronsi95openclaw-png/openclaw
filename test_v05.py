@@ -16,7 +16,9 @@ Covers:
 
 Run:
     .venv/Scripts/python.exe test_v05.py
-"""
+"""Stop-Process -Name python -Force
+
+
 from __future__ import annotations
 
 import importlib
