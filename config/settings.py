@@ -12,7 +12,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 
-load_dotenv()  # Read .env into environment if present
+load_dotenv(override=True)  # Read .env into environment if present
 
 
 @dataclass

@@ -35,6 +35,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
+
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
+# Load .env BEFORE any project imports so whitelist/brain pick up env vars
+from dotenv import load_dotenv
+load_dotenv(override=True)
+
 import re
 import signal
 import tempfile
@@ -43,7 +52,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
@@ -58,8 +66,6 @@ from core.brain import CLAWBOT_SYSTEM, ask_hybrid, classify_complexity, get_usag
 from core.conversation import add_message, clear_history, get_history
 from core import scheduler as sched
 from security.whitelist import is_authorized
-
-load_dotenv()
 
 logger = logging.getLogger("openclaw.receiver")
 
@@ -93,11 +99,13 @@ def _read_last_trades(n: int = 10) -> list[str]:
 
 def _ping_ollama() -> str:
     try:
-        from ollama import chat
-        chat(
-            model=os.getenv("OLLAMA_MODEL", "qwen2.5:14b"),
-            messages=[{"role": "user", "content": "ping"}],
-        )
+        from ollama import list as _ol_list
+        models = [m.model for m in _ol_list().models]
+        model = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+        if not models:
+            return "offline ❌ (no models)"
+        if model not in models:
+            return f"online ✅ (using {models[0]} — pull {model} for production)"
         return "online ✅"
     except Exception as exc:
         return f"offline ❌ ({exc})"
@@ -894,7 +902,7 @@ def main() -> None:
     print("🦾 ClawBot is running.")
     print("   /ask /plan /research /market /remind /tasks /brain")
     print("   /status /trades /pipeline /approve /reject /stop")
-    _app.run_polling(allowed_updates=Update.ALL_TYPES)
+    _app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":

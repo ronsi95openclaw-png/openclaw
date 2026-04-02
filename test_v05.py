@@ -32,7 +32,7 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8")
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 ROOT = Path(__file__).parent
 
