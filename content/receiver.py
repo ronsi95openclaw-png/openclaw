@@ -670,9 +670,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /research [topic]   — deep research\n"
         "  /clear              — reset memory\n\n"
         "<b>📈 Crypto:</b>\n"
-        "  /market             — live prices + analysis\n"
-        "  /scan [1h|4h|1d]   — RSI+MACD signals\n"
-        "  /dca [asset]        — DCA entry analysis\n\n"
+        "  /market              — live prices + analysis\n"
+        "  /scan [1h|4h|1d]    — RSI+MACD signals\n"
+        "  /dca [asset]         — DCA entry analysis\n"
+        "  /autotrade [on|off]  — fully auto daily trading\n\n"
         "<b>💻 PC Execution:</b>\n"
         "  /run [command]      — run shell command\n"
         "  /py [code]          — run Python code\n\n"
@@ -687,6 +688,58 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /stop               — shutdown",
         parse_mode="HTML",
     )
+
+
+# ── /autotrade ────────────────────────────────────────────────────────────────
+
+async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    chat_id = update.effective_chat.id
+    arg     = context.args[0].lower() if context.args else ""
+
+    if arg == "on":
+        scan_time = context.args[1] if len(context.args) > 1 else "08:00"
+        timeframe = context.args[2] if len(context.args) > 2 else "4h"
+        cfg = sched.enable_autotrade(chat_id, scan_time=scan_time, timeframe=timeframe)
+        await update.message.reply_text(
+            f"🤖 <b>Auto-Trade ENABLED</b>\n\n"
+            f"⏰ Daily scan: <code>{cfg['scan_time']} UTC</code>\n"
+            f"📊 Timeframe: <code>{cfg['timeframe']}</code>\n"
+            f"🎯 Executes: HIGH confidence RSI+MACD signals only\n"
+            f"💰 Risk: 1.5% of portfolio per trade\n"
+            f"🪙 Coins: BTC, SOL, XRP, ETH\n\n"
+            f"<i>Use /autotrade off to disable.</i>",
+            parse_mode="HTML",
+        )
+
+    elif arg == "off":
+        sched.disable_autotrade()
+        await update.message.reply_text(
+            "🤖 <b>Auto-Trade DISABLED</b>\n\nNo more automatic trades. Use /autotrade on to re-enable.",
+            parse_mode="HTML",
+        )
+
+    elif arg == "now":
+        # Manual trigger for testing
+        await update.message.reply_text("<i>Running auto-trade scan now...</i>", parse_mode="HTML")
+        await sched._run_autotrade()  # type: ignore[attr-defined]
+
+    else:
+        cfg    = sched.get_autotrade_status()
+        status = "ENABLED ✅" if cfg.get("enabled") else "DISABLED ❌"
+        await update.message.reply_text(
+            f"🤖 <b>Auto-Trade Status: {status}</b>\n\n"
+            f"⏰ Scan time: <code>{cfg.get('scan_time', '08:00')} UTC</code>\n"
+            f"📊 Timeframe: <code>{cfg.get('timeframe', '4h')}</code>\n\n"
+            f"<b>Commands:</b>\n"
+            f"  /autotrade on           — enable (08:00 UTC, 4h)\n"
+            f"  /autotrade on 09:00 1d  — custom time + timeframe\n"
+            f"  /autotrade off          — disable\n"
+            f"  /autotrade now          — run scan immediately",
+            parse_mode="HTML",
+        )
 
 
 # ── /stop ─────────────────────────────────────────────────────────────────────
@@ -711,6 +764,7 @@ def main() -> None:
 
     sched.set_send_fn(_scheduler_send)
     sched.start_scheduler()
+    sched.reload_autotrade()   # re-register daily job if it was enabled before restart
 
     _app = Application.builder().token(token).build()
 
@@ -732,7 +786,8 @@ def main() -> None:
     _app.add_handler(CommandHandler("brain",    cmd_brain))
     _app.add_handler(CommandHandler("weather",  cmd_weather))
     _app.add_handler(CommandHandler("help",     cmd_help))
-    _app.add_handler(CommandHandler("stop",     cmd_stop))
+    _app.add_handler(CommandHandler("autotrade", cmd_autotrade))
+    _app.add_handler(CommandHandler("stop",      cmd_stop))
 
     # Free-text conversation (must be last — catches all non-command text)
     _app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
