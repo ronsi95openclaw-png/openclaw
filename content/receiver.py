@@ -723,6 +723,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /research [topic] — deep research\n\n"
         "<b>📈 Crypto:</b>\n"
         "  /market         — BTC/ETH/SOL prices\n"
+        "  /scan [tf]      — RSI+MACD live scan (4h default)\n"
         "  /dca [asset]    — DCA analysis\n"
         "  /trades [n]     — last trade decisions\n\n"
         "<b>🎬 Content:</b>\n"
@@ -743,6 +744,64 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /stop           — shutdown",
         parse_mode="HTML",
     )
+
+
+# ---------------------------------------------------------------------------
+# /scan — RSI+MACD live scan across BTC, SOL, XRP, ETH
+# ---------------------------------------------------------------------------
+
+async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    timeframe = context.args[0] if context.args else "4h"
+    valid_tf   = {"1h", "4h", "1d"}
+    if timeframe not in valid_tf:
+        await update.message.reply_text(
+            f"Usage: /scan [timeframe]\nValid: {', '.join(valid_tf)}\nDefault: 4h"
+        )
+        return
+
+    thinking_msg = await update.message.reply_text(
+        f"<i>Scanning BTC, SOL, XRP, ETH on {timeframe} candles...</i>",
+        parse_mode="HTML",
+    )
+
+    try:
+        from trading.exchange import fetch_all_closes
+        from trading.strategy import RSIMACDStrategy
+
+        strategy = RSIMACDStrategy()
+        candle_data = fetch_all_closes(strategy.config.coins, timeframe=timeframe, count=100)
+        signals = strategy.scan_all(candle_data)
+
+        if not signals:
+            # No BUY/SELL — show quick HOLD summary
+            from trading.strategy import calculate_rsi, calculate_macd
+            lines = [f"📊 <b>Market Scan — {timeframe}</b>  <i>No signals</i>\n"]
+            for coin, closes in candle_data.items():
+                try:
+                    rsi          = calculate_rsi(closes)
+                    _, _, hist   = calculate_macd(closes)
+                    trend        = "↑" if hist > 0 else "↓"
+                    lines.append(f"⚪ {coin}: RSI <code>{rsi:.1f}</code> {trend}")
+                except Exception:
+                    lines.append(f"⚪ {coin}: insufficient data")
+            lines.append("\n<i>All coins in neutral zone. Watching.</i>")
+            await thinking_msg.edit_text("\n".join(lines), parse_mode="HTML")
+        else:
+            header = f"🔔 <b>Market Scan — {timeframe} — {len(signals)} signal(s)</b>\n\n"
+            parts  = [header]
+            for s in signals:
+                parts.append(s.to_telegram_message())
+                parts.append("")
+            parts.append("<i>⚠️ Analysis only. No orders placed.</i>")
+            await thinking_msg.edit_text("\n".join(parts), parse_mode="HTML")
+
+    except Exception as exc:
+        await thinking_msg.edit_text(
+            f"🚨 Scan failed: <code>{exc}</code>", parse_mode="HTML"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -890,6 +949,7 @@ def main() -> None:
     _app.add_handler(CommandHandler("caption",  cmd_caption))
     _app.add_handler(CommandHandler("hashtags", cmd_hashtags))
     _app.add_handler(CommandHandler("dca",      cmd_dca))
+    _app.add_handler(CommandHandler("scan",     cmd_scan))
     _app.add_handler(CommandHandler("reel",     cmd_reel))
     _app.add_handler(CommandHandler("help",     cmd_help))
     _app.add_handler(CommandHandler("pipeline", cmd_pipeline))
