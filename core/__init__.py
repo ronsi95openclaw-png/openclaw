@@ -1,3 +1,3 @@
 """Core package for OpenClaw."""
 
-__all__ = ["brain", "logger"]
+__all__ = ["brain", "conversation", "scheduler", "market"]
