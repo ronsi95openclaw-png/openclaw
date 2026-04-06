@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, request, jsonify
 
 ROOT     = Path(__file__).parent.parent
 DATA_DIR = ROOT / "data"
@@ -479,13 +479,191 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 </div><!-- /grid -->
 
+<!-- CHAT PANEL -->
+<div id="chat-panel" style="
+  position:fixed; bottom:0; right:0; width:380px;
+  background:#0f0f0f; border:1px solid #242424; border-bottom:none; border-right:none;
+  border-radius:12px 0 0 0; display:flex; flex-direction:column;
+  box-shadow: -4px -4px 24px #00000088; z-index:100;
+">
+  <!-- Header -->
+  <div style="display:flex;align-items:center;justify-content:space-between;
+              padding:12px 16px;border-bottom:1px solid #1e1e1e;cursor:pointer;"
+       onclick="toggleChat()">
+    <span style="font-size:0.85rem;color:#00ff88;font-weight:600;">🦾 ClawBot Chat</span>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span id="brain-badge" style="font-size:0.65rem;color:#333;font-family:monospace"></span>
+      <button onclick="clearChat(event)" style="background:none;border:none;color:#333;
+              cursor:pointer;font-size:0.75rem;padding:0 4px;"
+              title="Clear chat">↺</button>
+      <span id="chat-toggle-icon" style="color:#444;font-size:0.8rem">▲</span>
+    </div>
+  </div>
+
+  <!-- Messages -->
+  <div id="chat-messages" style="
+    flex:1; overflow-y:auto; padding:12px 14px;
+    display:flex; flex-direction:column; gap:10px;
+    height:320px; max-height:320px;
+  ">
+    <div class="msg-bot" style="
+      background:#1a1a1a; border:1px solid #242424; border-radius:8px;
+      padding:10px 12px; font-size:0.82rem; color:#aaa; line-height:1.5;
+    ">Hey Ronnie — what's on your mind? Ask me anything about OpenClaw, trading, or ideas.</div>
+  </div>
+
+  <!-- Input -->
+  <div style="padding:10px 12px;border-top:1px solid #1e1e1e;display:flex;gap:8px;">
+    <input id="chat-input" type="text" placeholder="Ask ClawBot..."
+      style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:6px;
+             color:#e0e0e0;padding:8px 12px;font-size:0.82rem;outline:none;
+             font-family:'Segoe UI',sans-serif;"
+      onkeydown="if(event.key==='Enter' && !event.shiftKey){sendChat();event.preventDefault();}">
+    <button onclick="sendChat()" id="send-btn"
+      style="background:#00ff8818;border:1px solid #00ff8830;color:#00ff88;
+             border-radius:6px;padding:8px 14px;cursor:pointer;font-size:0.82rem;
+             font-family:'Segoe UI',sans-serif;">Send</button>
+  </div>
+</div>
+
 <script>
+  // ── Dashboard auto-refresh ──────────────────────────────────────────────────
   let t = 30;
   const el = document.getElementById('cd');
   setInterval(() => { t--; if (t <= 0) location.reload(); else el.textContent = t; }, 1000);
+
+  // ── Chat panel ─────────────────────────────────────────────────────────────
+  let chatOpen = true;
+  const msgs   = document.getElementById('chat-messages');
+  const input  = document.getElementById('chat-input');
+
+  function toggleChat() {
+    chatOpen = !chatOpen;
+    msgs.parentElement.style.height = chatOpen ? 'auto' : '0';
+    msgs.style.display = chatOpen ? 'flex' : 'none';
+    document.querySelector('#chat-panel > div:last-child').style.display = chatOpen ? 'flex' : 'none';
+    document.getElementById('chat-toggle-icon').textContent = chatOpen ? '▲' : '▼';
+  }
+
+  function addMsg(text, type, brain) {
+    const div = document.createElement('div');
+    div.style.cssText = `
+      border-radius:8px; padding:10px 12px; font-size:0.82rem;
+      line-height:1.5; white-space:pre-wrap; word-break:break-word;
+      ${type === 'user'
+        ? 'background:#00ff8812;border:1px solid #00ff8822;color:#ccc;align-self:flex-end;max-width:85%;'
+        : 'background:#1a1a1a;border:1px solid #242424;color:#bbb;'}
+    `;
+    div.textContent = text;
+    if (brain && type === 'bot') {
+      const badge = document.createElement('span');
+      badge.textContent = ' (' + brain + ')';
+      badge.style.cssText = 'font-size:0.65rem;color:#333;margin-left:4px;';
+      div.appendChild(badge);
+      document.getElementById('brain-badge').textContent = brain;
+    }
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+    return div;
+  }
+
+  async function sendChat() {
+    const text = input.value.trim();
+    if (!text) return;
+
+    input.value = '';
+    input.disabled = true;
+    document.getElementById('send-btn').disabled = true;
+
+    addMsg(text, 'user');
+    const thinking = addMsg('...', 'bot');
+
+    try {
+      const res  = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({message: text}),
+      });
+      const data = await res.json();
+      if (data.error) {
+        thinking.textContent = 'Error: ' + data.error;
+        thinking.style.color = '#ff4455';
+      } else {
+        thinking.textContent = data.reply;
+        const badge = document.createElement('span');
+        badge.textContent = ' (' + (data.brain || '') + ')';
+        badge.style.cssText = 'font-size:0.65rem;color:#333;margin-left:4px;';
+        thinking.appendChild(badge);
+        document.getElementById('brain-badge').textContent = data.brain || '';
+      }
+    } catch (e) {
+      thinking.textContent = 'Connection error — is the dashboard running?';
+      thinking.style.color = '#ff4455';
+    }
+
+    input.disabled = false;
+    document.getElementById('send-btn').disabled = false;
+    input.focus();
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  async function clearChat(e) {
+    e.stopPropagation();
+    await fetch('/api/chat/clear', {method:'POST'});
+    while (msgs.children.length > 1) msgs.removeChild(msgs.lastChild);
+    document.getElementById('brain-badge').textContent = '';
+  }
+
+  input.focus();
 </script>
 </body>
 </html>"""
+
+
+# ── Chat API ───────────────────────────────────────────────────────────────────
+
+# In-memory session history per browser session (keyed by a simple counter)
+_web_history: list[dict] = []
+_WEB_CHAT_ID = 0   # dashboard uses chat_id 0 (separate from Telegram)
+
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    """POST {"message": "..."} → {"reply": "...", "brain": "ollama|claude|cache"}"""
+    global _web_history
+    try:
+        sys.path.insert(0, str(ROOT))
+        from core.brain import ask_hybrid, CLAWBOT_SYSTEM
+
+        data    = request.get_json(force=True)
+        message = (data.get("message") or "").strip()
+        if not message:
+            return jsonify({"error": "Empty message"}), 400
+
+        # Keep last 10 turns in memory
+        _web_history.append({"role": "user", "content": message})
+        _web_history = _web_history[-20:]
+
+        reply, brain = ask_hybrid(
+            message,
+            system=CLAWBOT_SYSTEM,
+            history=_web_history[:-1],   # history before this message
+        )
+
+        _web_history.append({"role": "assistant", "content": reply})
+        _web_history = _web_history[-20:]
+
+        return jsonify({"reply": reply, "brain": brain})
+
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/chat/clear", methods=["POST"])
+def api_chat_clear():
+    global _web_history
+    _web_history = []
+    return jsonify({"ok": True})
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
