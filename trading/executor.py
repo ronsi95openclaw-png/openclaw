@@ -18,7 +18,7 @@ logger = logging.getLogger("clawbot.trading.executor")
 
 _LOG_DIR  = Path(__file__).parent.parent / "data" / "logs"
 _LOG_FILE = _LOG_DIR / "trades.log"
-_PRIVATE  = "https://api.crypto.com/exchange/v1/private"
+_PRIVATE  = "https://api.crypto.com/v2/private"
 
 # Minimum order sizes (USDT) per coin — Crypto.com minimums
 _MIN_ORDER_USD = {
@@ -30,12 +30,11 @@ _MIN_ORDER_USD = {
 
 
 def _log_trade(entry: dict) -> None:
-    """Append trade result to trades.log."""
+    """Append trade result to trades.log as JSONL (one JSON object per line)."""
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    ts   = datetime.now(timezone.utc).isoformat()
-    line = f"TRADE_DECISION | {ts} | {json.dumps(entry)}\n"
+    entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
     with open(_LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(line)
+        f.write(json.dumps(entry) + "\n")
     logger.info(f"Trade logged: {entry}")
 
 
@@ -122,7 +121,7 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
             "coin":       coin,
             "usd_amount": usd_amount,
             "price":      price,
-            "rsi":        round(signal.rsi, 2),
+            "rsi":        round(getattr(signal, "rsi", 0), 2),
             "confidence": signal.confidence,
             "order_id":   result.get("order_id", "unknown"),
             "status":     "executed",

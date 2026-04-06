@@ -158,8 +158,12 @@ def sync_all_trades() -> int:
 
     trades = []
     for line in _TRADES_LOG.read_text(encoding="utf-8").strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        raw = line if line.startswith("{") else (line.split("|", 2)[-1].strip() if "|" in line else "")
         try:
-            trades.append(json.loads(line))
+            trades.append(json.loads(raw))
         except json.JSONDecodeError:
             continue
 
@@ -216,8 +220,18 @@ def analyze_trades() -> dict:
 
     trades = []
     for line in _TRADES_LOG.read_text(encoding="utf-8").strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Support both pure JSONL and legacy "TRADE_DECISION | ts | {...}" format
+        if line.startswith("{"):
+            raw = line
+        elif "|" in line:
+            raw = line.split("|", 2)[-1].strip()
+        else:
+            continue
         try:
-            trades.append(json.loads(line))
+            trades.append(json.loads(raw))
         except json.JSONDecodeError:
             continue
 

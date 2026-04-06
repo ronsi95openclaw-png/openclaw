@@ -15,8 +15,8 @@ import requests
 
 logger = logging.getLogger("clawbot.trading.exchange")
 
-_PUBLIC  = "https://api.crypto.com/exchange/v1/public"
-_PRIVATE = "https://api.crypto.com/exchange/v1/private"
+_PUBLIC  = "https://api.crypto.com/v2/public"
+_PRIVATE = "https://api.crypto.com/v2/private"
 
 _TIMEFRAME_MAP = {
     "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",

@@ -413,10 +413,20 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     rsi        = calculate_rsi(closes)
                     _, _, hist = calculate_macd(closes)
                     trend      = "↑" if hist > 0 else "↓"
-                    lines.append(f"⚪ {coin}: RSI <code>{rsi:.1f}</code> {trend}")
+                    # Proximity warnings
+                    if rsi >= 68:
+                        icon = "🔴"
+                        warn = f"  ⚠️ near overbought ({rsi:.1f})"
+                    elif rsi <= 32:
+                        icon = "🟢"
+                        warn = f"  ⚠️ near oversold ({rsi:.1f})"
+                    else:
+                        icon = "⚪"
+                        warn = ""
+                    lines.append(f"{icon} {coin}: RSI <code>{rsi:.1f}</code> {trend}{warn}")
                 except Exception:
                     lines.append(f"⚪ {coin}: insufficient data")
-            lines.append("\n<i>All coins neutral. Watching.</i>")
+            lines.append("\n<i>Waiting for RSI + MACD crossover confirmation to signal.</i>")
             await thinking_msg.edit_text("\n".join(lines), parse_mode="HTML")
         else:
             parts = [f"🔔 <b>Scan — {timeframe} — {len(signals)} signal(s)</b>\n"]
