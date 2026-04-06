@@ -36,18 +36,28 @@ def _save(data: dict) -> None:
     _HISTORY_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def _normalize(raw) -> dict:
+    """Migrate old list format → new dict format with last_active."""
+    if isinstance(raw, list):
+        # Old format — treat as expired (no timestamp available)
+        return {"messages": [], "last_active": 0}
+    if isinstance(raw, dict):
+        return raw
+    return {"messages": [], "last_active": 0}
+
+
 def add_message(chat_id: int, role: str, content: str) -> None:
     """Append a message to the conversation history for a chat."""
-    data = _load()
-    key  = str(chat_id)
-    entry = data.get(key, {"messages": [], "last_active": 0})
+    data  = _load()
+    key   = str(chat_id)
+    entry = _normalize(data.get(key, {"messages": [], "last_active": 0}))
 
     # Auto-expire if inactive for TTL_SECONDS
     if time.time() - entry.get("last_active", 0) > TTL_SECONDS:
         entry = {"messages": [], "last_active": 0}
 
     entry["messages"].append({"role": role, "content": content})
-    entry["messages"]  = entry["messages"][-MAX_HISTORY:]
+    entry["messages"]    = entry["messages"][-MAX_HISTORY:]
     entry["last_active"] = time.time()
     data[key] = entry
     _save(data)
@@ -57,7 +67,7 @@ def get_history(chat_id: int) -> List[dict]:
     """Return conversation history for a chat. Returns [] if expired."""
     data  = _load()
     key   = str(chat_id)
-    entry = data.get(key, {})
+    entry = _normalize(data.get(key, {}))
 
     # Expire stale sessions
     if time.time() - entry.get("last_active", 0) > TTL_SECONDS:

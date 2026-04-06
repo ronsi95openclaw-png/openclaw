@@ -132,7 +132,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /notes              — view all saved notes\n"
         "  /notes [topic]      — search notes\n\n"
         "<b>⚙️ System:</b>\n"
-        "  /status  /brain  /weather [city]  /stop",
+        "  /status  /brain  /weather [city]  /restart  /stop",
         parse_mode="HTML",
     )
 
@@ -956,6 +956,21 @@ async def cmd_codereview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
 
 
+# ── /restart ──────────────────────────────────────────────────────────────────
+
+async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Restart the bot process in-place."""
+    if not is_authorized(update.effective_chat.id):
+        return
+    await update.message.reply_text(
+        "🔄 <b>ClawBot restarting...</b>\n<i>Back in a few seconds.</i>",
+        parse_mode="HTML",
+    )
+    import sys
+    python = sys.executable
+    os.execv(python, [python, "-m", "content.receiver"])
+
+
 # ── /stop ─────────────────────────────────────────────────────────────────────
 
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1007,6 +1022,7 @@ def main() -> None:
     _app.add_handler(CommandHandler("report",     cmd_report))
     _app.add_handler(CommandHandler("backtest",   cmd_backtest))
     _app.add_handler(CommandHandler("codereview", cmd_codereview))
+    _app.add_handler(CommandHandler("restart",    cmd_restart))
     _app.add_handler(CommandHandler("stop",       cmd_stop))
 
     # Free-text conversation (must be last — catches all non-command text)
