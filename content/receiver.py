@@ -127,9 +127,94 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>⏰ Reminders:</b>\n"
         "  /remind HH:MM text  — set daily reminder\n"
         "  /tasks              — list reminders\n\n"
+        "<b>📓 Knowledge Base:</b>\n"
+        "  /save [text]        — save last chat or a custom note\n"
+        "  /notes              — view all saved notes\n"
+        "  /notes [topic]      — search notes\n\n"
         "<b>⚙️ System:</b>\n"
         "  /status  /brain  /weather [city]  /stop",
         parse_mode="HTML",
+    )
+
+
+# ── /save ─────────────────────────────────────────────────────────────────────
+
+async def cmd_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Save a note or the last conversation exchange to the knowledge base."""
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    from core.knowledge import save_note, save_conversation_exchange, format_note_saved
+    from core.conversation import get_history
+
+    chat_id = update.effective_chat.id
+    args    = " ".join(context.args).strip()
+
+    if args:
+        # /save some text or idea → save as custom note
+        note = save_note(args, source="telegram")
+    else:
+        # /save with no args → save last bot↔user exchange from history
+        history = get_history(chat_id)
+        if len(history) < 2:
+            await update.message.reply_text(
+                "💬 <b>Nothing to save yet.</b>\n\n"
+                "Have a conversation first, then /save to keep it.\n"
+                "Or: /save your idea here",
+                parse_mode="HTML",
+            )
+            return
+        # Pull last user + assistant pair
+        user_msg = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
+        bot_msg  = next((m["content"] for m in reversed(history) if m["role"] == "assistant"), "")
+        note = save_conversation_exchange(user_msg, bot_msg)
+
+    await update.message.reply_text(format_note_saved(note), parse_mode="HTML")
+
+
+# ── /notes ────────────────────────────────────────────────────────────────────
+
+async def cmd_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List or search saved notes."""
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    from core.knowledge import get_notes, delete_note, get_note_by_id, format_notes_list
+
+    args = context.args
+
+    # /notes delete <id>
+    if args and args[0].lower() == "delete" and len(args) > 1:
+        note_id = args[1]
+        if delete_note(note_id):
+            await update.message.reply_text(
+                f"🗑 Note <code>{note_id}</code> deleted.", parse_mode="HTML"
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Note <code>{note_id}</code> not found.", parse_mode="HTML"
+            )
+        return
+
+    # /notes <id> — view full note
+    if args and len(args[0]) == 8 and not args[0].isalpha():
+        note = get_note_by_id(args[0])
+        if note:
+            ts   = note.get("timestamp", "")[:16].replace("T", " ")
+            tags = " ".join(f"#{t}" for t in note.get("tags", [])) or "none"
+            await update.message.reply_text(
+                f"🗒 <b>{note['title']}</b>\n"
+                f"📅 {ts} UTC | 🏷 {tags}\n\n"
+                f"{note['content']}",
+                parse_mode="HTML",
+            )
+            return
+
+    # /notes [search term]
+    search = " ".join(args) if args else None
+    notes  = get_notes(limit=8, search=search)
+    await update.message.reply_text(
+        format_notes_list(notes, search=search), parse_mode="HTML"
     )
 
 
@@ -906,6 +991,8 @@ def main() -> None:
     _app.add_handler(CommandHandler("weather",  cmd_weather))
     _app.add_handler(CommandHandler("help",     cmd_help))
     _app.add_handler(CommandHandler("autotrade",  cmd_autotrade))
+    _app.add_handler(CommandHandler("save",       cmd_save))
+    _app.add_handler(CommandHandler("notes",      cmd_notes))
     _app.add_handler(CommandHandler("news",       cmd_news))
     _app.add_handler(CommandHandler("report",     cmd_report))
     _app.add_handler(CommandHandler("backtest",   cmd_backtest))
