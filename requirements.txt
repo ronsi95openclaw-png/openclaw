@@ -21,3 +21,6 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 urllib3==2.6.3
 watchdog==4.0.0
+# Google Sheets (optional — set GOOGLE_SERVICE_ACCOUNT_JSON in .env to enable)
+gspread>=6.0.0
+google-auth>=2.0.0

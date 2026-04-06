@@ -1,4 +1,4 @@
-"""ClawBot v0.6 — Business AI Partner + Trading Bot
+"""ClawBot v0.7 — Business AI Partner + Trading Bot
 
 Just type anything to chat. Commands for structured tasks:
 
@@ -13,6 +13,12 @@ Just type anything to chat. Commands for structured tasks:
     /market            — BTC/ETH/SOL live prices + AI analysis
     /scan [1h|4h|1d]   — RSI+MACD live signal scan
     /dca [asset]       — DCA entry analysis
+    /news              — macro news filter (BLOCK/ALLOW trading)
+    /backtest          — run 4-year strategy backtest on all pairs
+    /report            — trade performance report + AI analysis
+
+  Trading Automation:
+    /autotrade [on|off|now|status] — fully auto daily trading
 
   PC Execution:
     /run [command]     — run a shell command on this PC
@@ -27,6 +33,7 @@ Just type anything to chat. Commands for structured tasks:
     /status            — bot + Ollama health check
     /brain             — AI usage stats
     /weather [city]    — current weather
+    /codereview        — AI code self-review (all project files)
     /stop              — graceful shutdown
 
 Run with:
@@ -742,6 +749,118 @@ async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 
+# ── /news ─────────────────────────────────────────────────────────────────────
+
+async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_chat.id):
+        return
+    thinking = await update.message.reply_text("<i>Checking macro news calendar...</i>", parse_mode="HTML")
+    try:
+        from agents.news_filter_agent import check_news_filter, format_telegram_message
+        result = check_news_filter()
+        msg    = format_telegram_message(result)
+        await thinking.edit_text(msg, parse_mode="HTML")
+    except Exception as exc:
+        await thinking.edit_text(f"🚨 News check failed: <code>{exc}</code>", parse_mode="HTML")
+
+
+# ── /report ───────────────────────────────────────────────────────────────────
+
+async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_chat.id):
+        return
+    thinking = await update.message.reply_text(
+        "<i>Analyzing trades + generating AI report...</i>", parse_mode="HTML"
+    )
+    try:
+        from agents.sheets_agent import run_report
+        msg, _ = await run_report()
+        await thinking.edit_text(msg, parse_mode="HTML")
+    except Exception as exc:
+        await thinking.edit_text(f"🚨 Report failed: <code>{exc}</code>", parse_mode="HTML")
+
+
+# ── /backtest ─────────────────────────────────────────────────────────────────
+
+async def cmd_backtest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    # Check if we have saved results already
+    from trading.backtest import load_results, format_backtest_message, run_backtest
+    arg = context.args[0].lower() if context.args else ""
+
+    if arg == "run":
+        thinking = await update.message.reply_text(
+            "⏳ <b>Running 4-year backtest on all pairs...</b>\n"
+            "<i>Downloading data from Binance + testing 4 strategies. Takes ~2-3 min.</i>",
+            parse_mode="HTML",
+        )
+        try:
+            import asyncio
+            loop    = asyncio.get_event_loop()
+            results = await loop.run_in_executor(None, run_backtest)
+            msg     = format_backtest_message(results)
+            await thinking.edit_text(msg, parse_mode="HTML")
+        except Exception as exc:
+            await thinking.edit_text(f"🚨 Backtest failed: <code>{exc}</code>", parse_mode="HTML")
+    else:
+        # Show saved results or prompt to run
+        results = load_results()
+        if results:
+            msg = format_backtest_message(results)
+            await update.message.reply_text(msg + "\n\n<i>Use /backtest run to refresh.</i>", parse_mode="HTML")
+        else:
+            await update.message.reply_text(
+                "📊 <b>No backtest data yet.</b>\n\n"
+                "Use <code>/backtest run</code> to download 4 years of Binance data\n"
+                "and test all 4 strategies across BTC/ETH/SOL/XRP.\n\n"
+                "<i>Takes ~2-3 minutes. Results saved to data/backtest_results.json</i>",
+                parse_mode="HTML",
+            )
+
+
+# ── /codereview ───────────────────────────────────────────────────────────────
+
+async def cmd_codereview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_chat.id):
+        return
+    chat_id = update.effective_chat.id
+
+    # Check for last review summary first
+    from agents.code_review_agent import run_code_review, get_last_review_summary
+    arg = context.args[0].lower() if context.args else ""
+
+    if arg == "run":
+        await update.message.reply_text(
+            "🔍 <b>Starting full code review...</b>\n"
+            "<i>AI is reading all project files. Takes 2-5 minutes.</i>",
+            parse_mode="HTML",
+        )
+        try:
+            msg = await run_code_review(bot=_app.bot, chat_id=chat_id)
+        except Exception as exc:
+            await update.message.reply_text(
+                f"🚨 Code review failed: <code>{exc}</code>", parse_mode="HTML"
+            )
+    else:
+        last = get_last_review_summary()
+        if last:
+            await update.message.reply_text(
+                f"🔍 <b>Last Code Review: {last['date']}</b>\n\n"
+                f"<pre>{last['preview']}</pre>\n\n"
+                f"Use <code>/codereview run</code> to run a fresh review.",
+                parse_mode="HTML",
+            )
+        else:
+            await update.message.reply_text(
+                "🔍 <b>No code reviews yet.</b>\n\n"
+                "Use <code>/codereview run</code> to start an AI review of all project files.\n"
+                "<i>Runs automatically every Sunday 09:00 UTC.</i>",
+                parse_mode="HTML",
+            )
+
+
 # ── /stop ─────────────────────────────────────────────────────────────────────
 
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -786,8 +905,12 @@ def main() -> None:
     _app.add_handler(CommandHandler("brain",    cmd_brain))
     _app.add_handler(CommandHandler("weather",  cmd_weather))
     _app.add_handler(CommandHandler("help",     cmd_help))
-    _app.add_handler(CommandHandler("autotrade", cmd_autotrade))
-    _app.add_handler(CommandHandler("stop",      cmd_stop))
+    _app.add_handler(CommandHandler("autotrade",  cmd_autotrade))
+    _app.add_handler(CommandHandler("news",       cmd_news))
+    _app.add_handler(CommandHandler("report",     cmd_report))
+    _app.add_handler(CommandHandler("backtest",   cmd_backtest))
+    _app.add_handler(CommandHandler("codereview", cmd_codereview))
+    _app.add_handler(CommandHandler("stop",       cmd_stop))
 
     # Free-text conversation (must be last — catches all non-command text)
     _app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
