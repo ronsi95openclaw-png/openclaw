@@ -476,7 +476,7 @@ class PaperTrader:
                 if (pos.action == "LONG" and price >= pos.tp1) or \
                    (pos.action == "SHORT" and price <= pos.tp1):
                     half_qty = pos.qty * 0.5
-                    pnl = half_qty * abs(price - pos.entry) * (1 if pos.action == "LONG" else -1)
+                    pnl = half_qty * (price - pos.entry) if pos.action == "LONG" else half_qty * (pos.entry - price)
                     self.equity += pnl
                     pos.qty -= half_qty
                     pos.stop_loss = pos.entry  # lock breakeven
@@ -491,7 +491,7 @@ class PaperTrader:
             # SL hit
             if (pos.action == "LONG" and price <= pos.stop_loss) or \
                (pos.action == "SHORT" and price >= pos.stop_loss):
-                pnl = pos.qty * abs(price - pos.entry) * (-1 if pos.action == "LONG" else 1)
+                pnl = pos.qty * (price - pos.entry) if pos.action == "LONG" else pos.qty * (pos.entry - price)
                 self.equity += pnl
                 result = {"pair": pos.pair, "event": "SL", "pnl": round(pnl, 2), "price": price}
                 results.append(result)
@@ -502,7 +502,7 @@ class PaperTrader:
             # TP2 hit
             if (pos.action == "LONG" and price >= pos.tp2) or \
                (pos.action == "SHORT" and price <= pos.tp2):
-                pnl = pos.qty * abs(price - pos.entry) * (1 if pos.action == "LONG" else -1)
+                pnl = pos.qty * (price - pos.entry) if pos.action == "LONG" else pos.qty * (pos.entry - price)
                 self.equity += pnl
                 result = {"pair": pos.pair, "event": "TP2", "pnl": round(pnl, 2), "price": price}
                 results.append(result)

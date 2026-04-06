@@ -49,6 +49,27 @@ def get_tasks() -> list:
     return [t for t in tasks if t.get("status") == "pending"]
 
 
+def get_orchestration_tasks() -> list:
+    """Get orchestration tasks for dashboard display."""
+    try:
+        from skills.agent_team_orchestrator import get_orchestrator
+        orchestrator = get_orchestrator()
+        tasks = list(orchestrator.tasks.values())
+        # Convert to dict format for template
+        return [{
+            "id": t.id,
+            "title": t.title,
+            "state": t.state,
+            "assigned_to": t.assigned_to or "unassigned",
+            "created_at": t.created_at[:16] if t.created_at else "",
+            "priority": t.priority,
+            "comments_count": len(t.comments)
+        } for t in tasks]
+    except Exception as e:
+        print(f"Error loading orchestration tasks: {e}")
+        return []
+
+
 def get_recent_trades(n: int = 15) -> list:
     """Parse trades.log — supports both JSONL and legacy prefixed format."""
     log = DATA_DIR / "logs" / "trades.log"
@@ -199,372 +220,516 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenClaw Dashboard</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0d0d0d; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; padding: 24px; }
-  h1  { font-size: 1.5rem; color: #00ff88; margin-bottom: 2px; }
-  .subtitle { font-size: 0.78rem; color: #444; margin-bottom: 22px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
-  .card { background: #141414; border: 1px solid #242424; border-radius: 10px; padding: 18px; }
-  .card h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1.2px; color: #444; margin-bottom: 14px; }
-  .row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid #1e1e1e; font-size: 0.85rem; }
-  .row:last-child { border-bottom: none; }
-  .label { color: #666; }
-  .val   { font-family: monospace; }
-  .green { color: #00ff88; }
-  .red   { color: #ff4455; }
-  .amber { color: #ffaa00; }
-  .blue  { color: #4499ff; }
-  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
+  body { background: linear-gradient(135deg, #0d0d0d 0%, #1a1a1a 100%); color: #e0e0e0; font-family: 'Segoe UI', sans-serif; }
+  .navbar { background: #141414 !important; border-bottom: 1px solid #242424; }
+  .card { background: #141414; border: 1px solid #242424; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); transition: transform 0.2s; }
+  .card:hover { transform: translateY(-2px); }
+  .card-header { background: #1e1e1e; border-bottom: 1px solid #242424; border-radius: 15px 15px 0 0 !important; }
+  .card-body { padding: 1.5rem; }
+  .btn-custom { background: linear-gradient(45deg, #00ff88, #00cc66); border: none; color: #000; font-weight: bold; }
+  .btn-custom:hover { background: linear-gradient(45deg, #00cc66, #00aa55); color: #000; }
+  .text-success { color: #00ff88 !important; }
+  .text-danger { color: #ff4455 !important; }
+  .text-warning { color: #ffaa00 !important; }
+  .text-info { color: #4499ff !important; }
+  .table { color: #e0e0e0; }
+  .table thead th { border-bottom: 2px solid #242424; color: #00ff88; }
+  .table tbody td { border-bottom: 1px solid #1e1e1e; }
+  .badge { font-size: 0.75rem; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
   .dot.green { background: #00ff88; } .dot.red { background: #ff4455; } .dot.amber { background: #ffaa00; }
-  .price-row { padding: 8px 0; border-bottom: 1px solid #1e1e1e; }
-  .price-row:last-child { border-bottom: none; }
-  .coin  { font-size: 0.7rem; color: #555; letter-spacing: 1px; }
-  .price { font-size: 1.25rem; font-family: monospace; font-weight: bold; }
-  .chg   { font-size: 0.78rem; font-family: monospace; margin-left: 6px; }
-  table  { width: 100%; border-collapse: collapse; font-size: 0.79rem; }
-  th { text-align: left; color: #444; font-weight: 500; padding: 4px 6px; border-bottom: 1px solid #222; }
-  td { padding: 6px 6px; border-bottom: 1px solid #1a1a1a; vertical-align: top; word-break: break-word; }
-  tr:last-child td { border-bottom: none; }
-  .empty { color: #333; font-size: 0.8rem; margin-top: 6px; }
-  .badge { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 0.68rem; font-family: monospace; }
-  .badge.green { background: #00ff8818; color: #00ff88; border: 1px solid #00ff8830; }
-  .badge.red   { background: #ff445518; color: #ff4455; border: 1px solid #ff445530; }
-  .badge.amber { background: #ffaa0018; color: #ffaa00; border: 1px solid #ffaa0030; }
-  .badge.blue  { background: #4499ff18; color: #4499ff; border: 1px solid #4499ff30; }
-  .note-item { padding: 7px 0; border-bottom: 1px solid #1a1a1a; font-size: 0.8rem; }
-  .note-item:last-child { border-bottom: none; }
-  .note-title { color: #ccc; }
-  .note-meta  { color: #444; font-size: 0.7rem; margin-top: 2px; }
-  .full-width { grid-column: 1 / -1; }
+  .price-card { background: linear-gradient(45deg, #1e1e1e, #242424); }
+  .chat-panel { position: fixed; bottom: 0; right: 0; width: 400px; background: #0f0f0f; border: 1px solid #242424; border-bottom: none; border-right: none; border-radius: 15px 0 0 0; box-shadow: -4px -4px 24px #00000088; z-index: 100; }
+  .chat-header { background: #1a1a1a; border-bottom: 1px solid #1e1e1e; border-radius: 15px 0 0 0; }
+  .chat-messages { max-height: 350px; overflow-y: auto; }
+  .msg-user { align-self: flex-end; background: linear-gradient(45deg, #00ff8812, #00cc6612); border: 1px solid #00ff8822; }
+  .msg-bot { background: #1a1a1a; border: 1px solid #242424; }
+  .auto-refresh { font-size: 0.8rem; color: #666; }
+  .section-icon { margin-right: 8px; }
+  .collapsible { cursor: pointer; }
+  .collapsible:hover { color: #00ff88; }
 </style>
 </head>
-<body>
+<body class="bg-dark">
 
-<h1>🦾 OpenClaw Dashboard</h1>
-<p class="subtitle">{{ now }} &nbsp;·&nbsp; Auto-refresh <span id="cd">30</span>s</p>
+<nav class="navbar navbar-expand-lg navbar-dark">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="#"><i class="fas fa-robot"></i> OpenClaw Dashboard</a>
+    <span class="navbar-text auto-refresh">
+      <i class="fas fa-clock"></i> {{ now }} &nbsp;·&nbsp; Auto-refresh <span id="cd">30</span>s
+    </span>
+  </div>
+</nav>
 
-<div class="grid">
+<div class="container-fluid mt-4">
+  <div class="row">
 
 <!-- SYSTEM STATUS -->
-<div class="card">
-  <h2>System Status</h2>
-  <div class="row">
-    <span class="label">ClawBot</span>
-    <span class="val">
-      {% if bot.running %}<span class="dot green"></span><span class="green">Active</span>
-      {% else %}<span class="dot amber"></span><span class="amber">Idle</span>{% endif %}
-      <span style="color:#333;font-size:0.72rem"> {{ bot.last_seen }}</span>
-    </span>
-  </div>
-  <div class="row">
-    <span class="label">Ollama</span>
-    <span class="val">
-      {% if ollama.online %}<span class="green">online ✅</span>
-      {% else %}<span class="red">offline ❌</span>{% endif %}
-    </span>
-  </div>
-  {% if ollama.models %}
-  <div class="row">
-    <span class="label">Model</span>
-    <span class="val" style="color:#555;font-size:0.78rem">{{ ollama.active }}</span>
-  </div>
-  {% endif %}
-  <div class="row">
-    <span class="label">Claude API</span>
-    <span class="val">{% if claude_ok %}<span class="green">configured ✅</span>
-    {% else %}<span class="amber">not set ⚠️</span>{% endif %}</span>
-  </div>
-  <div class="row">
-    <span class="label">Crypto.com</span>
-    <span class="val">{% if crypto_ok %}<span class="green">configured ✅</span>
-    {% else %}<span class="amber">not set ⚠️</span>{% endif %}</span>
-  </div>
-  <div class="row">
-    <span class="label">Cache</span>
-    <span class="val">{{ cache.entries }} entries &nbsp;<span style="color:#333">{{ cache.newest }}</span></span>
+<div class="col-md-6 col-lg-4 mb-4">
+  <div class="card h-100">
+    <div class="card-header collapsible" onclick="toggleCard(this)">
+      <h5 class="mb-0"><i class="fas fa-server section-icon"></i>System Status <i class="fas fa-chevron-down float-end"></i></h5>
+    </div>
+    <div class="card-body">
+      <div class="row mb-2">
+        <div class="col-6">ClawBot</div>
+        <div class="col-6">
+          {% if bot.running %}<span class="dot green"></span><span class="text-success">Active</span>
+          {% else %}<span class="dot amber"></span><span class="text-warning">Idle</span>{% endif %}
+          <small class="text-muted"> {{ bot.last_seen }}</small>
+        </div>
+      </div>
+      <div class="row mb-2">
+        <div class="col-6">Ollama</div>
+        <div class="col-6">
+          {% if ollama.online %}<span class="text-success"><i class="fas fa-check"></i> Online</span>
+          {% else %}<span class="text-danger"><i class="fas fa-times"></i> Offline</span>{% endif %}
+        </div>
+      </div>
+      {% if ollama.models %}
+      <div class="row mb-2">
+        <div class="col-6">Model</div>
+        <div class="col-6"><small class="text-muted">{{ ollama.active }}</small>
+      </div>
+      {% endif %}
+      <div class="row mb-2">
+        <div class="col-6">Claude API</div>
+        <div class="col-6">{% if claude_ok %}<span class="text-success"><i class="fas fa-check"></i> Configured</span>
+        {% else %}<span class="text-warning"><i class="fas fa-exclamation-triangle"></i> Not set</span>{% endif %}</div>
+      </div>
+      <div class="row mb-2">
+        <div class="col-6">Crypto.com</div>
+        <div class="col-6">{% if crypto_ok %}<span class="text-success"><i class="fas fa-check"></i> Configured</span>
+        {% else %}<span class="text-warning"><i class="fas fa-exclamation-triangle"></i> Not set</span>{% endif %}</div>
+      </div>
+      <div class="row">
+        <div class="col-6">Cache</div>
+        <div class="col-6">{{ cache.entries }} entries <small class="text-muted">{{ cache.newest }}</small></div>
+      </div>
+    </div>
   </div>
 </div>
 
 <!-- AUTO-TRADE STATUS -->
-<div class="card">
-  <h2>Auto-Trade</h2>
-  {% if autotrade.enabled %}
-  <div class="row">
-    <span class="label">Status</span>
-    <span class="val"><span class="badge green">ENABLED</span></span>
-  </div>
-  <div class="row">
-    <span class="label">Daily scan</span>
-    <span class="val green">{{ autotrade.scan_time }} UTC</span>
-  </div>
-  <div class="row">
-    <span class="label">Timeframe</span>
-    <span class="val">{{ autotrade.timeframe }}</span>
-  </div>
-  <div class="row">
-    <span class="label">Strategy</span>
-    <span class="val" style="color:#555">RSI+MACD · 1.5% risk</span>
-  </div>
-  {% else %}
-  <div style="padding:12px 0; color:#333; font-size:0.82rem">
-    Auto-trade is <span class="amber">disabled</span>.<br>
-    <span style="color:#2a2a2a; font-size:0.75rem">Send /autotrade on in Telegram to enable.</span>
-  </div>
-  {% endif %}
-
-  <div class="row" style="margin-top:8px">
-    <span class="label">Total logged trades</span>
-    <span class="val {% if trades|length > 0 %}green{% else %}amber{% endif %}">{{ trades|length }}</span>
+<div class="col-md-6 col-lg-4 mb-4">
+  <div class="card h-100">
+    <div class="card-header collapsible" onclick="toggleCard(this)">
+      <h5 class="mb-0"><i class="fas fa-chart-line section-icon"></i>Auto-Trade <i class="fas fa-chevron-down float-end"></i></h5>
+    </div>
+    <div class="card-body">
+      {% if autotrade.enabled %}
+      <div class="row mb-2">
+        <div class="col-6">Status</div>
+        <div class="col-6"><span class="badge bg-success">ENABLED</span></div>
+      </div>
+      <div class="row mb-2">
+        <div class="col-6">Daily scan</div>
+        <div class="col-6 text-success">{{ autotrade.scan_time }} UTC</div>
+      </div>
+      <div class="row mb-2">
+        <div class="col-6">Timeframe</div>
+        <div class="col-6">{{ autotrade.timeframe }}</div>
+      </div>
+      <div class="row mb-3">
+        <div class="col-6">Strategy</div>
+        <div class="col-6"><small class="text-muted">RSI+MACD · 1.5% risk</small></div>
+      </div>
+      {% else %}
+      <div class="alert alert-warning">
+        Auto-trade is <strong>disabled</strong>.<br>
+        <small>Send /autotrade on in Telegram to enable.</small>
+      </div>
+      {% endif %}
+      <div class="row">
+        <div class="col-6">Total logged trades</div>
+        <div class="col-6 {% if trades|length > 0 %}text-success{% else %}text-warning{% endif %}">{{ trades|length }}</div>
+      </div>
+    </div>
   </div>
 </div>
 
 <!-- LIVE PRICES -->
-<div class="card">
-  <h2>Live Prices</h2>
-  {% if prices %}
-    {% for coin, d in prices.items() %}
-    <div class="price-row">
-      <div class="coin">{{ coin }}/USDT</div>
-      <span class="price">${{ "{:,.2f}".format(d.price) }}</span>
-      <span class="chg {{ d.cls }}">{{ d.sign }}{{ d.change }}%</span>
+<div class="col-md-6 col-lg-4 mb-4">
+  <div class="card h-100 price-card">
+    <div class="card-header collapsible" onclick="toggleCard(this)">
+      <h5 class="mb-0"><i class="fas fa-coins section-icon"></i>Live Prices <i class="fas fa-chevron-down float-end"></i></h5>
     </div>
-    {% endfor %}
-  {% else %}
-    <p class="empty">CoinGecko unavailable — refresh to retry</p>
-  {% endif %}
+    <div class="card-body">
+      {% if prices %}
+        {% for coin, d in prices.items() %}
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <span class="text-muted">{{ coin }}/USDT</span>
+          <div>
+            <span class="fw-bold">${{ "{:,.2f}".format(d.price) }}</span>
+            <span class="ms-2 {{ 'text-success' if d.change >= 0 else 'text-danger' }}">{{ d.sign }}{{ d.change }}%</span>
+          </div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="text-center text-muted">CoinGecko unavailable — refresh to retry</div>
+      {% endif %}
+    </div>
+  </div>
 </div>
 
 <!-- BRAIN STATS -->
-<div class="card">
-  <h2>Brain Stats — Today</h2>
-  <div class="row">
-    <span class="label">Ollama (free)</span>
-    <span class="val green">{{ usage.ollama_calls }} calls</span>
-  </div>
-  <div class="row">
-    <span class="label">Claude Haiku</span>
-    <span class="val {% if usage.claude_calls > 0 %}amber{% endif %}">{{ usage.claude_calls }} calls</span>
-  </div>
-  <div class="row">
-    <span class="label">Cache hits</span>
-    <span class="val green">{{ usage.cache_hits }} 💾</span>
-  </div>
-  <div class="row">
-    <span class="label">Tokens in / out</span>
-    <span class="val" style="color:#555">{{ "{:,}".format(usage.claude_input_tokens) }} / {{ "{:,}".format(usage.claude_output_tokens) }}</span>
-  </div>
-  <div class="row">
-    <span class="label">API cost today</span>
-    {% set cost = (usage.claude_input_tokens * 0.00000025) + (usage.claude_output_tokens * 0.00000125) %}
-    <span class="val {% if cost > 0.01 %}amber{% else %}green{% endif %}">${{ "%.4f"|format(cost) }}</span>
+<div class="col-md-6 col-lg-4 mb-4">
+  <div class="card h-100">
+    <div class="card-header collapsible" onclick="toggleCard(this)">
+      <h5 class="mb-0"><i class="fas fa-brain section-icon"></i>Brain Stats — Today <i class="fas fa-chevron-down float-end"></i></h5>
+    </div>
+    <div class="card-body">
+      <div class="row mb-2">
+        <div class="col-7">Ollama (free)</div>
+        <div class="col-5 text-success">{{ usage.ollama_calls }} calls</div>
+      </div>
+      <div class="row mb-2">
+        <div class="col-7">Claude Haiku</div>
+        <div class="col-5 {% if usage.claude_calls > 0 %}text-warning{% endif %}">{{ usage.claude_calls }} calls</div>
+      </div>
+      <div class="row mb-2">
+        <div class="col-7">Cache hits</div>
+        <div class="col-5 text-success">{{ usage.cache_hits }} <i class="fas fa-database"></i></div>
+      </div>
+      <div class="row mb-2">
+        <div class="col-7">Tokens in / out</div>
+        <div class="col-5 text-muted">{{ "{:,}".format(usage.claude_input_tokens) }} / {{ "{:,}".format(usage.claude_output_tokens) }}</div>
+      </div>
+      <div class="row">
+        <div class="col-7">API cost today</div>
+        {% set cost = (usage.claude_input_tokens * 0.00000025) + (usage.claude_output_tokens * 0.00000125) %}
+        <div class="col-5 {% if cost > 0.01 %}text-warning{% else %}text-success{% endif %}">${{ "%.4f"|format(cost) }}</div>
+      </div>
+    </div>
   </div>
 </div>
 
 <!-- BACKTEST RESULTS -->
-<div class="card">
-  <h2>Backtest Results</h2>
-  {% if backtest and backtest.ranking %}
-    <div style="font-size:0.72rem;color:#444;margin-bottom:10px">
-      {{ backtest.period_days // 365 }}Y history · generated {{ backtest.generated }}
+<div class="col-md-6 col-lg-4 mb-4">
+  <div class="card h-100">
+    <div class="card-header collapsible" onclick="toggleCard(this)">
+      <h5 class="mb-0"><i class="fas fa-chart-bar section-icon"></i>Backtest Results <i class="fas fa-chevron-down float-end"></i></h5>
     </div>
-    <table>
-      <tr><th>#</th><th>Strategy / Pair</th><th>Return</th><th>Win%</th></tr>
-      {% for r in backtest.ranking %}
-      <tr>
-        <td style="color:#444">{{ loop.index }}</td>
-        <td><span style="color:#ccc">{{ r.strategy }}</span><br>
-            <span style="color:#444;font-size:0.7rem">{{ r.pair }}</span></td>
-        <td class="{% if r.total_return_pct > 0 %}green{% else %}red{% endif %}">
-          {{ "%+.0f"|format(r.total_return_pct) }}%</td>
-        <td style="color:#888">{{ r.win_rate }}%</td>
-      </tr>
-      {% endfor %}
-    </table>
-  {% else %}
-    <p class="empty">No backtest data yet.<br>
-    <span style="color:#2a2a2a">Run /backtest run in Telegram.</span></p>
-  {% endif %}
+    <div class="card-body">
+      {% if backtest and backtest.ranking %}
+        <div class="text-muted mb-3">{{ backtest.period_days // 365 }}Y history · generated {{ backtest.generated }}</div>
+        <div class="table-responsive">
+          <table class="table table-sm">
+            <thead>
+              <tr><th>#</th><th>Strategy / Pair</th><th>Return</th><th>Win%</th></tr>
+            </thead>
+            <tbody>
+              {% for r in backtest.ranking %}
+              <tr>
+                <td class="text-muted">{{ loop.index }}</td>
+                <td><span>{{ r.strategy }}</span><br><small class="text-muted">{{ r.pair }}</small></td>
+                <td class="{% if r.total_return_pct > 0 %}text-success{% else %}text-danger{% endif %}">
+                  {{ "%+.0f"|format(r.total_return_pct) }}%</td>
+                <td class="text-muted">{{ r.win_rate }}%</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="text-center text-muted">No backtest data yet.<br><small>Run /backtest run in Telegram.</small></div>
+      {% endif %}
+    </div>
+  </div>
 </div>
 
 <!-- KNOWLEDGE NOTES -->
-<div class="card">
-  <h2>Knowledge Notes</h2>
-  {% if notes.count > 0 %}
-    <div style="font-size:0.72rem;color:#444;margin-bottom:10px">{{ notes.count }} saved notes</div>
-    {% for n in notes.recent %}
-    <div class="note-item">
-      <div class="note-title">{{ n.title[:60] }}{% if n.title|length > 60 %}…{% endif %}</div>
-      <div class="note-meta">
-        {{ n.timestamp[:10] }}
-        {% for tag in n.tags[:3] %}<span class="badge blue" style="margin-left:4px">#{{ tag }}</span>{% endfor %}
-      </div>
+<div class="col-md-6 col-lg-4 mb-4">
+  <div class="card h-100">
+    <div class="card-header collapsible" onclick="toggleCard(this)">
+      <h5 class="mb-0"><i class="fas fa-book section-icon"></i>Knowledge Notes <i class="fas fa-chevron-down float-end"></i></h5>
     </div>
-    {% endfor %}
-  {% else %}
-    <p class="empty">No notes yet.<br>
-    <span style="color:#2a2a2a">Use /save in Telegram after a good conversation.</span></p>
-  {% endif %}
+    <div class="card-body">
+      {% if notes.count > 0 %}
+        <div class="text-muted mb-3">{{ notes.count }} saved notes</div>
+        {% for n in notes.recent %}
+        <div class="mb-3">
+          <div class="fw-bold">{{ n.title[:60] }}{% if n.title|length > 60 %}…{% endif %}</div>
+          <div class="text-muted small">
+            {{ n.timestamp[:10] }}
+            {% for tag in n.tags[:3 %}<span class="badge bg-info ms-1">#{{ tag }}</span>{% endfor %}
+          </div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="text-center text-muted">No notes yet.<br><small>Use /save in Telegram after a good conversation.</small></div>
+      {% endif %}
+    </div>
+  </div>
 </div>
 
 <!-- REMINDERS -->
-<div class="card">
-  <h2>Pending Reminders</h2>
-  {% if tasks %}
-    <table>
-      <tr><th>Time (UTC)</th><th>Reminder</th></tr>
-      {% for t in tasks %}
-      <tr>
-        <td style="color:#00ff88;white-space:nowrap">{{ t.time }}</td>
-        <td>{{ t.text }}</td>
-      </tr>
-      {% endfor %}
-    </table>
-  {% else %}
-    <p class="empty">No pending reminders.<br>
-    <span style="color:#2a2a2a">Use /remind HH:MM text in Telegram.</span></p>
-  {% endif %}
+<div class="col-md-6 col-lg-4 mb-4">
+  <div class="card h-100">
+    <div class="card-header collapsible" onclick="toggleCard(this)">
+      <h5 class="mb-0"><i class="fas fa-bell section-icon"></i>Pending Reminders <i class="fas fa-chevron-down float-end"></i></h5>
+    </div>
+    <div class="card-body">
+      {% if tasks %}
+        <div class="table-responsive">
+          <table class="table table-sm">
+            <thead>
+              <tr><th>Time (UTC)</th><th>Reminder</th></tr>
+            </thead>
+            <tbody>
+              {% for t in tasks %}
+              <tr>
+                <td class="text-success">{{ t.time }}</td>
+                <td>{{ t.text }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="text-center text-muted">No pending reminders.<br><small>Use /remind HH:MM text in Telegram.</small></div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- ORCHESTRATION TASKS -->
+<div class="col-md-6 col-lg-4 mb-4">
+  <div class="card h-100">
+    <div class="card-header collapsible" onclick="toggleCard(this)">
+      <h5 class="mb-0"><i class="fas fa-users-cog section-icon"></i>Orchestration Tasks <i class="fas fa-chevron-down float-end"></i></h5>
+    </div>
+    <div class="card-body">
+      {% if orchestration %}
+        <div class="table-responsive">
+          <table class="table table-sm">
+            <thead>
+              <tr><th>ID</th><th>Task</th><th>State</th><th>Assigned</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+              {% for t in orchestration %}
+              <tr>
+                <td><small class="text-muted font-monospace">{{ t.id[-8:] }}</small></td>
+                <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis">{{ t.title }}</td>
+                <td>
+                  <span class="badge {% if t.state == 'done' %}bg-success{% elif t.state == 'in_progress' %}bg-warning{% elif t.state == 'review' %}bg-info{% else %}bg-secondary{% endif %}">
+                    {{ t.state|replace('_', ' ') }}
+                  </span>
+                </td>
+                <td><small class="text-muted">{{ t.assigned_to[:12] }}{% if t.assigned_to|length > 12 %}…{% endif %}</small></td>
+                <td>
+                  {% if t.state == 'pending' %}
+                    <button class="btn btn-sm btn-outline-success" onclick="updateTask('{{ t.id }}', 'start')"><i class="fas fa-play"></i></button>
+                  {% elif t.state == 'in_progress' %}
+                    <button class="btn btn-sm btn-outline-primary" onclick="updateTask('{{ t.id }}', 'review')"><i class="fas fa-check"></i></button>
+                  {% elif t.state == 'review' %}
+                    <button class="btn btn-sm btn-outline-success" onclick="updateTask('{{ t.id }}', 'done')"><i class="fas fa-check-double"></i></button>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="text-center text-muted">No orchestration tasks yet.<br><small>Use /orchestrate create in Telegram.</small></div>
+      {% endif %}
+    </div>
+  </div>
 </div>
 
 <!-- CODE REVIEW -->
-<div class="card">
-  <h2>Last Code Review</h2>
-  {% if codereview.date %}
-    <div class="row">
-      <span class="label">Date</span>
-      <span class="val green">{{ codereview.date }}</span>
+<div class="col-md-6 col-lg-4 mb-4">
+  <div class="card h-100">
+    <div class="card-header collapsible" onclick="toggleCard(this)">
+      <h5 class="mb-0"><i class="fas fa-code section-icon"></i>Last Code Review <i class="fas fa-chevron-down float-end"></i></h5>
     </div>
-    <div style="margin-top:10px;font-size:0.78rem;color:#555;line-height:1.5">
-      {{ codereview.preview[:250] }}{% if codereview.preview|length > 250 %}…{% endif %}
+    <div class="card-body">
+      {% if codereview.date %}
+        <div class="row mb-2">
+          <div class="col-4">Date</div>
+          <div class="col-8 text-success">{{ codereview.date }}</div>
+        </div>
+        <div class="text-muted small">{{ codereview.preview[:250] }}{% if codereview.preview|length > 250 %}…{% endif %}</div>
+      {% else %}
+        <div class="text-center text-muted">No code reviews yet.<br><small>Run /codereview run in Telegram.</small></div>
+      {% endif %}
     </div>
-  {% else %}
-    <p class="empty">No code reviews yet.<br>
-    <span style="color:#2a2a2a">Run /codereview run in Telegram.</span></p>
-  {% endif %}
+  </div>
 </div>
 
 <!-- RECENT TRADES (full width) -->
-<div class="card full-width">
-  <h2>Recent Trade Log</h2>
-  {% if trades %}
-    <table>
-      <tr><th>Time</th><th>Coin</th><th>Action</th><th>Conf</th><th>USD</th><th>Status</th><th>Notes</th></tr>
-      {% for t in trades|reverse %}
-      <tr>
-        <td style="color:#444;white-space:nowrap;font-size:0.75rem">{{ t.get('timestamp','')[:16]|replace('T',' ') }}</td>
-        <td style="color:#ccc">{{ t.get('coin', t.get('action','?')) }}</td>
-        <td>
-          {% set act = t.get('action','') %}
-          <span class="badge {% if act == 'BUY' %}green{% elif act == 'SELL' %}red{% else %}amber{% endif %}">
-            {{ act or '—' }}
-          </span>
-        </td>
-        <td style="color:#555">{{ t.get('confidence','—') }}</td>
-        <td style="font-family:monospace">${{ "%.2f"|format(t.get('usd_amount',0)|float) }}</td>
-        <td>
-          {% set st = t.get('status','') %}
-          <span class="badge {% if st == 'executed' %}green{% elif st == 'error' %}red{% else %}amber{% endif %}">
-            {{ st or '—' }}
-          </span>
-        </td>
-        <td style="color:#444;font-size:0.75rem">{{ t.get('reason', t.get('notes',''))[:60] }}</td>
-      </tr>
-      {% endfor %}
-    </table>
-  {% else %}
-    <p class="empty">No trades logged yet. Enable /autotrade on in Telegram to start collecting data.</p>
-  {% endif %}
+<div class="col-12 mb-4">
+  <div class="card">
+    <div class="card-header collapsible" onclick="toggleCard(this)">
+      <h5 class="mb-0"><i class="fas fa-history section-icon"></i>Recent Trade Log <i class="fas fa-chevron-down float-end"></i></h5>
+    </div>
+    <div class="card-body">
+      {% if trades %}
+        <div class="table-responsive">
+          <table class="table table-sm">
+            <thead>
+              <tr><th>Time</th><th>Coin</th><th>Action</th><th>Conf</th><th>USD</th><th>Status</th><th>Notes</th></tr>
+            </thead>
+            <tbody>
+              {% for t in trades|reverse %}
+              <tr>
+                <td class="text-muted small">{{ t.get('timestamp','')[:16]|replace('T',' ') }}</td>
+                <td>{{ t.get('coin', t.get('action','?')) }}</td>
+                <td>
+                  {% set act = t.get('action','') %}
+                  <span class="badge {% if act == 'BUY' %}bg-success{% elif act == 'SELL' %}bg-danger{% else %}bg-warning{% endif %}">
+                    {{ act or '—' }}
+                  </span>
+                </td>
+                <td class="text-muted">{{ t.get('confidence','—') }}</td>
+                <td class="font-monospace">${{ "%.2f"|format(t.get('usd_amount',0)|float) }}</td>
+                <td>
+                  {% set st = t.get('status','') %}
+                  <span class="badge {% if st == 'executed' %}bg-success{% elif st == 'error' %}bg-danger{% else %}bg-warning{% endif %}">
+                    {{ st or '—' }}
+                  </span>
+                </td>
+                <td class="text-muted small">{{ t.get('reason', t.get('notes',''))[:60] }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="text-center text-muted">No trades logged yet. Enable /autotrade on in Telegram to start collecting data.</div>
+      {% endif %}
+    </div>
+  </div>
 </div>
 
-</div><!-- /grid -->
+  </div><!-- /row -->
+</div><!-- /container -->
 
 <!-- CHAT PANEL -->
-<div id="chat-panel" style="
-  position:fixed; bottom:0; right:0; width:380px;
-  background:#0f0f0f; border:1px solid #242424; border-bottom:none; border-right:none;
-  border-radius:12px 0 0 0; display:flex; flex-direction:column;
-  box-shadow: -4px -4px 24px #00000088; z-index:100;
-">
+<div class="chat-panel d-flex flex-column" id="chat-panel">
   <!-- Header -->
-  <div style="display:flex;align-items:center;justify-content:space-between;
-              padding:12px 16px;border-bottom:1px solid #1e1e1e;cursor:pointer;"
-       onclick="toggleChat()">
-    <span style="font-size:0.85rem;color:#00ff88;font-weight:600;">🦾 ClawBot Chat</span>
-    <div style="display:flex;gap:8px;align-items:center">
-      <span id="brain-badge" style="font-size:0.65rem;color:#333;font-family:monospace"></span>
-      <button onclick="clearChat(event)" style="background:none;border:none;color:#333;
-              cursor:pointer;font-size:0.75rem;padding:0 4px;"
-              title="Clear chat">↺</button>
-      <span id="chat-toggle-icon" style="color:#444;font-size:0.8rem">▲</span>
+  <div class="chat-header d-flex align-items-center justify-content-between p-3" onclick="toggleChat()">
+    <span class="fw-bold text-success"><i class="fas fa-robot"></i> ClawBot Chat</span>
+    <div class="d-flex gap-2 align-items-center">
+      <span id="brain-badge" class="text-muted small font-monospace"></span>
+      <button onclick="clearChat(event)" class="btn btn-sm btn-outline-secondary" title="Clear chat"><i class="fas fa-redo"></i></button>
+      <span id="chat-toggle-icon"><i class="fas fa-chevron-up"></i></span>
     </div>
   </div>
 
   <!-- Messages -->
-  <div id="chat-messages" style="
-    flex:1; overflow-y:auto; padding:12px 14px;
-    display:flex; flex-direction:column; gap:10px;
-    height:320px; max-height:320px;
-  ">
-    <div class="msg-bot" style="
-      background:#1a1a1a; border:1px solid #242424; border-radius:8px;
-      padding:10px 12px; font-size:0.82rem; color:#aaa; line-height:1.5;
-    ">Hey Ronnie — what's on your mind? Ask me anything about OpenClaw, trading, or ideas.</div>
+  <div id="chat-messages" class="chat-messages d-flex flex-column gap-2 p-3">
+    <div class="msg-bot p-2 rounded">
+      Hey Ronnie — what's on your mind? Ask me anything about OpenClaw, trading, or ideas.
+    </div>
   </div>
 
   <!-- Input -->
-  <div style="padding:10px 12px;border-top:1px solid #1e1e1e;display:flex;gap:8px;">
-    <input id="chat-input" type="text" placeholder="Ask ClawBot..."
-      style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:6px;
-             color:#e0e0e0;padding:8px 12px;font-size:0.82rem;outline:none;
-             font-family:'Segoe UI',sans-serif;"
-      onkeydown="if(event.key==='Enter' && !event.shiftKey){sendChat();event.preventDefault();}">
-    <button onclick="sendChat()" id="send-btn"
-      style="background:#00ff8818;border:1px solid #00ff8830;color:#00ff88;
-             border-radius:6px;padding:8px 14px;cursor:pointer;font-size:0.82rem;
-             font-family:'Segoe UI',sans-serif;">Send</button>
+  <div class="p-3 border-top">
+    <div class="input-group">
+      <input id="chat-input" type="text" class="form-control" placeholder="Ask ClawBot..." onkeydown="if(event.key==='Enter' && !event.shiftKey){sendChat();event.preventDefault();}">
+      <button onclick="sendChat()" id="send-btn" class="btn btn-custom"><i class="fas fa-paper-plane"></i></button>
+    </div>
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-  // ── Dashboard auto-refresh ──────────────────────────────────────────────────
+  // ── Dashboard auto-refresh (pauses while chat is active) ───────────────────
   let t = 30;
+  let chatActive = false;  // pause refresh while user is chatting
   const el = document.getElementById('cd');
-  setInterval(() => { t--; if (t <= 0) location.reload(); else el.textContent = t; }, 1000);
+  setInterval(() => {
+    if (chatActive) { t = 30; el.textContent = t; return; }
+    t--;
+    if (t <= 0) location.reload();
+    else el.textContent = t;
+  }, 1000);
+
+  // ── Collapsible cards ──────────────────────────────────────────────────────
+  function toggleCard(header) {
+    const body = header.nextElementSibling;
+    const icon = header.querySelector('.fa-chevron-down, .fa-chevron-up');
+    if (body.style.display === 'none') {
+      body.style.display = 'block';
+      icon.classList.remove('fa-chevron-up');
+      icon.classList.add('fa-chevron-down');
+    } else {
+      body.style.display = 'none';
+      icon.classList.remove('fa-chevron-down');
+      icon.classList.add('fa-chevron-up');
+    }
+  }
 
   // ── Chat panel ─────────────────────────────────────────────────────────────
   let chatOpen = true;
   const msgs   = document.getElementById('chat-messages');
   const input  = document.getElementById('chat-input');
 
+  // Restore chat history from localStorage on page load
+  const _CHAT_KEY = 'clawbot_chat_history';
+  function _saveChat() {
+    const items = [];
+    msgs.querySelectorAll('div[data-role]').forEach(d => {
+      items.push({role: d.dataset.role, text: d.dataset.text, brain: d.dataset.brain || ''});
+    });
+    localStorage.setItem(_CHAT_KEY, JSON.stringify(items.slice(-20)));
+  }
+  function _restoreChat() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(_CHAT_KEY) || '[]');
+      saved.forEach(m => _addMsgRaw(m.text, m.role, m.brain));
+    } catch(e) {}
+  }
+  _restoreChat();
+
   function toggleChat() {
     chatOpen = !chatOpen;
-    msgs.parentElement.style.height = chatOpen ? 'auto' : '0';
-    msgs.style.display = chatOpen ? 'flex' : 'none';
-    document.querySelector('#chat-panel > div:last-child').style.display = chatOpen ? 'flex' : 'none';
-    document.getElementById('chat-toggle-icon').textContent = chatOpen ? '▲' : '▼';
+    const panel = document.getElementById('chat-panel');
+    const messages = panel.querySelector('.chat-messages');
+    const inputDiv = panel.querySelector('.border-top');
+    const icon = document.getElementById('chat-toggle-icon');
+    
+    if (chatOpen) {
+      messages.style.display = 'flex';
+      inputDiv.style.display = 'block';
+      icon.innerHTML = '<i class="fas fa-chevron-up"></i>';
+    } else {
+      messages.style.display = 'none';
+      inputDiv.style.display = 'none';
+      icon.innerHTML = '<i class="fas fa-chevron-down"></i>';
+    }
   }
 
-  function addMsg(text, type, brain) {
+  function _addMsgRaw(text, type, brain) {
     const div = document.createElement('div');
-    div.style.cssText = `
-      border-radius:8px; padding:10px 12px; font-size:0.82rem;
-      line-height:1.5; white-space:pre-wrap; word-break:break-word;
-      ${type === 'user'
-        ? 'background:#00ff8812;border:1px solid #00ff8822;color:#ccc;align-self:flex-end;max-width:85%;'
-        : 'background:#1a1a1a;border:1px solid #242424;color:#bbb;'}
-    `;
+    div.className = `p-2 rounded ${type === 'user' ? 'msg-user' : 'msg-bot'}`;
+    div.style.cssText = 'font-size: 0.9rem; line-height: 1.4; white-space: pre-wrap; word-break: break-word; max-width: 85%;';
+    if (type === 'user') div.style.alignSelf = 'flex-end';
+    div.dataset.role = type;
+    div.dataset.text = text;
+    div.dataset.brain = brain || '';
     div.textContent = text;
     if (brain && type === 'bot') {
       const badge = document.createElement('span');
       badge.textContent = ' (' + brain + ')';
-      badge.style.cssText = 'font-size:0.65rem;color:#333;margin-left:4px;';
+      badge.className = 'text-muted small ms-1';
       div.appendChild(badge);
       document.getElementById('brain-badge').textContent = brain;
     }
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
     return div;
+  }
+
+  function addMsg(text, type, brain) {
+    return _addMsgRaw(text, type, brain);
   }
 
   async function sendChat() {
@@ -574,8 +739,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     input.value = '';
     input.disabled = true;
     document.getElementById('send-btn').disabled = true;
+    chatActive = true;  // pause auto-refresh while waiting
 
     addMsg(text, 'user');
+    _saveChat();
     const thinking = addMsg('...', 'bot');
 
     try {
@@ -587,31 +754,54 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const data = await res.json();
       if (data.error) {
         thinking.textContent = 'Error: ' + data.error;
-        thinking.style.color = '#ff4455';
+        thinking.classList.add('text-danger');
+        thinking.dataset.text = 'Error: ' + data.error;
       } else {
         thinking.textContent = data.reply;
+        thinking.dataset.text = data.reply;
+        thinking.dataset.brain = data.brain || '';
         const badge = document.createElement('span');
         badge.textContent = ' (' + (data.brain || '') + ')';
-        badge.style.cssText = 'font-size:0.65rem;color:#333;margin-left:4px;';
+        badge.className = 'text-muted small ms-1';
         thinking.appendChild(badge);
         document.getElementById('brain-badge').textContent = data.brain || '';
       }
+      _saveChat();
     } catch (e) {
       thinking.textContent = 'Connection error — is the dashboard running?';
-      thinking.style.color = '#ff4455';
+      thinking.classList.add('text-danger');
     }
-
     input.disabled = false;
     document.getElementById('send-btn').disabled = false;
+    chatActive = false;  // allow auto-refresh again
     input.focus();
-    msgs.scrollTop = msgs.scrollHeight;
   }
 
   async function clearChat(e) {
     e.stopPropagation();
     await fetch('/api/chat/clear', {method:'POST'});
+    localStorage.removeItem(_CHAT_KEY);
     while (msgs.children.length > 1) msgs.removeChild(msgs.lastChild);
     document.getElementById('brain-badge').textContent = '';
+  }
+
+  // ── Task management ────────────────────────────────────────────────────────
+  async function updateTask(taskId, action) {
+    try {
+      const res = await fetch('/api/task/update', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({task_id: taskId, action: action}),
+      });
+      const data = await res.json();
+      if (data.success) {
+        location.reload();
+      } else {
+        alert('Error updating task: ' + (data.error || 'Unknown error'));
+      }
+    } catch (e) {
+      alert('Connection error: ' + e.message);
+    }
   }
 
   input.focus();
@@ -666,6 +856,40 @@ def api_chat_clear():
     return jsonify({"ok": True})
 
 
+@app.route("/api/task/update", methods=["POST"])
+def api_task_update():
+    """POST {"task_id": "...", "action": "start|review|done"} → {"success": true}"""
+    try:
+        from skills.agent_team_orchestrator import get_orchestrator
+        orchestrator = get_orchestrator()
+        
+        data = request.get_json(force=True)
+        task_id = data.get("task_id")
+        action = data.get("action")
+        
+        if not task_id or not action:
+            return jsonify({"success": False, "error": "Missing task_id or action"}), 400
+        
+        task = orchestrator.tasks.get(task_id)
+        if not task:
+            return jsonify({"success": False, "error": "Task not found"}), 404
+        
+        if action == "start":
+            task.start_task()
+        elif action == "review":
+            task.review_task()
+        elif action == "done":
+            task.complete_task()
+        else:
+            return jsonify({"success": False, "error": "Invalid action"}), 400
+        
+        orchestrator.save_tasks()
+        return jsonify({"success": True})
+    
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -681,6 +905,7 @@ def index():
     backtest   = get_backtest_summary()
     notes      = get_notes_summary()
     codereview = get_last_code_review()
+    orchestration = get_orchestration_tasks()
     claude_ok  = bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
     crypto_ok  = bool(os.getenv("CRYPTOCOM_API_KEY", "").strip())
     now        = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -691,6 +916,7 @@ def index():
         tasks=tasks, trades=trades, cache=cache,
         autotrade=autotrade, backtest=backtest,
         notes=notes, codereview=codereview,
+        orchestration=orchestration,
         claude_ok=claude_ok, crypto_ok=crypto_ok, now=now,
     )
 

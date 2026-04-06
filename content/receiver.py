@@ -1,4 +1,4 @@
-"""ClawBot v0.7 — Business AI Partner + Trading Bot
+"""ClawBot v0.8 — Business AI Partner + Trading Bot
 
 Just type anything to chat. Commands for structured tasks:
 
@@ -28,6 +28,10 @@ Just type anything to chat. Commands for structured tasks:
     /remind HH:MM text — set a daily reminder (UTC)
     /tasks             — list pending reminders
     /cancel <id>       — cancel a reminder
+
+  Multi-Agent Orchestration:
+    /orchestrate       — manage orchestrated tasks
+    /otasks            — list all tasks
 
   System:
     /status            — bot + Ollama health check
@@ -72,6 +76,15 @@ from core.brain import CLAWBOT_SYSTEM, ask_hybrid, classify_complexity, get_usag
 from core.conversation import add_message, clear_history, get_history
 from core import scheduler as sched
 from security.whitelist import is_authorized
+from skills.agent_team_orchestrator import get_orchestrator
+from skills.self_improving import (
+    append_correction,
+    append_memory,
+    get_file_preview,
+    get_status,
+    initialize_self_improving,
+    resolve_file_name,
+)
 
 logger = logging.getLogger("openclaw.receiver")
 
@@ -131,8 +144,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /save [text]        — save last chat or a custom note\n"
         "  /notes              — view all saved notes\n"
         "  /notes [topic]      — search notes\n\n"
+        "<b>🧠 Self-Improving:</b>\n"
+        "  /selfimprove init               — create ~/self-improving/ memory files\n"
+        "  /selfimprove status             — show memory and correction counts\n"
+        "  /selfimprove show memory|corrections|heartbeat|index\n"
+        "  /selfimprove log correction ... — log a correction entry\n"
+        "  /selfimprove log memory ...     — log a reusable lesson\n\n"
         "<b>⚙️ System:</b>\n"
-        "  /status  /brain  /weather [city]  /restart  /stop",
+        "  /status  /brain  /weather [city]  /restart  /stop\n\n"
+        "<b>🚀 Auto-Upgrade:</b>\n"
+        "  /upgrade           — dry run: preview what would be fixed\n"
+        "  /upgrade apply     — apply LLM fixes + auto-restart\n"
+        "  /upgrade review    — run code review then auto-fix",
         parse_mode="HTML",
     )
 
@@ -758,6 +781,96 @@ async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
 
+# ── /selfimprove ─────────────────────────────────────────────────────────────
+
+async def cmd_selfimprove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    args = [arg for arg in (context.args or []) if arg.strip()]
+    if not args:
+        await update.message.reply_text(
+            "Usage: /selfimprove <init|status|show|log> [args]\n"
+            "  /selfimprove init\n"
+            "  /selfimprove status\n"
+            "  /selfimprove show memory|corrections|heartbeat|index\n"
+            "  /selfimprove log correction|memory [text]",
+        )
+        return
+
+    command = args[0].lower()
+
+    try:
+        if command == "init":
+            summary = initialize_self_improving()
+            await update.message.reply_text(
+                "✅ <b>Self-Improving Initialized</b>\n\n"
+                f"Path: <code>{summary['path']}</code>\n"
+                f"Files: {', '.join(summary['files'])}\n"
+                f"Folders: {', '.join(summary['folders'])}",
+                parse_mode="HTML",
+            )
+            return
+
+        if command == "status":
+            status = get_status()
+            await update.message.reply_text(
+                "🧠 <b>Self-Improving Status</b>\n\n"
+                f"Path: <code>{status['path']}</code>\n"
+                f"Memory lines: <code>{status['memory_lines']}</code>\n"
+                f"Correction lines: <code>{status['corrections_lines']}</code>\n"
+                f"Projects: <code>{status['projects']}</code>\n"
+                f"Domains: <code>{status['domains']}</code>\n"
+                f"Archive notes: <code>{status['archive']}</code>\n"
+                f"Heartbeat file: <code>{'yes' if status['heartbeat_exists'] else 'no'}</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        if command == "show" and len(args) > 1:
+            filename = resolve_file_name(args[1])
+            preview = get_file_preview(filename)
+            await update.message.reply_text(
+                f"📄 Preview: {filename}\n\n{preview}"
+            )
+            return
+
+        if command == "log" and len(args) > 2:
+            target = args[1].lower()
+            text   = " ".join(args[2:]).strip()
+            if not text:
+                raise ValueError("No text provided for log entry.")
+
+            if target == "correction":
+                append_correction(text)
+                await update.message.reply_text(
+                    "✅ Logged correction entry to corrections.md.",
+                    parse_mode="HTML",
+                )
+                return
+
+            if target == "memory":
+                append_memory(text)
+                await update.message.reply_text(
+                    "✅ Logged memory entry to memory.md.",
+                    parse_mode="HTML",
+                )
+                return
+
+            await update.message.reply_text(
+                "Usage: /selfimprove log correction|memory [text]",
+            )
+            return
+
+        await update.message.reply_text(
+            "Usage: /selfimprove <init|status|show|log> [args]",
+        )
+    except FileNotFoundError as exc:
+        await update.message.reply_text(f"🚨 File error: {exc}")
+    except Exception as exc:
+        await update.message.reply_text(f"🚨 Self-improve failed: {exc}")
+
+
 # ── /help ─────────────────────────────────────────────────────────────────────
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -783,7 +896,13 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /remind HH:MM text  — set daily reminder\n"
         "  /tasks              — list reminders\n"
         "  /cancel [id]        — cancel reminder\n\n"
-        "<b>⚙️ System:</b>\n"
+        "<b>� Self-Improving:</b>\n"
+        "  /selfimprove init               — create ~/self-improving/ memory files\n"
+        "  /selfimprove status             — show memory and correction counts\n"
+        "  /selfimprove show memory|corrections|heartbeat|index\n"
+        "  /selfimprove log correction ... — log a correction entry\n"
+        "  /selfimprove log memory ...     — log a reusable lesson\n\n"
+        "<b>🤖 Multi-Agent Orchestration:</b>\n"
         "  /status             — system health\n"
         "  /brain              — AI usage stats\n"
         "  /weather [city]     — current weather\n"
@@ -956,6 +1075,217 @@ async def cmd_codereview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
 
 
+# ── /orchestrate ─────────────────────────────────────────────────────────────
+
+async def cmd_orchestrate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Create and manage orchestrated tasks."""
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    args = context.args
+    orchestrator = get_orchestrator()
+
+    if not args:
+        await update.message.reply_text(
+            "🤖 <b>Agent Team Orchestration</b>\n\n"
+            "Create and manage multi-agent tasks:\n\n"
+            "<code>/orchestrate create \"Task Title\" \"Description\"</code> — Create task\n"
+            "<code>/orchestrate assign task_id agent_name</code> — Assign to agent\n"
+            "<code>/orchestrate start task_id agent_name</code> — Start working\n"
+            "<code>/orchestrate review task_id agent_name \"feedback\"</code> — Review task\n"
+            "<code>/otasks</code> — List all tasks\n"
+            "<code>/otasks pending</code> — Show pending tasks",
+            parse_mode="HTML",
+        )
+        return
+
+    action = args[0].lower()
+
+    if action == "create" and len(args) >= 3:
+        title = args[1]
+        description = " ".join(args[2:])
+        task_id = orchestrator.create_task(title, description)
+        await update.message.reply_text(
+            f"✅ <b>Task Created</b>\n\n"
+            f"<b>ID:</b> <code>{task_id}</code>\n"
+            f"<b>Title:</b> {title}\n"
+            f"<b>Status:</b> inbox\n\n"
+            f"Use <code>/orchestrate assign {task_id} agent_name</code> to assign it.",
+            parse_mode="HTML",
+        )
+
+    elif action == "assign" and len(args) >= 3:
+        task_id = args[1]
+        agent_id = args[2]
+        if orchestrator.assign_task(task_id, agent_id):
+            await update.message.reply_text(
+                f"✅ <b>Task Assigned</b>\n\n"
+                f"Task <code>{task_id}</code> assigned to <code>{agent_id}</code>\n"
+                f"Status: assigned",
+                parse_mode="HTML",
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ <b>Assignment Failed</b>\n\n"
+                f"Could not assign task <code>{task_id}</code> to <code>{agent_id}</code>\n"
+                f"Check task exists and is in 'inbox' state.",
+                parse_mode="HTML",
+            )
+
+    elif action == "start" and len(args) >= 3:
+        task_id = args[1]
+        agent_id = args[2]
+        if orchestrator.start_task(task_id, agent_id):
+            await update.message.reply_text(
+                f"✅ <b>Task Started</b>\n\n"
+                f"Agent <code>{agent_id}</code> started working on task <code>{task_id}</code>\n"
+                f"Status: in_progress",
+                parse_mode="HTML",
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ <b>Start Failed</b>\n\n"
+                f"Could not start task <code>{task_id}</code> for agent <code>{agent_id}</code>",
+                parse_mode="HTML",
+            )
+
+    elif action == "review" and len(args) >= 4:
+        task_id = args[1]
+        reviewer_id = args[2]
+        approved = args[3].lower() in ["approve", "approved", "yes", "pass"]
+        feedback = " ".join(args[4:]) if len(args) > 4 else ""
+
+        if orchestrator.review_task(task_id, reviewer_id, approved, feedback):
+            status = "approved" if approved else "revision requested"
+            await update.message.reply_text(
+                f"✅ <b>Review Complete</b>\n\n"
+                f"Task <code>{task_id}</code> {status}\n"
+                f"Reviewer: <code>{reviewer_id}</code>\n"
+                f"Feedback: {feedback or 'None'}",
+                parse_mode="HTML",
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ <b>Review Failed</b>\n\n"
+                f"Could not review task <code>{task_id}</code>",
+                parse_mode="HTML",
+            )
+
+    else:
+        await update.message.reply_text(
+            "❓ <b>Unknown orchestration command</b>\n\n"
+            "Use <code>/orchestrate</code> for help.",
+            parse_mode="HTML",
+        )
+
+
+# ── /otasks ───────────────────────────────────────────────────────────────────
+
+async def cmd_otasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List orchestration tasks."""
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    orchestrator = get_orchestrator()
+    args = context.args
+
+    if args and args[0].lower() == "pending":
+        tasks = orchestrator.get_pending_tasks()
+        filter_desc = "pending"
+    else:
+        tasks = list(orchestrator.tasks.values())
+        filter_desc = "all"
+
+    if not tasks:
+        await update.message.reply_text(
+            f"📋 <b>No {filter_desc} tasks</b>\n\n"
+            "Use <code>/orchestrate create \"Title\" \"Description\"</code> to create one.",
+            parse_mode="HTML",
+        )
+        return
+
+    # Sort by creation time, newest first
+    tasks.sort(key=lambda t: t.created_at, reverse=True)
+
+    msg = f"📋 <b>{filter_desc.title()} Tasks ({len(tasks)})</b>\n\n"
+    for task in tasks[:10]:  # Limit to 10 most recent
+        status_emoji = {
+            "inbox": "📥",
+            "assigned": "👤",
+            "in_progress": "⚡",
+            "review": "🔍",
+            "revision": "🔄",
+            "done": "✅"
+        }.get(task.state, "❓")
+
+        assigned = f" → {task.assigned_to}" if task.assigned_to else ""
+        msg += f"{status_emoji} <code>{task.id}</code>{assigned}\n"
+        msg += f"   <b>{task.title}</b>\n"
+        msg += f"   {task.state.replace('_', ' ')} • {task.created_at[:16]}\n\n"
+
+    if len(tasks) > 10:
+        msg += f"<i>Showing 10 of {len(tasks)} tasks. Use filters for more.</i>"
+
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+
+# ── /upgrade ──────────────────────────────────────────────────────────────────
+
+async def cmd_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /upgrade          — dry run: show what would be fixed
+    /upgrade apply    — generate + apply fixes from latest code review, then restart
+    /upgrade review   — trigger fresh code review then auto-fix
+    """
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    arg = context.args[0].lower() if context.args else ""
+    chat_id = update.effective_chat.id
+
+    if arg == "review":
+        # Run code review first, then auto-upgrade
+        await update.message.reply_text(
+            "🔍 <b>Running code review first...</b>",
+            parse_mode="HTML",
+        )
+        try:
+            from agents.code_review_agent import run_code_review
+            await run_code_review(update.get_bot(), chat_id)
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Code review failed: {e}", parse_mode="HTML")
+            return
+
+    dry_run = arg != "apply"
+    mode = "DRY RUN" if dry_run else "LIVE"
+    await update.message.reply_text(
+        f"🤖 <b>Auto-Upgrade [{mode}]</b>\n<i>Analyzing latest code review...</i>",
+        parse_mode="HTML",
+    )
+
+    try:
+        from agents.auto_upgrade import run_auto_upgrade, format_upgrade_message
+        summary = run_auto_upgrade(dry_run=dry_run)
+        msg = format_upgrade_message(summary)
+        await update.message.reply_text(msg, parse_mode="HTML")
+
+        # Auto-restart after live fixes
+        if not dry_run and summary.get("fixes_applied", 0) > 0:
+            await update.message.reply_text(
+                "🔄 <b>Restarting to apply fixes...</b>",
+                parse_mode="HTML",
+            )
+            import sys
+            python = sys.executable
+            os.execv(python, [python, "-m", "content.receiver"])
+
+    except Exception as exc:
+        await update.message.reply_text(
+            f"❌ <b>Upgrade failed:</b> <code>{exc}</code>",
+            parse_mode="HTML",
+        )
+
+
 # ── /restart ──────────────────────────────────────────────────────────────────
 
 async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -997,6 +1327,29 @@ def main() -> None:
 
     _app = Application.builder().token(token).build()
 
+    # Wire up automatic scheduled agents (news + code review)
+    # These run in the background — news every 15 min, code review every Sunday 09:00 UTC
+    owner_chat_id = int(os.getenv("ALLOWED_CHAT_ID", "0").split(",")[0].strip() or "0")
+    if owner_chat_id:
+        _raw_scheduler = sched.get_scheduler()
+        if _raw_scheduler:
+            try:
+                from agents.news_filter_agent import check_and_alert as _news_alert
+                _raw_scheduler.add_job(
+                    _news_alert, "interval", minutes=15,
+                    id="news_filter", replace_existing=True,
+                    kwargs={"bot": _app.bot, "chat_id": owner_chat_id},
+                )
+                print("✅ News filter job registered (every 15 min)")
+            except Exception as _e:
+                print(f"⚠️  News alert job not started: {_e}")
+            try:
+                from agents.code_review_agent import schedule_weekly_review
+                schedule_weekly_review(_raw_scheduler, _app.bot, owner_chat_id)
+                print("✅ Weekly code review job registered (Sunday 09:00 UTC)")
+            except Exception as _e:
+                print(f"⚠️  Code review job not started: {_e}")
+
     # Commands
     _app.add_handler(CommandHandler("start",    cmd_start))
     _app.add_handler(CommandHandler("ask",      cmd_ask))
@@ -1022,6 +1375,10 @@ def main() -> None:
     _app.add_handler(CommandHandler("report",     cmd_report))
     _app.add_handler(CommandHandler("backtest",   cmd_backtest))
     _app.add_handler(CommandHandler("codereview", cmd_codereview))
+    _app.add_handler(CommandHandler("orchestrate", cmd_orchestrate))
+    _app.add_handler(CommandHandler("otasks",     cmd_otasks))
+    _app.add_handler(CommandHandler("selfimprove", cmd_selfimprove))
+    _app.add_handler(CommandHandler("upgrade",    cmd_upgrade))
     _app.add_handler(CommandHandler("restart",    cmd_restart))
     _app.add_handler(CommandHandler("stop",       cmd_stop))
 

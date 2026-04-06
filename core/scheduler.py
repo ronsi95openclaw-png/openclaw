@@ -43,6 +43,11 @@ def start_scheduler() -> AsyncIOScheduler:
     return _scheduler
 
 
+def get_scheduler() -> Optional[AsyncIOScheduler]:
+    """Return the running scheduler instance (for external job registration)."""
+    return _scheduler if _scheduler and _scheduler.running else None
+
+
 def _load_tasks() -> List[dict]:
     if _TASKS_FILE.exists():
         try:
