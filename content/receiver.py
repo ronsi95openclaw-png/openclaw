@@ -1437,7 +1437,6 @@ def main() -> None:
     _app.add_handler(CommandHandler("status",   cmd_status))
     _app.add_handler(CommandHandler("brain",    cmd_brain))
     _app.add_handler(CommandHandler("weather",  cmd_weather))
-    _app.add_handler(CommandHandler("help",     cmd_help))
     _app.add_handler(CommandHandler("autotrade",  cmd_autotrade))
     _app.add_handler(CommandHandler("save",       cmd_save))
     _app.add_handler(CommandHandler("notes",      cmd_notes))
@@ -1455,7 +1454,51 @@ def main() -> None:
     # Free-text conversation (must be last — catches all non-command text)
     _app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("🦾 ClawBot v0.6 running.")
+    # ── Set Telegram command menu (visible when user taps the ☰ menu button) ──
+    from telegram import BotCommand
+    _commands = [
+        BotCommand("start",       "Show all commands"),
+        BotCommand("help",        "Show all commands"),
+        BotCommand("ask",         "Ask ClawBot anything"),
+        BotCommand("market",      "Live crypto prices + AI analysis"),
+        BotCommand("scan",        "RSI+MACD signal scan [1h|4h|1d]"),
+        BotCommand("dca",         "DCA entry analysis [coin]"),
+        BotCommand("autotrade",   "Auto-trading [on|off|status|now]"),
+        BotCommand("news",        "Check macro news / trading block"),
+        BotCommand("report",      "Trade performance report"),
+        BotCommand("backtest",    "Backtest results [run]"),
+        BotCommand("remind",      "Set reminder HH:MM text"),
+        BotCommand("tasks",       "List pending reminders"),
+        BotCommand("save",        "Save a note to knowledge base"),
+        BotCommand("notes",       "View / search saved notes"),
+        BotCommand("run",         "Run shell command on this PC"),
+        BotCommand("py",          "Run Python code on this PC"),
+        BotCommand("status",      "System status check"),
+        BotCommand("brain",       "AI usage stats today"),
+        BotCommand("codereview",  "AI code self-review"),
+        BotCommand("upgrade",     "Auto-fix bot [dry run | apply | review]"),
+        BotCommand("restart",     "Restart ClawBot"),
+        BotCommand("stop",        "Graceful shutdown"),
+    ]
+
+    async def _post_init(application):
+        await application.bot.set_my_commands(_commands)
+        # Send "back online" message to owner on every startup
+        owner_id = int(os.getenv("ALLOWED_CHAT_ID", "0").split(",")[0].strip() or "0")
+        if owner_id:
+            try:
+                await application.bot.send_message(
+                    owner_id,
+                    "🟢 <b>ClawBot v0.8 is back online!</b>\n"
+                    "<i>All systems go. Command menu updated.</i>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+    _app.post_init = _post_init
+
+    print("🦾 ClawBot v0.8 running.")
     print("   Chat freely or use commands. /help for the full list.")
     _app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
