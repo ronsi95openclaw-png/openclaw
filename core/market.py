@@ -69,6 +69,11 @@ def get_market_summary() -> str:
     prompt = _ANALYSIS_PROMPT.format(price_block=price_block)
     analysis, brain = ask_hybrid(prompt, force="simple")   # use Ollama — quick task
 
+    # Strip Markdown bold/italic that Ollama sometimes emits (**text**, *text*)
+    import re
+    analysis = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', analysis)
+    analysis = re.sub(r'\*(.+?)\*', r'<i>\1</i>', analysis)
+
     lines = [
         "📊 <b>Market Update</b>",
         "",

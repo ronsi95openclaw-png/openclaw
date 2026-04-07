@@ -88,6 +88,37 @@ from skills.self_improving import (
 
 logger = logging.getLogger("openclaw.receiver")
 
+
+# ── Telegram helpers ──────────────────────────────────────────────────────────
+
+import re as _re
+
+def _safe_html(text: str) -> str:
+    """Escape angle-bracket sequences that aren't valid Telegram HTML tags.
+
+    Telegram supports only: b, i, u, s, code, pre, a, em, strong, tg-spoiler.
+    Any other <tag> (e.g. <20%>, <br>, <list>) causes a BadRequest parse error.
+    """
+    VALID = r'(?:/?(?:b|i|u|s|em|strong|code|pre|a|tg-spoiler)(?:\s[^>]*)?)|\!--.*?--'
+    def _fix(m):
+        inner = m.group(0)[1:-1]  # strip < >
+        if _re.fullmatch(VALID, inner.strip(), _re.IGNORECASE):
+            return m.group(0)   # valid tag — keep as-is
+        return m.group(0).replace('<', '&lt;').replace('>', '&gt;')
+    return _re.sub(r'<[^>]+>', _fix, text)
+
+
+async def _safe_reply(msg, text: str, parse_mode: str = "HTML") -> None:
+    """Send a Telegram reply; fall back to plain text if HTML parse fails."""
+    try:
+        await msg.reply_text(_safe_html(text) if parse_mode == "HTML" else text,
+                             parse_mode=parse_mode)
+    except Exception:
+        try:
+            await msg.reply_text(text)   # plain text fallback
+        except Exception:
+            await msg.reply_text("⚠️ Response too long or contains unsupported formatting.")
+
 _app: Optional[Application] = None
 
 
@@ -371,9 +402,11 @@ async def cmd_research(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         response, brain = ask_hybrid(prompt, system=CLAWBOT_SYSTEM, history=history, force="complex")
         add_message(chat_id, "assistant", response)
-        await thinking_msg.edit_text(
-            f"🔬 <b>Research: {topic[:40]}</b>\n\n{response}", parse_mode="HTML"
-        )
+        full_text = f"🔬 <b>Research: {topic[:40]}</b>\n\n{_safe_html(response)}"
+        try:
+            await thinking_msg.edit_text(full_text, parse_mode="HTML")
+        except Exception:
+            await thinking_msg.edit_text(f"🔬 Research: {topic[:40]}\n\n{response}")
     except Exception as exc:
         await thinking_msg.edit_text(f"🚨 Error: <code>{exc}</code>", parse_mode="HTML")
 
@@ -446,7 +479,8 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     else:
                         icon = "⚪"
                         warn = ""
-                    lines.append(f"{icon} {coin}: RSI <code>{rsi:.1f}</code> {trend}{warn}")
+                    macd_str = f"MACD <code>{hist:+.1f}</code> {trend}"
+                    lines.append(f"{icon} {coin}: RSI <code>{rsi:.1f}</code> | {macd_str}{warn}")
                 except Exception:
                     lines.append(f"⚪ {coin}: insufficient data")
             lines.append("\n<i>Waiting for RSI + MACD crossover confirmation to signal.</i>")
@@ -645,18 +679,28 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(update.effective_chat.id):
         return
-    reminders = sched.get_reminders(update.effective_chat.id)
-    if not reminders:
-        await update.message.reply_text("📋 No pending reminders.\n\n/remind HH:MM text to add one.")
-        return
+    try:
+        reminders = sched.get_reminders(update.effective_chat.id)
+        if not reminders:
+            await update.message.reply_text(
+                "📋 No pending reminders.\n\n<i>/remind HH:MM text</i> to add one.",
+                parse_mode="HTML",
+            )
+            return
 
-    lines = ["📋 <b>Pending Reminders:</b>\n"]
-    for r in reminders:
-        lines.append(
-            f"⏰ <code>{r['time']} UTC</code> — {r['text']}\n"
-            f"   <i>/cancel <code>{r['id']}</code></i>"
+        lines = ["📋 <b>Pending Reminders:</b>\n"]
+        for r in reminders:
+            short_id = r['id'].split('_')[-1][:8]   # friendlier ID suffix
+            lines.append(
+                f"⏰ <code>{r['time']} UTC</code> — {r['text']}\n"
+                f"   <i>/cancel <code>{r['id']}</code></i>"
+            )
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    except Exception as exc:
+        logger.error(f"cmd_tasks error: {exc}", exc_info=True)
+        await update.message.reply_text(
+            f"❌ Error loading reminders: <code>{exc}</code>", parse_mode="HTML"
         )
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
 # ── /cancel ───────────────────────────────────────────────────────────────────
@@ -1244,17 +1288,23 @@ async def cmd_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     chat_id = update.effective_chat.id
 
     if arg == "review":
-        # Run code review first, then auto-upgrade
+        # Fire-and-forget: run code review in background so bot stays responsive
         await update.message.reply_text(
-            "🔍 <b>Running code review first...</b>",
+            "🔍 <b>Running code review in background...</b>\n"
+            "<i>Bot stays responsive. You'll get a message when done.</i>",
             parse_mode="HTML",
         )
-        try:
-            from agents.code_review_agent import run_code_review
-            await run_code_review(update.get_bot(), chat_id)
-        except Exception as e:
-            await update.message.reply_text(f"⚠️ Code review failed: {e}", parse_mode="HTML")
-            return
+
+        async def _review_then_upgrade():
+            try:
+                from agents.code_review_agent import run_code_review
+                await run_code_review(update.get_bot(), chat_id)
+            except Exception as e:
+                await update.get_bot().send_message(
+                    chat_id, f"⚠️ Code review failed: <code>{e}</code>", parse_mode="HTML"
+                )
+        asyncio.create_task(_review_then_upgrade())
+        return   # return immediately — bot stays responsive
 
     dry_run = arg != "apply"
     mode = "DRY RUN" if dry_run else "LIVE"
@@ -1289,7 +1339,7 @@ async def cmd_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 # ── /restart ──────────────────────────────────────────────────────────────────
 
 async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Restart the bot process in-place."""
+    """Restart the bot process in-place, killing any duplicate instances first."""
     if not is_authorized(update.effective_chat.id):
         return
     await update.message.reply_text(
@@ -1297,6 +1347,25 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         parse_mode="HTML",
     )
     import sys
+    my_pid = os.getpid()
+
+    # Kill ALL other python processes (duplicate bot instances) via PowerShell
+    try:
+        subprocess.run(
+            [
+                "powershell.exe", "-Command",
+                f"Get-Process python -ErrorAction SilentlyContinue | "
+                f"Where-Object {{$_.Id -ne {my_pid}}} | Stop-Process -Force",
+            ],
+            capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass
+
+    # Small delay so Telegram sees us disconnect before reconnecting
+    import time
+    time.sleep(2)
+
     python = sys.executable
     os.execv(python, [python, "-m", "content.receiver"])
 
@@ -1352,6 +1421,7 @@ def main() -> None:
 
     # Commands
     _app.add_handler(CommandHandler("start",    cmd_start))
+    _app.add_handler(CommandHandler("help",     cmd_help))   # alias — was referenced but not registered
     _app.add_handler(CommandHandler("ask",      cmd_ask))
     _app.add_handler(CommandHandler("plan",     cmd_plan))
     _app.add_handler(CommandHandler("research", cmd_research))
