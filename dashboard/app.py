@@ -377,6 +377,130 @@ def execute_dashboard_command(command: str) -> str:
             f"📊 Timeframe: <code>{cfg.get('timeframe', '4h')}</code>"
         )
 
+    if cmd == "/lifeos":
+        from agents.lifeos_agent import get_dashboard_data
+        try:
+            data = get_dashboard_data()
+        except Exception as exc:
+            return f"LifeOS not set up yet. Run /lifesetup first. ({exc})"
+        f = data["fitness"]
+        fin = data["finance"]
+        h = data["habits"]
+        lines = [
+            "<b>LifeOS Dashboard</b>\n",
+            "<b>Fitness</b>",
+            f"  Weight: {f['weight']} kg  \u2192  Goal: {f['goal_weight']} kg",
+            f"  Workouts this week: {f['workouts']}",
+            "",
+            "<b>Finance</b>",
+            f"  Monthly income: ${fin['income']}",
+            f"  Debt: ${fin['debt']}",
+            f"  Today's expenses: ${float(fin['expenses']):.2f}",
+            "",
+            "<b>Habits</b>",
+            f"  Score: {h['score']} pts  |  Streak: {h['streak']} days",
+            f"  Completion rate (7d): {h['completionRate']}%",
+            "",
+            f"Coach mode: {data['profile']['coach_mode']}",
+            "",
+            "/morning \u2014 start morning check-in",
+            "/evening \u2014 start evening check-in",
+            "/score   \u2014 gamification leaderboard",
+        ]
+        return "\n".join(lines)
+
+    if cmd == "/score":
+        from agents.lifeos_agent import get_scores
+        try:
+            s = get_scores()
+        except Exception as exc:
+            return f"LifeOS not set up yet. ({exc})"
+        streak_bar = "\U0001f525" * min(s["streak"], 14)
+        lines = [
+            "<b>LifeOS Score</b>\n",
+            f"Total points:  <b>{s['total']}</b>",
+            f"Current streak: <b>{s['streak']} days</b>  {streak_bar}",
+            "",
+            "<b>Points table</b>",
+            "  +10  workout completed",
+            "  +10  diet adherence",
+            "  +15  deep work session",
+            "  +5   expense tracked",
+            "  -10  missed workout",
+            "  -10  overspending",
+            "  -15  skipped priorities",
+        ]
+        return "\n".join(lines)
+
+    if cmd == "/dash":
+        from agents.lifeos_agent import get_dashboard_data
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        price_lines = []
+        try:
+            prices = get_prices()
+            for coin, p in list(prices.items())[:4]:
+                price_lines.append(f"  {coin}: ${p['price']:,.0f}")
+        except Exception:
+            price_lines.append("  (prices unavailable)")
+
+        portfolio_line = ""
+        try:
+            from trading.exchange import get_account_balance, get_portfolio_value_usd
+            bal = get_account_balance()
+            total = get_portfolio_value_usd(bal)
+            portfolio_line = f"Portfolio: ~${total:,.2f}"
+        except Exception:
+            portfolio_line = "Portfolio: (unavailable)"
+
+        life_lines = []
+        try:
+            life = get_dashboard_data()
+            h = life["habits"]
+            f = life["fitness"]
+            fin = life["finance"]
+            streak_bar = "\U0001f525" * min(h["streak"], 7)
+            life_lines = [
+                f"  Score: {h['score']} pts  |  Streak: {h['streak']}d {streak_bar}",
+                f"  Weight: {f['weight']} kg \u2192 {f['goal_weight']} kg",
+                f"  Today spend: ${float(fin['expenses']):.2f}",
+                f"  Workouts (7d): {f['workouts']}",
+            ]
+        except Exception:
+            life_lines = ["  (LifeOS not set up \u2014 run /lifesetup)"]
+
+        autotrade_line = ""
+        try:
+            at = get_autotrade_status()
+            autotrade_line = f"Autotrade: {'ON \u2705' if at.get('enabled') else 'OFF'}"
+        except Exception:
+            autotrade_line = "Autotrade: (unavailable)"
+
+        brain_line = ""
+        try:
+            from core.brain import get_usage_today
+            usage = get_usage_today()
+            brain_line = f"Brain: {usage.get('total_calls', 0)} calls today"
+        except Exception:
+            brain_line = ""
+
+        lines = [
+            f"<b>ClawBot Dashboard</b> \u2014 {ts}\n",
+            "<b>Markets</b>",
+        ] + price_lines + [
+            "",
+            portfolio_line,
+            autotrade_line,
+            "",
+            "<b>LifeOS</b>",
+        ] + life_lines + [
+            "",
+            brain_line,
+            "",
+            "/morning /evening /score /lifeos",
+        ]
+        return "\n".join(lines)
+
     raise ValueError(f"Unknown dashboard command: {cmd}")
 
 
@@ -1370,6 +1494,8 @@ def api_execute_command():
     try:
         output = execute_dashboard_command(command)
         return jsonify({"success": True, "output": output})
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
 
@@ -1443,13 +1569,24 @@ def api_chat_agent():
         if not message:
             return jsonify({"error": "Empty message"}), 400
 
-        system = _AGENT_SYSTEMS.get(agent, _AGENT_SYSTEMS["JARVIS"])
+        if agent not in _AGENT_SYSTEMS:
+            return jsonify({"error": f"Unknown agent: {agent}", "valid_agents": list(_AGENT_SYSTEMS.keys())}), 400
+
+        system = _AGENT_SYSTEMS[agent]
         history = _agent_histories.get(agent, [])
 
         # ── Agent-specific context injection ─────────────────────────────────
         context_prefix = ""
 
-        if agent == "SCOUT":
+        if agent == "JARVIS":
+            try:
+                prices = get_prices()
+                price_str = " | ".join(f"{c}=${d['price']:,.0f}({d['sign']}{d['change']}%)" for c, d in prices.items()) if prices else "unavailable"
+                context_prefix = f"[LIVE PRICES as of now] {price_str}. "
+            except Exception:
+                context_prefix = ""
+
+        elif agent == "SCOUT":
             scout_state = _read_json(DATA_DIR / "job_scout_state.json", {})
             jobs = scout_state.get("pending_jobs", [])
             applied = scout_state.get("applied", [])
@@ -1555,14 +1692,15 @@ def api_task_update():
             return jsonify({"success": False, "error": "Task not found"}), 404
         
         if action == "start":
-            task.start_task()
+            task.state = "in_progress"
         elif action == "review":
-            task.review_task()
+            task.state = "review"
         elif action == "done":
-            task.complete_task()
+            task.state = "done"
         else:
             return jsonify({"success": False, "error": "Invalid action"}), 400
-        
+
+        task.updated_at = datetime.now(timezone.utc).isoformat()
         orchestrator.save_tasks()
         return jsonify({"success": True})
     
@@ -1625,8 +1763,11 @@ def api_taskboard_update():
 def api_taskboard_delete():
     data = request.json or {}
     task_id = data.get("id")
-    tasks = [t for t in _get_taskboard() if t["id"] != task_id]
-    _save_taskboard(tasks)
+    existing = _get_taskboard()
+    filtered = [t for t in existing if t["id"] != task_id]
+    if len(filtered) == len(existing):
+        return jsonify({"ok": False, "error": "Task not found"}), 404
+    _save_taskboard(filtered)
     return jsonify({"ok": True})
 
 
@@ -2196,7 +2337,12 @@ document.getElementById('new-agent-modal').addEventListener('click', function(e)
 
 @app.route("/api/team")
 def api_team():
-    return jsonify(_read_json(DATA_DIR / "team.json", {}))
+    team_data = _read_json(DATA_DIR / "team.json", None)
+    if team_data is not None:
+        return jsonify(team_data)
+    # Fallback: build from live agent status data
+    agents = _get_agent_status()
+    return jsonify({"agents": agents, "lead": {}, "departments": []})
 
 
 @app.route("/api/agent/create", methods=["POST"])
@@ -2235,7 +2381,26 @@ def api_agent_create():
 
 @app.route("/team")
 def team():
-    data        = _read_json(DATA_DIR / "team.json", {})
+    data = _read_json(DATA_DIR / "team.json", None)
+    if data is None:
+        # Build default team structure from known agents
+        _DEFAULT_AGENTS = [
+            {"id": "P1", "name": "JARVIS",   "emoji": "\U0001f9e0", "status": "active", "roles": ["Core Brain", "LLM Routing"],         "tasks_completed": 0, "color": "#00ff88", "border": "#00ff88"},
+            {"id": "P2", "name": "SCOUT",    "emoji": "\U0001f575",  "status": "active", "roles": ["Job Hunting", "Platform Search"],    "tasks_completed": 0, "color": "#4499ff", "border": "#4499ff"},
+            {"id": "P3", "name": "WATCHDOG", "emoji": "\U0001f6e1",  "status": "active", "roles": ["AutoTrade", "RSI+MACD Signals"],     "tasks_completed": 0, "color": "#ffaa00", "border": "#ffaa00"},
+            {"id": "P4", "name": "CODEX",    "emoji": "\U0001f4bb",  "status": "active", "roles": ["Code Review", "Auto-Upgrade"],       "tasks_completed": 0, "color": "#aa88ff", "border": "#aa88ff"},
+            {"id": "P5", "name": "CLIPPER",  "emoji": "\u2702",      "status": "active", "roles": ["CashClaw Applier", "HumanVoice"],    "tasks_completed": 0, "color": "#ff88aa", "border": "#ff88aa"},
+            {"id": "P6", "name": "HAWK",     "emoji": "\U0001f985",  "status": "active", "roles": ["Market Intel", "Price Tracking"],   "tasks_completed": 0, "color": "#ff6600", "border": "#ff6600"},
+        ]
+        data = {
+            "lead": {"id": "P0", "name": "ClawBot", "emoji": "\U0001f9a1", "status": "active", "roles": ["Orchestrator", "Telegram Interface"], "color": "#00ff88"},
+            "agents": _DEFAULT_AGENTS,
+            "departments": [
+                {"name": "Trading",  "agents": ["JARVIS", "WATCHDOG", "HAWK"]},
+                {"name": "Income",   "agents": ["SCOUT", "CLIPPER"]},
+                {"name": "DevOps",   "agents": ["CODEX"]},
+            ],
+        }
     lead        = data.get("lead", {})
     agents      = data.get("agents", [])
     departments = data.get("departments", [])

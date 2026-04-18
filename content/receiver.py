@@ -118,6 +118,16 @@ from agents.lifeos_checkin import (
     start_morning_checkin,
 )
 
+_LOG_DIR = Path(__file__).parent.parent / "data" / "logs"
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[
+        logging.FileHandler(_LOG_DIR / "bot.log", encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
 logger = logging.getLogger("openclaw.receiver")
 
 
@@ -1053,10 +1063,12 @@ async def cmd_dash(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # ── Market prices ──────────────────────────────────────────────────────
     price_lines = []
     try:
-        from core.market_data import get_prices
-        prices = get_prices()
-        for coin, p in list(prices.items())[:4]:
-            price_lines.append(f"  {coin}: ${p:,.0f}")
+        from core.market import _fetch_prices
+        raw = _fetch_prices()
+        labels = {"bitcoin": "BTC", "ethereum": "ETH", "solana": "SOL"}
+        prices = {labels[k]: raw[k]["usd"] for k in labels if k in raw}
+        for coin, price in list(prices.items())[:4]:
+            price_lines.append(f"  {coin}: ${price:,.0f}")
     except Exception:
         price_lines.append("  (prices unavailable)")
 
@@ -1100,7 +1112,10 @@ async def cmd_dash(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     brain_line = ""
     try:
         usage = get_usage_today()
-        brain_line = f"Brain: {usage.get('total_calls', 0)} calls today"
+        ollama = usage.get('ollama_calls', 0)
+        claude = usage.get('claude_calls', 0)
+        cached = usage.get('cache_hits', 0)
+        brain_line = f"Brain: {ollama} Ollama / {claude} Claude / {cached} cached"
     except Exception:
         brain_line = ""
 
