@@ -13,19 +13,43 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
+
+# Ensure project root is in path for absolute imports
+ROOT = Path(__file__).parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv
 from flask import Flask, render_template_string, request, jsonify
 
-ROOT     = Path(__file__).parent.parent
-DATA_DIR = ROOT / "data"
+from dashboard.system_monitor import SystemMonitor
 
-sys.path.insert(0, str(ROOT))
 
 load_dotenv(ROOT / ".env", override=True)
 
 app = Flask(__name__)
 _price_cache: dict = {"ts": 0, "data": {}}
+DATA_DIR = ROOT / "data"
+
+
+# Initialize system monitor (will start health loop on first request)
+_system_monitor: Optional[SystemMonitor] = None
+
+def _get_monitor() -> SystemMonitor:
+    global _system_monitor
+    if _system_monitor is None:
+        _system_monitor = SystemMonitor(
+            app=app,
+            execute_command=execute_dashboard_command,
+            get_ollama_status=get_ollama_status,
+            get_clawbot_status=get_clawbot_status,
+            get_autotrade_status=get_autotrade_status,
+            get_scout_status=lambda: __import__("agents.job_scout", fromlist=["get_scout_status"]).get_scout_status(),
+        )
+        _system_monitor.start()
+    return _system_monitor
+
 
 # ── Security headers ──────────────────────────────────────────────────────────
 
@@ -236,6 +260,124 @@ def get_ollama_status() -> dict:
         }
     except Exception as exc:
         return {"online": False, "models": [], "active": "offline", "cfg_missing": False, "error": str(exc)[:60]}
+
+
+def execute_dashboard_command(command: str) -> str:
+    cmd = command.strip()
+    if not cmd.startswith("/"):
+        cmd = "/" + cmd
+
+    if cmd.startswith("/scan"):
+        parts = cmd.split()
+        timeframe = parts[1] if len(parts) > 1 else "4h"
+        if timeframe not in {"1h", "4h", "1d"}:
+            timeframe = "4h"
+        from trading.exchange import fetch_all_closes
+        from trading.strategy import RSIMACDStrategy, calculate_rsi, calculate_macd
+
+        strategy = RSIMACDStrategy()
+        candle_data = fetch_all_closes(strategy.config.coins, timeframe=timeframe, count=100)
+        signals = strategy.scan_all(candle_data)
+        if not signals:
+            lines = [f"📊 Market Scan — {timeframe} — no signals\n"]
+            for coin, closes in candle_data.items():
+                try:
+                    rsi = calculate_rsi(closes)
+                    _, _, hist = calculate_macd(closes)
+                    trend = "↑" if hist > 0 else "↓"
+                    icon = "🔴" if rsi >= 68 else "🟢" if rsi <= 32 else "⚪"
+                    warn = "  ⚠️ near overbought" if rsi >= 68 else "  ⚠️ near oversold" if rsi <= 32 else ""
+                    macd_str = f"MACD <code>{hist:+.1f}</code> {trend}"
+                    lines.append(f"{icon} {coin}: RSI <code>{rsi:.1f}</code> | {macd_str}{warn}")
+                except Exception:
+                    lines.append(f"⚪ {coin}: insufficient data")
+            lines.append("\n<i>Waiting for RSI + MACD crossover confirmation to signal.</i>")
+            return "\n".join(lines)
+        parts = [f"🔔 <b>Scan — {timeframe} — {len(signals)} signal(s)</b>\n"]
+        for s in signals:
+            parts.append(s.to_telegram_message())
+            parts.append("")
+        parts.append("<i>⚠️ Analysis only. No orders placed.</i>")
+        return "\n".join(parts)
+
+    if cmd == "/market":
+        from core.market import get_market_summary
+        return get_market_summary()
+
+    if cmd == "/fng":
+        import requests as _req
+        r = _req.get("https://api.alternative.me/fng/?limit=1", timeout=8)
+        d = r.json()["data"][0]
+        val = int(d["value"])
+        label = d["value_classification"]
+        bar = "█" * (val // 10) + "░" * (10 - val // 10)
+        emoji = "😱" if val < 25 else "😨" if val < 45 else "😐" if val < 55 else "😄" if val < 75 else "🤑"
+        return (
+            f"{emoji} <b>Fear & Greed Index</b>\n"
+            f"<code>{bar}</code>\n"
+            f"<b>{val}/100</b> — {label}\n"
+            f"<i>via alternative.me</i>"
+        )
+
+    if cmd == "/status":
+        ollama = get_ollama_status()
+        claude_status = "configured ✅" if os.getenv("ANTHROPIC_API_KEY", "").strip() else "not set ⚠️"
+        crypto_status = "configured ✅" if os.getenv("CRYPTOCOM_API_KEY", "").strip() else "not set ⚠️"
+        bot = get_clawbot_status()
+        return (
+            f"🦾 <b>ClawBot Status</b>\n\n"
+            f"🧠 Ollama: {ollama.get('active', 'offline')} ({'online' if ollama.get('online') else 'offline'})\n"
+            f"⚡ Claude API: {claude_status}\n"
+            f"📈 Crypto.com: {crypto_status}\n"
+            f"🔌 Bot running: {'yes' if bot.get('running') else 'no'}\n"
+            f"⏱ Last seen: {bot.get('last_seen', 'never')}"
+        )
+
+    if cmd == "/cashclaw":
+        from agents.job_scout import get_scout_status, format_scout_status
+        from agents.cashclaw_applier import get_applier_status, format_applier_status
+        scout = get_scout_status()
+        applier = get_applier_status()
+        return (
+            "🦞 <b>CashClaw Status</b>\n\n"
+            f"🔍 <b>Scout</b>\n{format_scout_status(scout)}\n\n"
+            f"📝 <b>Applier</b>\n{format_applier_status(applier)}\n\n"
+            "<i>Use /scout run, /approve_job N, /apply_job N, /send_apply N</i>"
+        )
+
+    if cmd.startswith("/scout"):
+        parts = cmd.split()
+        if len(parts) > 1 and parts[1].lower() == "run":
+            from agents.job_scout import run_job_scout
+            return run_job_scout(bot=None, chat_id=0)
+        from agents.job_scout import get_scout_status, format_scout_status
+        return format_scout_status(get_scout_status())
+
+    if cmd.startswith("/autotrade"):
+        parts = cmd.split()
+        arg = parts[1].lower() if len(parts) > 1 else ""
+        from core.scheduler import enable_autotrade, disable_autotrade, get_autotrade_status
+        if arg == "on":
+            cfg = enable_autotrade(0, scan_time="08:00", timeframe="4h")
+            return (
+                f"🤖 <b>Auto-Trade ENABLED</b>\n\n"
+                f"⏰ Daily scan: <code>{cfg['scan_time']} UTC</code>\n"
+                f"📊 Timeframe: <code>{cfg['timeframe']}</code>\n"
+                f"🎯 Executes: HIGH confidence RSI+MACD signals only\n"
+                f"💰 Risk: 1.5% of portfolio per trade"
+            )
+        if arg == "off":
+            disable_autotrade()
+            return "🤖 <b>Auto-Trade DISABLED</b>\n\nNo more automatic trades. Use /autotrade on to re-enable."
+        cfg = get_autotrade_status()
+        status = "ENABLED ✅" if cfg.get("enabled") else "DISABLED ❌"
+        return (
+            f"🤖 <b>Auto-Trade Status: {status}</b>\n\n"
+            f"⏰ Scan time: <code>{cfg.get('scan_time', '08:00')} UTC</code>\n"
+            f"📊 Timeframe: <code>{cfg.get('timeframe', '4h')}</code>"
+        )
+
+    raise ValueError(f"Unknown dashboard command: {cmd}")
 
 
 def get_clawbot_status() -> dict:
@@ -641,41 +783,30 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     transform: scale(0.97);
   }
   @media(max-width:560px){
-    .chat-panel{
-      width:100%;right:0;left:0;bottom:0;
-      border-left:none;border-right:none;
-      /* Taller chat on mobile */
-    }
+    .chat-panel{width:100%;right:0;left:0;bottom:0;border-left:none;border-right:none;}
     .chat-msgs{max-height:220px;}
-    body{padding-bottom:260px;}
-    /* Larger tap targets on mobile */
-    .agent-chat-btn{
-      padding:16px !important;
-      font-size:9px !important;
-      letter-spacing:1px !important;
-      min-height:44px;
-    }
-    .chat-send{padding:12px 18px !important;min-width:44px;min-height:44px;}
-    .chat-hdr{padding:16px !important;min-height:48px;}
-    .chat-in-row input{
-      font-size:16px !important; /* prevents iOS zoom-in on focus */
-      min-height:44px;
-      padding:10px !important;
-    }
-    .chat-in-row{padding:10px !important;}
-    /* Compact header for iPhone */
-    .hdr{padding:0 12px;gap:8px;height:48px;}
-    .hdr-title{font-size:7px;letter-spacing:1px;}
+    body{padding-bottom:280px;}
+    .hdr{padding:0 10px;gap:6px;height:46px;}
+    .hdr-title{font-size:6px;letter-spacing:0px;}
     .hdr-clock{display:none;}
-    .hdr-nav a{font-size:8px;padding:3px 6px;}
-    .hdr-status{font-size:6px;padding:3px 6px;}
-    /* Cmd bar wraps nicely */
-    .cmd-bar{padding:8px 12px;}
-    .cmd-btn{font-size:10px;padding:8px 10px;min-height:36px;}
-    /* Status cards readable */
-    .sr{font-size:12px;}
-    /* Section headers smaller */
-    .sec-hdr{font-size:6px;padding:14px 12px 6px;}
+    .hdr-nav a{font-size:8px;padding:4px 6px;}
+    .hdr-status{font-size:5px;padding:3px 5px;}
+    .cmd-bar{padding:8px 10px;gap:6px;}
+    .cmd-btn{font-size:10px;padding:8px 10px;min-height:40px;touch-action:manipulation;}
+    .agents-grid{grid-template-columns:1fr;padding:10px;}
+    .agent-card{padding:12px;}
+    .agent-chat-btn{padding:14px !important;font-size:8px !important;min-height:44px;letter-spacing:1px !important;}
+    .status-grid{grid-template-columns:1fr;padding:0 10px 10px;}
+    .status-card{padding:12px;}
+    .sec-hdr{font-size:6px;padding:12px 10px 6px;letter-spacing:2px;}
+    .section-wrap{padding:0 10px 16px;}
+    .rtable{font-size:10px;}
+    .rtable th{font-size:5px;}
+    .sr{font-size:11px;}
+    .chat-send{padding:12px 16px !important;min-width:44px;min-height:44px;}
+    .chat-hdr{padding:14px !important;min-height:48px;}
+    .chat-in-row input{font-size:16px !important;min-height:44px;padding:10px !important;}
+    .chat-in-row{padding:10px !important;}
   }
 </style>
 </head>
@@ -691,6 +822,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="hdr-nav">
     <a href="/taskboard">TASKS</a>
     <a href="/team">TEAM</a>
+    <a href="/status">STATUS</a>
     <a href="/portfolio">PORTFOLIO</a>
     <a href="/holdings">HOLDINGS</a>
     <a href="/clip-economy">CASHCLAW</a>
@@ -702,7 +834,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <div class="cmd-bar">
   <span class="cmd-lbl">CMD:</span>
   {% for cmd in ['/scan','/market','/fng','/status','/cashclaw','/scout run','/autotrade on'] %}
-  <button class="cmd-btn" onclick="copyCmd(this,'{{ cmd }}')"><span class="tip">COPIED</span>{{ cmd }}</button>
+  <button class="cmd-btn" onclick="runCmd(this,'{{ cmd }}')"><span class="tip">RUN</span>{{ cmd }}</button>
   {% endfor %}
   <span style="margin-left:auto;font-family:'Press Start 2P',monospace;font-size:6px;color:var(--muted);">REFRESH <span id="cd">30</span>s</span>
 </div>
@@ -1001,10 +1133,28 @@ setInterval(()=>{
   t--;el.textContent=t;upBar();if(t<=0)location.reload();
 },1000);
 
-// Copy commands
-function copyCmd(btn,cmd){
-  navigator.clipboard.writeText(cmd).catch(()=>{});
-  btn.classList.add('copied');setTimeout(()=>btn.classList.remove('copied'),1200);
+// Execute dashboard commands
+async function runCmd(btn,cmd){
+  if(btn.disabled) return;
+  btn.disabled = true;
+  const tip = btn.querySelector('.tip');
+  const original = tip.textContent;
+  tip.textContent = 'RUNNING';
+  try{
+    const res = await fetch('/api/execute-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})});
+    const data = await res.json();
+    if(data.success){
+      tip.textContent = 'DONE';
+      alert(data.output);
+    } else {
+      tip.textContent = 'ERROR';
+      alert('Command failed: ' + (data.error || res.statusText));
+    }
+  }catch(e){
+    tip.textContent = 'ERROR';
+    alert('Command request failed: ' + e);
+  }
+  setTimeout(()=>{tip.textContent = original; btn.disabled=false;},2000);
 }
 
 // Chat
@@ -1209,6 +1359,35 @@ def api_chat_clear():
     global _web_history
     _web_history = []
     return jsonify({"ok": True})
+
+
+@app.route("/api/execute-command", methods=["POST"])
+def api_execute_command():
+    data = request.get_json(force=True) or {}
+    command = (data.get("command") or "").strip()
+    if not command:
+        return jsonify({"success": False, "error": "No command provided."}), 400
+    try:
+        output = execute_dashboard_command(command)
+        return jsonify({"success": True, "output": output})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Health check endpoint for load balancers."""
+    monitor = _get_monitor()
+    status = monitor.get_status()
+    system_ok = status.get("system", {}).get("status") == "healthy"
+    return jsonify({"status": "ok" if system_ok else "degraded"}), 200 if system_ok else 503
+
+
+@app.route("/api/system-status", methods=["GET"])
+def api_system_status():
+    """Get real-time system monitoring status."""
+    monitor = _get_monitor()
+    return jsonify(monitor.get_status()), 200
 
 
 # ── Per-agent chat histories ───────────────────────────────────────────────────
@@ -1512,7 +1691,16 @@ TASKBOARD_HTML = """<!DOCTYPE html>
   .form-select option { background: #1a1a1a; }
   .auto-refresh { font-size: 0.8rem; color: var(--text-muted); }
   @media (max-width: 900px) { .kanban-wrap { grid-template-columns: repeat(2, 1fr); } }
-  @media (max-width: 560px) { .kanban-wrap { grid-template-columns: 1fr; } }
+  @media (max-width: 560px) {
+    .kanban-wrap { grid-template-columns: 1fr; padding: 0.75rem; gap: 0.75rem; }
+    .kanban-col { min-height: 200px; }
+    .kanban-col-header { padding: 0.6rem 0.75rem; }
+    .task-card { padding: 0.6rem; font-size: 0.8rem; }
+    .btn-move, .btn-del { min-width: 36px; min-height: 36px; padding: 6px; }
+    .btn-add-task { padding: 10px 16px; font-size: 0.8rem; }
+    .navbar { padding: 0.5rem 0.75rem; }
+    .modal input, .modal textarea, .modal select { font-size: 16px !important; }
+  }
 </style>
 </head>
 <body>
@@ -1817,6 +2005,14 @@ TEAM_HTML = """<!DOCTYPE html>
   .nav-link-custom { color: #888; text-decoration: none; font-size: 0.85rem; }
   .nav-link-custom:hover { color: #00ff88; }
   .auto-refresh { font-size: 0.8rem; color: #666; }
+  @media (max-width: 560px) {
+    .lead-card { flex-direction: column; padding: 1rem; }
+    .agent-card { padding: 0.75rem; }
+    .stats-bar { flex-wrap: wrap; gap: 0.5rem; padding: 0.75rem; }
+    .new-agent-btn { width: 100%; margin-top: 8px; }
+    #new-agent-modal > div { width: 95% !important; padding: 16px !important; }
+    #new-agent-modal input, #new-agent-modal textarea, #new-agent-modal select { font-size: 16px !important; }
+  }
 </style>
 </head>
 <body>
@@ -2360,6 +2556,14 @@ HOLDINGS_HTML = """<!DOCTYPE html>
 
 <div class="container-fluid p-3 p-md-4">
 
+  {% if holdings_error %}
+  <div style="background:#1a0000;border:1px solid #ff4455;border-radius:8px;padding:16px 20px;margin-bottom:20px;color:#ff8888;font-family:'Share Tech Mono',monospace;font-size:12px;">
+    <div style="font-family:'Press Start 2P',monospace;font-size:8px;color:#ff4455;margin-bottom:8px;">&#9888; EXCHANGE CONNECTION ERROR</div>
+    <div>{{ holdings_error[:120] }}</div>
+    <div style="margin-top:10px;color:#555;font-size:11px;">Fix: In Crypto.com Exchange &rarr; API Management &rarr; Remove IP restriction on your key, or whitelist your PC&apos;s public IP.</div>
+  </div>
+  {% endif %}
+
   <div class="d-flex justify-content-between align-items-center mb-3">
     <div>
       <h4 class="mb-0 fw-bold"><i class="fas fa-coins me-2 tg"></i>Live Holdings</h4>
@@ -2544,11 +2748,16 @@ setTimeout(() => location.reload(), 60000);
 
 @app.route("/holdings")
 def holdings():
-    live = get_live_holdings()
+    holdings_error = None
+    live = {}
+    try:
+        live = get_live_holdings()
+    except Exception as e:
+        holdings_error = str(e)
     trade_history = get_recent_trades(n=50)
     prices = get_prices()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    return render_template_string(HOLDINGS_HTML, holdings=live, trades=trade_history, prices=prices, now=now)
+    return render_template_string(HOLDINGS_HTML, holdings=live, trades=trade_history, prices=prices, now=now, holdings_error=holdings_error)
 
 
 def _get_clip_economy_stats() -> dict:
@@ -2959,6 +3168,309 @@ CLIP_ECONOMY_HTML = """<!DOCTYPE html>
 <script>setTimeout(() => location.reload(), 60000);</script>
 </body>
 </html>"""
+
+
+# ── Live Status Panel ──────────────────────────────────────────────────────────
+
+STATUS_PANEL_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenClaw Live System Status</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --neon:#00ff88;--neon2:#00ffff;--amber:#ffaa00;--red:#ff4455;
+    --pink:#ff00aa;--purple:#9b59b6;--orange:#ff6b35;
+    --bg:#080808;--card:#0f0f0f;--border:#1e1e1e;
+    --text:#c8c8c8;--muted:#555;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{
+    background:var(--bg);color:var(--text);
+    font-family:'Share Tech Mono',monospace;font-size:12px;
+    padding:20px;
+  }
+  .status-header{
+    display:flex;align-items:center;gap:20px;margin-bottom:30px;
+  }
+  .status-title{
+    font-family:'Press Start 2P',monospace;font-size:16px;
+    color:var(--neon);text-shadow:0 0 12px var(--neon);
+    letter-spacing:2px;
+  }
+  .status-badge{
+    font-family:'Press Start 2P',monospace;font-size:10px;
+    padding:8px 16px;border:1px solid;
+    animation:blink 1s step-end infinite;
+  }
+  .status-badge.healthy{color:var(--neon);border-color:var(--neon);background:#001a00;}
+  .status-badge.degraded{color:var(--amber);border-color:var(--amber);background:#1a1600;}
+  .status-badge.error{color:var(--red);border-color:var(--red);background:#1a0000;}
+  @keyframes blink{50%{opacity:0;}}
+
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;}
+  .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:20px;}
+  @media(max-width:900px){
+    .grid-2{grid-template-columns:1fr;}
+    .grid-3{grid-template-columns:1fr;}
+  }
+
+  .card{background:var(--card);border:1px solid var(--border);padding:20px;border-radius:8px;}
+  .card-title{
+    font-family:'Press Start 2P',monospace;font-size:10px;
+    color:var(--neon2);letter-spacing:2px;margin-bottom:15px;
+    border-bottom:1px solid var(--border);padding-bottom:10px;
+  }
+
+  .metric{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #111;}
+  .metric:last-child{border-bottom:none;}
+  .metric-label{color:var(--muted);}
+  .metric-value{color:var(--text);font-weight:600;}
+  .metric-value.ok{color:var(--neon);}
+  .metric-value.warn{color:var(--amber);}
+  .metric-value.err{color:var(--red);}
+
+  .agent-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin-top:15px;}
+  @media(max-width:900px){.agent-grid{grid-template-columns:repeat(2,1fr);}}
+  @media(max-width:560px){.agent-grid{grid-template-columns:1fr;}}
+
+  .agent-card{
+    background:#141414;border:1px solid;padding:15px;border-radius:6px;
+    text-align:center;transition:box-shadow 0.2s;
+  }
+  .agent-card.active{border-color:var(--neon);box-shadow:0 0 12px #00ff8833;}
+  .agent-card.running{border-color:var(--neon2);box-shadow:0 0 12px #00ffff33;}
+  .agent-card.idle{border-color:#555;}
+  .agent-emoji{font-size:28px;margin-bottom:8px;}
+  .agent-name{font-family:'Press Start 2P',monospace;font-size:8px;margin-bottom:6px;letter-spacing:1px;}
+  .agent-status{font-size:10px;font-weight:600;}
+  .agent-status.active{color:var(--neon);}
+  .agent-status.running{color:var(--neon2);}
+  .agent-status.offline{color:var(--red);}
+  .agent-status.idle{color:var(--muted);}
+
+  .command-row{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:10px;background:#0f0f0f;border-left:3px solid;margin-bottom:8px;border-radius:4px;
+  }
+  .command-row.ok{border-color:var(--neon);}
+  .command-row.error{border-color:var(--red);}
+  .command-row.skipped{border-color:#555;}
+  .command-name{font-weight:600;flex:1;}
+  .command-status{font-size:11px;min-width:60px;text-align:right;}
+
+  .event-log{max-height:400px;overflow-y:auto;font-size:10px;}
+  .event-item{padding:8px;border-bottom:1px solid #111;margin-bottom:6px;}
+  .event-item:last-child{border-bottom:none;}
+  .event-time{color:var(--muted);font-size:9px;}
+  .event-msg{color:var(--text);margin-top:4px;}
+  .event-info{color:var(--neon);severity:info;}
+  .event-warn{color:var(--amber);severity:warning;}
+  .event-error{color:var(--red);severity:error;}
+
+  .progress-bar{background:#111;height:8px;border-radius:4px;overflow:hidden;margin:10px 0;}
+  .progress-fill{height:100%;background:var(--neon);box-shadow:0 0 8px #00ff88;}
+
+  .endpoint-check{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:8px 0;border-bottom:1px solid #111;
+  }
+  .endpoint-check:last-child{border-bottom:none;}
+  .endpoint-name{font-family:'Share Tech Mono',monospace;font-size:11px;}
+  .endpoint-badge{
+    font-family:'Press Start 2P',monospace;font-size:7px;
+    padding:3px 8px;border:1px solid;border-radius:3px;
+  }
+  .endpoint-badge.ok{color:var(--neon);border-color:var(--neon);background:#001a0033;}
+  .endpoint-badge.error{color:var(--red);border-color:var(--red);background:#1a000033;}
+
+  .refresh-info{
+    text-align:center;margin-top:30px;color:var(--muted);
+    font-family:'Press Start 2P',monospace;font-size:8px;letter-spacing:1px;
+  }
+  .counter{color:var(--neon);}
+</style>
+</head>
+<body>
+
+<div class="status-header">
+  <div class="status-title">⚡ LIVE STATUS</div>
+  <div id="status-badge" class="status-badge healthy">ONLINE</div>
+  <div id="uptime" style="margin-left:auto;color:var(--neon2);">--:--</div>
+</div>
+
+<div class="grid-2">
+  <!-- System Overview -->
+  <div class="card">
+    <div class="card-title">SYSTEM</div>
+    <div class="metric">
+      <span class="metric-label">Status</span>
+      <span class="metric-value" id="sys-status">--</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Uptime</span>
+      <span class="metric-value" id="sys-uptime">--</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Errors</span>
+      <span class="metric-value" id="sys-errors">0</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Last Check</span>
+      <span class="metric-value" id="sys-checked" style="font-size:10px;word-break:break-all;">--</span>
+    </div>
+  </div>
+
+  <!-- Endpoints -->
+  <div class="card">
+    <div class="card-title">ENDPOINTS</div>
+    <div id="endpoint-checks"></div>
+  </div>
+</div>
+
+<!-- Agents -->
+<div class="card">
+  <div class="card-title">AGENT STATUS</div>
+  <div class="agent-grid" id="agent-grid"></div>
+</div>
+
+<div class="grid-2">
+  <!-- Commands -->
+  <div class="card">
+    <div class="card-title">COMMAND HEALTH</div>
+    <div id="command-checks"></div>
+  </div>
+
+  <!-- Events -->
+  <div class="card">
+    <div class="card-title">RECENT EVENTS</div>
+    <div class="event-log" id="event-log"></div>
+  </div>
+</div>
+
+<div class="refresh-info">
+  Auto-refresh every <span class="counter" id="refresh-counter">10</span>s
+</div>
+
+<script>
+const REFRESH_INTERVAL = 10000;
+
+async function updateStatus() {
+  try {
+    const res = await fetch('/api/system-status');
+    const data = await res.json();
+    
+    // System status
+    const sys = data.system || {};
+    document.getElementById('sys-status').textContent = sys.status || '--';
+    document.getElementById('sys-status').className = `metric-value ${sys.status === 'healthy' ? 'ok' : 'warn'}`;
+    document.getElementById('sys-uptime').textContent = sys.uptime || '--';
+    document.getElementById('sys-errors').textContent = sys.errors || 0;
+    document.getElementById('sys-checked').textContent = (sys.last_checked || '--').substring(0, 19);
+
+    // Status badge
+    const badge = document.getElementById('status-badge');
+    badge.className = `status-badge ${sys.status || 'degraded'}`;
+    badge.textContent = sys.status ? sys.status.toUpperCase() : 'UNKNOWN';
+
+    // Endpoints
+    const endpoints = data.endpoints || {};
+    let endpointHTML = '';
+    for (const [path, info] of Object.entries(endpoints.checks || {})) {
+      const ok = info.status === 'ok';
+      endpointHTML += `
+        <div class="endpoint-check">
+          <span class="endpoint-name">${path}</span>
+          <span class="endpoint-badge ${ok ? 'ok' : 'error'}">${ok ? '✓' : '✗'}</span>
+        </div>
+      `;
+    }
+    document.getElementById('endpoint-checks').innerHTML = endpointHTML;
+
+    // Agents
+    const agents = data.agents || {};
+    const agentMap = {
+      'jarvis': { emoji: '🧠', name: 'JARVIS' },
+      'scout': { emoji: '🔍', name: 'SCOUT' },
+      'watchdog': { emoji: '🐕', name: 'WATCHDOG' },
+      'codex': { emoji: '⚙️', name: 'CODEX' },
+      'clipper': { emoji: '🦀', name: 'CLIPPER' },
+      'hawk': { emoji: '🦅', name: 'HAWK' }
+    };
+    let agentHTML = '';
+    for (const [key, { emoji, name }] of Object.entries(agentMap)) {
+      const status = agents[key] || 'unknown';
+      const statusClass = status === 'offline' ? 'offline' : status === 'idle' ? 'idle' : 'active';
+      agentHTML += `
+        <div class="agent-card ${statusClass}">
+          <div class="agent-emoji">${emoji}</div>
+          <div class="agent-name">${name}</div>
+          <div class="agent-status ${statusClass}">${status.toUpperCase()}</div>
+        </div>
+      `;
+    }
+    document.getElementById('agent-grid').innerHTML = agentHTML;
+
+    // Commands
+    const commands = data.commands || {};
+    let cmdHTML = '';
+    for (const [cmd, info] of Object.entries(commands)) {
+      const status = info.status || 'unknown';
+      const latency = info.latency_ms !== null ? info.latency_ms + 'ms' : '--';
+      const statusClass = status === 'error' ? 'error' : status === 'skipped' ? 'skipped' : 'ok';
+      cmdHTML += `
+        <div class="command-row ${statusClass}">
+          <span class="command-name">${cmd}</span>
+          <span class="command-status">${latency}</span>
+        </div>
+      `;
+    }
+    document.getElementById('command-checks').innerHTML = cmdHTML;
+
+    // Events
+    const events = data.events || [];
+    let eventHTML = '';
+    for (const event of events.slice().reverse().slice(0, 8)) {
+      const cls = event.severity === 'error' ? 'event-error' : event.severity === 'warning' ? 'event-warn' : 'event-info';
+      eventHTML += `
+        <div class="event-item">
+          <div class="event-time">${event.timestamp.substring(11, 19)}</div>
+          <div class="event-msg ${cls}">${event.message}</div>
+        </div>
+      `;
+    }
+    document.getElementById('event-log').innerHTML = eventHTML;
+
+  } catch (e) {
+    console.error('Status fetch failed:', e);
+  }
+}
+
+// Initial load
+updateStatus();
+
+// Refresh every 10 seconds
+let refreshCounter = 10;
+setInterval(() => {
+  refreshCounter--;
+  document.getElementById('refresh-counter').textContent = refreshCounter;
+  if (refreshCounter <= 0) {
+    updateStatus();
+    refreshCounter = 10;
+  }
+}, 1000);
+</script>
+</body>
+</html>"""
+
+
+@app.route("/status")
+def status_panel():
+    return render_template_string(STATUS_PANEL_HTML)
 
 
 if __name__ == "__main__":
