@@ -786,11 +786,15 @@ async def cmd_lifeos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     """Show LifeOS status summary."""
     if not is_authorized(update.effective_chat.id):
         return
-    data = get_dashboard_data()
     intake = load_intake()
     if not intake:
         await _safe_reply(update.message,
             "LifeOS is not set up yet.\n\nRun /lifesetup to enter your profile.")
+        return
+    try:
+        data = get_dashboard_data()
+    except Exception:
+        await _safe_reply(update.message, "⚠️ Could not load LifeOS data. Check bot logs.")
         return
     f = data["fitness"]
     fin = data["finance"]
@@ -870,6 +874,9 @@ async def cmd_logweight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except ValueError:
         await _safe_reply(update.message, "Invalid number. Example: /logweight 84.5")
         return
+    if kg <= 0:
+        await _safe_reply(update.message, "Weight must be a positive number.")
+        return
     log_weight(kg)
     intake = load_intake()
     goal = intake.get("goal_weight", "?")
@@ -891,6 +898,9 @@ async def cmd_logexpense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         amount = float(context.args[0])
     except ValueError:
         await _safe_reply(update.message, "Invalid amount. Example: /logexpense 12.50 food lunch")
+        return
+    if amount <= 0:
+        await _safe_reply(update.message, "Amount must be a positive number.")
         return
     category    = context.args[1]
     description = " ".join(context.args[2:]) if len(context.args) > 2 else ""
@@ -934,6 +944,11 @@ async def cmd_lifesetup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 profile[key] = float(val)
             except ValueError:
                 errors.append(f"'{key}' must be a number, got '{val}'")
+                continue
+            if profile[key] < 0:
+                errors.append(f"'{key}' must be non-negative, got '{val}'")
+                del profile[key]
+                continue
         else:
             profile[key] = val
     if profile:
@@ -976,13 +991,25 @@ async def cmd_lifeschedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         disable_lifeos_schedule()
         await _safe_reply(update.message, "LifeOS scheduled check-ins disabled.")
         return
-    morning = context.args[1] if len(context.args) > 1 else "07:00"
-    evening = context.args[2] if len(context.args) > 2 else "20:00"
-    cfg = enable_lifeos_schedule(update.effective_chat.id, morning, evening)
-    await _safe_reply(update.message,
-        f"LifeOS check-ins scheduled:\n"
-        f"  Morning: {cfg['morning_time']} UTC\n"
-        f"  Evening: {cfg['evening_time']} UTC")
+    elif context.args[0].lower() == "on":
+        morning = context.args[1] if len(context.args) > 1 else "07:00"
+        evening = context.args[2] if len(context.args) > 2 else "20:00"
+        # validate HH:MM format
+        import re as _re_sched
+        if not (_re_sched.match(r'^\d{2}:\d{2}$', morning) and _re_sched.match(r'^\d{2}:\d{2}$', evening)):
+            await _safe_reply(update.message, "Time must be HH:MM format. Example: /lifeschedule on 07:00 20:00")
+            return
+        cfg = enable_lifeos_schedule(update.effective_chat.id, morning, evening)
+        await _safe_reply(update.message,
+            f"LifeOS check-ins scheduled:\n"
+            f"  Morning: {cfg['morning_time']} UTC\n"
+            f"  Evening: {cfg['evening_time']} UTC")
+    else:
+        await _safe_reply(update.message,
+            "Usage:\n"
+            "  /lifeschedule on [morning_UTC] [evening_UTC]\n"
+            "  /lifeschedule off\n\n"
+            "Example: /lifeschedule on 07:00 20:00")
 
 
 async def cmd_dash(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
