@@ -1,4 +1,4 @@
-"""OpenClaw Local Dashboard — http://localhost:8080
+"""OpenClaw Local Dashboard — http://locahttps://github.com/kkoppenhaver/cc-nano-banana.gitlhost:8080
 
 Runs alongside the Telegram bot as a separate process.
 Reads data files but never writes — safe to run concurrently.
@@ -24,6 +24,45 @@ load_dotenv(ROOT / ".env", override=True)
 
 app = Flask(__name__)
 _price_cache: dict = {"ts": 0, "data": {}}
+
+# ── Security headers ──────────────────────────────────────────────────────────
+
+@app.after_request
+def _security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com "
+        "https://fonts.googleapis.com https://fonts.gstatic.com; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net "
+        "https://cdnjs.cloudflare.com https://fonts.googleapis.com;"
+    )
+    return response
+
+# ── Dashboard token auth ──────────────────────────────────────────────────────
+
+import secrets as _secrets
+_DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "")
+
+@app.before_request
+def _require_dashboard_auth():
+    """Block all dashboard requests without valid token (if token is configured)."""
+    if not _DASHBOARD_TOKEN:
+        return  # no token set = localhost-only trust mode
+    # Allow health check
+    if request.path == "/health":
+        return
+    # Check token in header, query param, or cookie
+    token = (
+        request.headers.get("X-Dashboard-Token")
+        or request.args.get("token")
+        or request.cookies.get("dashboard_token")
+    )
+    if token != _DASHBOARD_TOKEN:
+        return "Unauthorized", 401
 
 
 # ── Data helpers ───────────────────────────────────────────────────────────────
@@ -129,6 +168,14 @@ def get_notes_summary() -> dict:
     }
 
 
+def get_installed_skills() -> list:
+    skills_dir = ROOT / "skills"
+    if not skills_dir.exists():
+        return []
+    skill_dirs = [p.name for p in skills_dir.iterdir() if p.is_dir() and p.name != "__pycache__"]
+    return sorted(skill_dirs)
+
+
 def get_last_code_review() -> dict:
     reviews_dir = DATA_DIR / "code_reviews"
     if not reviews_dir.exists():
@@ -179,7 +226,7 @@ def get_ollama_status() -> dict:
     try:
         from ollama import list as _ol_list
         models = [m.model for m in _ol_list().models]
-        cfg    = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+        cfg    = os.getenv("OLLAMA_MODEL", "gemma4")
         return {
             "online": True, "models": models,
             "active": cfg if cfg in models else (models[0] if models else "none"),
@@ -205,6 +252,162 @@ def get_clawbot_status() -> dict:
     return {"running": age < 3600, "last_seen": label}
 
 
+def get_portfolio_data() -> dict:
+    """Build portfolio summary from trade log + live prices."""
+    trades = get_recent_trades(n=1000)
+    prices = get_prices()
+
+    positions: dict = {}
+    total_invested = 0.0
+    total_pnl = 0.0
+    wins = 0
+    losses = 0
+
+    for t in trades:
+        coin       = str(t.get("coin", "")).upper()
+        action     = str(t.get("action", "")).upper()
+        usd_amount = float(t.get("usd_amount", 0) or 0)
+        pnl        = float(t.get("pnl", 0) or 0)
+        if not coin:
+            continue
+        if coin not in positions:
+            positions[coin] = {"coin": coin, "trades": 0, "invested": 0.0,
+                               "pnl": 0.0, "buys": 0, "sells": 0,
+                               "current_price": 0, "change_24h": 0, "sign": ""}
+        positions[coin]["trades"] += 1
+        positions[coin]["pnl"]    += pnl
+        total_pnl += pnl
+        if action == "BUY":
+            positions[coin]["invested"] += usd_amount
+            positions[coin]["buys"]     += 1
+            total_invested              += usd_amount
+        elif action == "SELL":
+            positions[coin]["sells"] += 1
+        if pnl > 0:
+            wins   += 1
+        elif pnl < 0:
+            losses += 1
+
+    for coin, pos in positions.items():
+        d = prices.get(coin, {})
+        pos["current_price"] = d.get("price", 0)
+        pos["change_24h"]    = d.get("change", 0)
+        pos["sign"]          = d.get("sign", "")
+        pos["pnl"]           = round(pos["pnl"], 2)
+        pos["invested"]      = round(pos["invested"], 2)
+
+    total_trades = len(trades)
+    win_rate     = round(wins / total_trades * 100, 1) if total_trades > 0 else 0.0
+
+    return {
+        "positions":       list(positions.values()),
+        "total_trades":    total_trades,
+        "total_invested":  round(total_invested, 2),
+        "total_pnl":       round(total_pnl, 2),
+        "win_rate":        win_rate,
+        "wins":            wins,
+        "losses":          losses,
+        "has_data":        total_trades > 0,
+        "prices":          prices,
+    }
+
+
+def get_live_holdings() -> dict:
+    """
+    Fetch real holdings from Crypto.com API.
+    Returns dict with balances, total value, and per-asset breakdown.
+    Falls back gracefully if API keys not set or API fails.
+    """
+    import time
+
+    crypto_key = os.getenv("CRYPTOCOM_API_KEY", "").strip()
+    crypto_secret = os.getenv("CRYPTOCOM_SECRET", "").strip()
+
+    if not crypto_key or not crypto_secret:
+        return {"configured": False, "error": "API keys not set", "balances": {}, "total_usd": 0}
+
+    try:
+        # Add project root to path for trading module
+        root = str(ROOT)
+        if root not in sys.path:
+            sys.path.insert(0, root)
+
+        from trading.exchange import get_account_balance, get_portfolio_value_usd, fetch_ticker_price
+
+        balances_raw = get_account_balance()
+
+        # Build enriched balance objects with USD values
+        balances = {}
+        prices = get_prices()  # CoinGecko prices for display
+
+        for currency, data in balances_raw.items():
+            total = data["total"]
+            available = data["available"]
+            if total < 0.000001:
+                continue
+
+            usd_value = 0.0
+            price = 0.0
+            change_24h = 0.0
+
+            if currency == "USDT" or currency == "USD":
+                usd_value = total
+                price = 1.0
+            else:
+                # Try CoinGecko price first (already cached)
+                cg_data = prices.get(currency, {})
+                if cg_data:
+                    price = cg_data.get("price", 0)
+                    change_24h = cg_data.get("change", 0)
+                    usd_value = total * price
+                else:
+                    # Fall back to Crypto.com ticker
+                    try:
+                        price = fetch_ticker_price(f"{currency}_USDT")
+                        usd_value = total * price
+                    except Exception:
+                        pass
+
+            balances[currency] = {
+                "currency": currency,
+                "total": total,
+                "available": available,
+                "locked": total - available,
+                "price_usd": price,
+                "value_usd": round(usd_value, 2),
+                "change_24h": change_24h,
+                "sign": "+" if change_24h >= 0 else "",
+            }
+
+        total_usd = sum(b["value_usd"] for b in balances.values())
+
+        # Sort by USD value descending
+        sorted_balances = dict(sorted(balances.items(), key=lambda x: x[1]["value_usd"], reverse=True))
+
+        return {
+            "configured": True,
+            "error": None,
+            "balances": sorted_balances,
+            "total_usd": round(total_usd, 2),
+            "asset_count": len(sorted_balances),
+            "fetched_at": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
+        }
+
+    except Exception as e:
+        err_str = str(e)
+        # Make UNAUTHORIZED errors more helpful
+        if "10002" in err_str or "UNAUTHORIZED" in err_str:
+            err_str = "API key unauthorized (error 10002). Check: key is active, has read permission, not IP-restricted. Update CRYPTOCOM_API_KEY + CRYPTOCOM_SECRET in .env"
+        return {
+            "configured": True,
+            "error": err_str[:300],
+            "balances": {},
+            "total_usd": 0,
+            "asset_count": 0,
+            "fetched_at": "—",
+        }
+
+
 def get_cache_info() -> dict:
     cache = _read_json(DATA_DIR / "response_cache.json", {})
     if not cache:
@@ -221,593 +424,675 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenClaw Dashboard</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+<title>OpenClaw Command Center</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <style>
-  body { background: linear-gradient(135deg, #0d0d0d 0%, #1a1a1a 100%); color: #e0e0e0; font-family: 'Segoe UI', sans-serif; }
-  .navbar { background: #141414 !important; border-bottom: 1px solid #242424; }
-  .card { background: #141414; border: 1px solid #242424; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); transition: transform 0.2s; }
-  .card:hover { transform: translateY(-2px); }
-  .card-header { background: #1e1e1e; border-bottom: 1px solid #242424; border-radius: 15px 15px 0 0 !important; }
-  .card-body { padding: 1.5rem; }
-  .btn-custom { background: linear-gradient(45deg, #00ff88, #00cc66); border: none; color: #000; font-weight: bold; }
-  .btn-custom:hover { background: linear-gradient(45deg, #00cc66, #00aa55); color: #000; }
-  .text-success { color: #00ff88 !important; }
-  .text-danger { color: #ff4455 !important; }
-  .text-warning { color: #ffaa00 !important; }
-  .text-info { color: #4499ff !important; }
-  .table { color: #e0e0e0; }
-  .table thead th { border-bottom: 2px solid #242424; color: #00ff88; }
-  .table tbody td { border-bottom: 1px solid #1e1e1e; }
-  .badge { font-size: 0.75rem; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
-  .dot.green { background: #00ff88; } .dot.red { background: #ff4455; } .dot.amber { background: #ffaa00; }
-  .price-card { background: linear-gradient(45deg, #1e1e1e, #242424); }
-  .chat-panel { position: fixed; bottom: 0; right: 0; width: 400px; background: #0f0f0f; border: 1px solid #242424; border-bottom: none; border-right: none; border-radius: 15px 0 0 0; box-shadow: -4px -4px 24px #00000088; z-index: 100; }
-  .chat-header { background: #1a1a1a; border-bottom: 1px solid #1e1e1e; border-radius: 15px 0 0 0; }
-  .chat-messages { max-height: 350px; overflow-y: auto; }
-  .msg-user { align-self: flex-end; background: linear-gradient(45deg, #00ff8812, #00cc6612); border: 1px solid #00ff8822; }
-  .msg-bot { background: #1a1a1a; border: 1px solid #242424; }
-  .auto-refresh { font-size: 0.8rem; color: #666; }
-  .section-icon { margin-right: 8px; }
-  .collapsible { cursor: pointer; }
-  .collapsible:hover { color: #00ff88; }
+  :root {
+    --neon:#00ff88;--neon2:#00ffff;--amber:#ffaa00;--red:#ff4455;
+    --pink:#ff00aa;--purple:#9b59b6;--orange:#ff6b35;
+    --bg:#080808;--card:#0f0f0f;--border:#1e1e1e;
+    --text:#c8c8c8;--muted:#555;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{
+    background:var(--bg);color:var(--text);
+    font-family:'Share Tech Mono',monospace;font-size:13px;
+    background-image:radial-gradient(circle,#181818 1px,transparent 1px);
+    background-size:22px 22px;background-attachment:fixed;
+    padding-bottom:160px;
+  }
+  /* HEADER */
+  .hdr{
+    background:#060606;border-bottom:2px solid var(--neon);
+    box-shadow:0 0 20px #00ff8822;padding:0 20px;height:54px;
+    display:flex;align-items:center;gap:14px;
+    position:sticky;top:0;z-index:500;
+  }
+  .hdr-title{
+    font-family:'Press Start 2P',monospace;font-size:10px;
+    color:var(--neon);text-shadow:0 0 12px var(--neon);
+    letter-spacing:2px;white-space:nowrap;
+  }
+  .hdr-status{
+    font-family:'Press Start 2P',monospace;font-size:7px;
+    padding:4px 9px;border:1px solid var(--neon);
+    color:var(--neon);background:#001a00;
+    animation:blink 1.4s step-end infinite;
+  }
+  .hdr-status.idle{animation:none;opacity:0.5;border-color:#555;color:#555;}
+  @keyframes blink{50%{opacity:0;}}
+  .hdr-nav{display:flex;gap:0;margin-left:auto;}
+  .hdr-nav a{
+    color:var(--muted);text-decoration:none;font-size:10px;
+    padding:4px 10px;border-left:1px solid var(--border);
+    transition:color 0.2s,background 0.2s;
+  }
+  .hdr-nav a:hover{color:var(--neon);background:#001a00;}
+  .hdr-clock{
+    font-family:'Press Start 2P',monospace;font-size:8px;
+    color:var(--neon2);min-width:72px;text-align:right;
+    border-left:1px solid var(--border);padding-left:12px;
+  }
+  #refresh-bar{
+    position:fixed;top:0;left:0;height:2px;width:0%;
+    background:var(--neon);z-index:9999;transition:width 1s linear;
+  }
+  /* CMD BAR */
+  .cmd-bar{
+    background:#080808;border-bottom:1px solid var(--border);
+    padding:8px 20px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;
+  }
+  .cmd-lbl{font-family:'Press Start 2P',monospace;font-size:6px;color:var(--muted);letter-spacing:2px;}
+  .cmd-btn{
+    background:var(--card);border:1px solid var(--border);
+    color:var(--neon);font-family:'Share Tech Mono',monospace;
+    font-size:11px;padding:5px 12px;cursor:pointer;position:relative;
+    transition:border-color 0.15s,box-shadow 0.15s;
+  }
+  .cmd-btn:hover{border-color:var(--neon);box-shadow:0 0 8px #00ff8833;}
+  .cmd-btn .tip{
+    position:absolute;bottom:110%;left:50%;transform:translateX(-50%);
+    background:var(--neon);color:#000;font-size:8px;padding:2px 6px;
+    white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 0.2s;
+  }
+  .cmd-btn.copied .tip{opacity:1;}
+  /* SECTION HDR */
+  .sec-hdr{
+    font-family:'Press Start 2P',monospace;font-size:7px;
+    color:var(--muted);letter-spacing:3px;
+    padding:18px 20px 8px;border-bottom:1px solid var(--border);
+    margin-bottom:16px;
+  }
+  .sec-hdr em{color:var(--neon2);font-style:normal;}
+  /* AGENT GRID */
+  .agents-grid{
+    display:grid;grid-template-columns:repeat(3,1fr);
+    gap:16px;padding:16px 20px;
+  }
+  @media(max-width:900px){.agents-grid{grid-template-columns:repeat(2,1fr);}}
+  @media(max-width:560px){.agents-grid{grid-template-columns:1fr;}}
+  .agent-card{
+    background:var(--card);border:1px solid;
+    padding:16px;position:relative;
+    transition:box-shadow 0.2s;
+  }
+  .agent-card:hover{box-shadow:0 0 18px currentColor;}
+  .agent-card::after{
+    content:'';position:absolute;top:0;left:0;right:0;
+    height:2px;background:currentColor;opacity:0.5;
+  }
+  .agent-top{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+  .agent-emoji{font-size:22px;line-height:1;}
+  .agent-name{font-family:'Press Start 2P',monospace;font-size:8px;letter-spacing:1px;}
+  .agent-role{font-size:10px;color:var(--muted);margin-top:3px;}
+  .agent-badge{
+    margin-left:auto;font-family:'Press Start 2P',monospace;
+    font-size:6px;padding:3px 7px;border:1px solid currentColor;
+  }
+  .agent-badge.active{animation:blink 2s step-end infinite;}
+  .agent-badge.idle{animation:none;opacity:0.4;}
+  .hp-lbl{
+    font-family:'Press Start 2P',monospace;font-size:6px;
+    color:var(--muted);margin-bottom:4px;
+    display:flex;justify-content:space-between;
+  }
+  .hp-track{
+    background:#141414;height:8px;border:1px solid #222;
+    margin-bottom:10px;overflow:hidden;position:relative;
+  }
+  .hp-fill{height:100%;transition:width 0.6s ease;position:relative;}
+  .hp-fill::after{
+    content:'';position:absolute;inset:0;
+    background:repeating-linear-gradient(
+      90deg,transparent 0px,transparent 4px,
+      rgba(0,0,0,0.25) 4px,rgba(0,0,0,0.25) 5px
+    );
+  }
+  .agent-stats{font-size:10px;color:var(--muted);}
+  .agent-stats span{color:var(--text);}
+  .agent-chat-btn{
+    margin-top:10px;width:100%;
+    background:transparent;border:1px solid currentColor;
+    color:inherit;font-family:'Press Start 2P',monospace;
+    font-size:6px;padding:6px 0;cursor:pointer;
+    letter-spacing:2px;transition:background 0.15s,color 0.15s;
+    display:block;
+  }
+  .agent-chat-btn:hover{background:currentColor;color:#000;}
+  /* STATUS CARDS */
+  .status-grid{
+    display:grid;grid-template-columns:repeat(3,1fr);
+    gap:16px;padding:0 20px 16px;
+  }
+  @media(max-width:768px){.status-grid{grid-template-columns:1fr;}}
+  .status-card{background:var(--card);border:1px solid var(--border);padding:16px;}
+  .status-card-title{
+    font-family:'Press Start 2P',monospace;font-size:7px;
+    color:var(--neon2);letter-spacing:2px;margin-bottom:12px;
+    border-bottom:1px solid var(--border);padding-bottom:8px;
+  }
+  .sr{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:4px 0;border-bottom:1px solid #111;font-size:11px;
+  }
+  .sr:last-child{border-bottom:none;}
+  .sk{color:var(--muted);}
+  .sv{color:var(--text);}
+  .sv.ok{color:var(--neon);}
+  .sv.warn{color:var(--amber);}
+  .sv.err{color:var(--red);}
+  .pr{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #111;font-size:11px;}
+  .pr:last-child{border-bottom:none;}
+  .pc{color:var(--neon2);font-family:'Press Start 2P',monospace;font-size:7px;}
+  .pv{font-size:12px;}
+  .up{color:var(--neon);}
+  .dn{color:var(--red);}
+  /* TABLE */
+  .section-wrap{padding:0 20px 20px;}
+  .rtable{width:100%;border-collapse:collapse;font-size:11px;}
+  .rtable th{
+    font-family:'Press Start 2P',monospace;font-size:6px;
+    color:var(--neon);letter-spacing:1px;padding:8px;
+    border-bottom:1px solid var(--neon);text-align:left;background:#060606;
+  }
+  .rtable td{padding:6px 8px;border-bottom:1px solid var(--border);color:var(--text);}
+  .rtable tr:hover td{background:#121212;}
+  .bb{color:var(--neon);background:#00ff8811;border:1px solid #00ff8833;padding:1px 6px;font-size:10px;}
+  .bs{color:var(--red);background:#ff445511;border:1px solid #ff445533;padding:1px 6px;font-size:10px;}
+  /* CHAT */
+  .chat-panel{
+    position:fixed;bottom:0;right:20px;width:360px;
+    background:#080808;border:1px solid var(--neon);
+    border-bottom:none;box-shadow:0 0 20px #00ff8822;z-index:400;
+  }
+  .chat-hdr{
+    background:#0a120a;border-bottom:1px solid var(--neon);
+    padding:10px 14px;display:flex;align-items:center;gap:8px;cursor:pointer;
+  }
+  .chat-title{font-family:'Press Start 2P',monospace;font-size:7px;color:var(--neon);flex:1;}
+  .chat-msgs{max-height:280px;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:6px;}
+  .msg-u{align-self:flex-end;background:#0a1a0a;border:1px solid #00ff8833;padding:6px 10px;font-size:11px;max-width:85%;white-space:pre-wrap;word-break:break-word;}
+  .msg-b{background:#111;border:1px solid var(--border);padding:6px 10px;font-size:11px;max-width:85%;white-space:pre-wrap;word-break:break-word;}
+  .chat-in-row{padding:8px 10px;border-top:1px solid var(--border);display:flex;gap:6px;}
+  .chat-in-row input{
+    flex:1;background:#0a0a0a;border:1px solid var(--border);
+    color:var(--neon);font-family:'Share Tech Mono',monospace;
+    font-size:11px;padding:6px 10px;outline:none;
+  }
+  .chat-in-row input:focus{border-color:var(--neon);}
+  .chat-send{
+    background:#0a120a;border:1px solid var(--neon);
+    color:var(--neon);font-family:'Press Start 2P',monospace;
+    font-size:8px;padding:6px 10px;cursor:pointer;
+  }
+  .chat-send:hover{background:var(--neon);color:#000;}
+  @media(max-width:560px){
+    .chat-panel{width:100%;right:0;left:0;}
+    body{padding-bottom:200px;}
+  }
 </style>
 </head>
-<body class="bg-dark">
+<body>
+<div id="refresh-bar"></div>
 
-<nav class="navbar navbar-expand-lg navbar-dark">
-  <div class="container-fluid">
-    <a class="navbar-brand" href="#"><i class="fas fa-robot"></i> OpenClaw Dashboard</a>
-    <span class="navbar-text auto-refresh">
-      <i class="fas fa-clock"></i> {{ now }} &nbsp;·&nbsp; Auto-refresh <span id="cd">30</span>s
-    </span>
+<!-- HEADER -->
+<div class="hdr">
+  <div class="hdr-title">&#9670; OPENCLAW-CMD &#9670;</div>
+  <div class="hdr-status {% if not bot.running %}idle{% endif %}">
+    {% if bot.running %}&#9679; ONLINE{% else %}&#9675; IDLE{% endif %}
   </div>
-</nav>
-
-<div class="container-fluid mt-4">
-  <div class="row">
-
-<!-- SYSTEM STATUS -->
-<div class="col-md-6 col-lg-4 mb-4">
-  <div class="card h-100">
-    <div class="card-header collapsible" onclick="toggleCard(this)">
-      <h5 class="mb-0"><i class="fas fa-server section-icon"></i>System Status <i class="fas fa-chevron-down float-end"></i></h5>
-    </div>
-    <div class="card-body">
-      <div class="row mb-2">
-        <div class="col-6">ClawBot</div>
-        <div class="col-6">
-          {% if bot.running %}<span class="dot green"></span><span class="text-success">Active</span>
-          {% else %}<span class="dot amber"></span><span class="text-warning">Idle</span>{% endif %}
-          <small class="text-muted"> {{ bot.last_seen }}</small>
-        </div>
-      </div>
-      <div class="row mb-2">
-        <div class="col-6">Ollama</div>
-        <div class="col-6">
-          {% if ollama.online %}<span class="text-success"><i class="fas fa-check"></i> Online</span>
-          {% else %}<span class="text-danger"><i class="fas fa-times"></i> Offline</span>{% endif %}
-        </div>
-      </div>
-      {% if ollama.models %}
-      <div class="row mb-2">
-        <div class="col-6">Model</div>
-        <div class="col-6"><small class="text-muted">{{ ollama.active }}</small>
-      </div>
-      {% endif %}
-      <div class="row mb-2">
-        <div class="col-6">Claude API</div>
-        <div class="col-6">{% if claude_ok %}<span class="text-success"><i class="fas fa-check"></i> Configured</span>
-        {% else %}<span class="text-warning"><i class="fas fa-exclamation-triangle"></i> Not set</span>{% endif %}</div>
-      </div>
-      <div class="row mb-2">
-        <div class="col-6">Crypto.com</div>
-        <div class="col-6">{% if crypto_ok %}<span class="text-success"><i class="fas fa-check"></i> Configured</span>
-        {% else %}<span class="text-warning"><i class="fas fa-exclamation-triangle"></i> Not set</span>{% endif %}</div>
-      </div>
-      <div class="row">
-        <div class="col-6">Cache</div>
-        <div class="col-6">{{ cache.entries }} entries <small class="text-muted">{{ cache.newest }}</small></div>
-      </div>
-    </div>
+  <div class="hdr-nav">
+    <a href="/taskboard">TASKS</a>
+    <a href="/team">TEAM</a>
+    <a href="/portfolio">PORTFOLIO</a>
+    <a href="/holdings">HOLDINGS</a>
+    <a href="/clip-economy">CASHCLAW</a>
   </div>
+  <div class="hdr-clock" id="live-clock">00:00:00</div>
 </div>
 
-<!-- AUTO-TRADE STATUS -->
-<div class="col-md-6 col-lg-4 mb-4">
-  <div class="card h-100">
-    <div class="card-header collapsible" onclick="toggleCard(this)">
-      <h5 class="mb-0"><i class="fas fa-chart-line section-icon"></i>Auto-Trade <i class="fas fa-chevron-down float-end"></i></h5>
-    </div>
-    <div class="card-body">
-      {% if autotrade.enabled %}
-      <div class="row mb-2">
-        <div class="col-6">Status</div>
-        <div class="col-6"><span class="badge bg-success">ENABLED</span></div>
-      </div>
-      <div class="row mb-2">
-        <div class="col-6">Daily scan</div>
-        <div class="col-6 text-success">{{ autotrade.scan_time }} UTC</div>
-      </div>
-      <div class="row mb-2">
-        <div class="col-6">Timeframe</div>
-        <div class="col-6">{{ autotrade.timeframe }}</div>
-      </div>
-      <div class="row mb-3">
-        <div class="col-6">Strategy</div>
-        <div class="col-6"><small class="text-muted">RSI+MACD · 1.5% risk</small></div>
-      </div>
-      {% else %}
-      <div class="alert alert-warning">
-        Auto-trade is <strong>disabled</strong>.<br>
-        <small>Send /autotrade on in Telegram to enable.</small>
-      </div>
-      {% endif %}
-      <div class="row">
-        <div class="col-6">Total logged trades</div>
-        <div class="col-6 {% if trades|length > 0 %}text-success{% else %}text-warning{% endif %}">{{ trades|length }}</div>
-      </div>
-    </div>
-  </div>
+<!-- QUICK COMMANDS -->
+<div class="cmd-bar">
+  <span class="cmd-lbl">CMD:</span>
+  {% for cmd in ['/scan','/market','/fng','/status','/cashclaw','/scout run','/autotrade on'] %}
+  <button class="cmd-btn" onclick="copyCmd(this,'{{ cmd }}')"><span class="tip">COPIED</span>{{ cmd }}</button>
+  {% endfor %}
+  <span style="margin-left:auto;font-family:'Press Start 2P',monospace;font-size:6px;color:var(--muted);">REFRESH <span id="cd">30</span>s</span>
 </div>
 
-<!-- LIVE PRICES -->
-<div class="col-md-6 col-lg-4 mb-4">
-  <div class="card h-100 price-card">
-    <div class="card-header collapsible" onclick="toggleCard(this)">
-      <h5 class="mb-0"><i class="fas fa-coins section-icon"></i>Live Prices <i class="fas fa-chevron-down float-end"></i></h5>
+<!-- AGENTS -->
+<div class="sec-hdr">&#9672; AGENT <em>STATUS</em> &#8212; {{ now }}</div>
+<div class="agents-grid">
+
+{% set j_hp = [100, (usage.ollama_calls + usage.claude_calls) * 4 + 30] | min %}
+<div class="agent-card" style="border-color:#00ff88;color:#00ff88;">
+  <div class="agent-top">
+    <div class="agent-emoji">&#129504;</div>
+    <div>
+      <div class="agent-name" style="color:#00ff88;">JARVIS</div>
+      <div class="agent-role">Brain &middot; {{ ollama.active }}</div>
     </div>
-    <div class="card-body">
-      {% if prices %}
-        {% for coin, d in prices.items() %}
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <span class="text-muted">{{ coin }}/USDT</span>
-          <div>
-            <span class="fw-bold">${{ "{:,.2f}".format(d.price) }}</span>
-            <span class="ms-2 {{ 'text-success' if d.change >= 0 else 'text-danger' }}">{{ d.sign }}{{ d.change }}%</span>
-          </div>
-        </div>
+    <div class="agent-badge {% if bot.running %}active{% else %}idle{% endif %}" style="color:#00ff88;">
+      {% if bot.running %}ACTIVE{% else %}IDLE{% endif %}
+    </div>
+  </div>
+  <div class="hp-lbl"><span>HP</span><span>{{ [j_hp, 30] | max }}%</span></div>
+  <div class="hp-track"><div class="hp-fill" style="width:{{ [j_hp,30]|max }}%;background:#00ff88;box-shadow:0 0 6px #00ff88;"></div></div>
+  <div class="agent-stats">
+    ollama: <span>{{ usage.ollama_calls }}</span> &nbsp;
+    claude: <span>{{ usage.claude_calls }}</span> &nbsp;
+    cache: <span>{{ usage.cache_hits }}</span>
+  </div>
+  <button class="agent-chat-btn" onclick="openAgentChat('JARVIS')">&#9658; CHAT WITH JARVIS</button>
+</div>
+
+<div class="agent-card" style="border-color:#00ffff;color:#00ffff;">
+  <div class="agent-top">
+    <div class="agent-emoji">&#128269;</div>
+    <div>
+      <div class="agent-name" style="color:#00ffff;">SCOUT</div>
+      <div class="agent-role">Job Scout &middot; Whop/Discord</div>
+    </div>
+    <div class="agent-badge active" style="color:#00ffff;">STANDBY</div>
+  </div>
+  <div class="hp-lbl"><span>HP</span><span>60%</span></div>
+  <div class="hp-track"><div class="hp-fill" style="width:60%;background:#00ffff;box-shadow:0 0 6px #00ffff;"></div></div>
+  <div class="agent-stats">27 terms &middot; 5 categories &middot; 6h cycle</div>
+  <button class="agent-chat-btn" onclick="openAgentChat('SCOUT')">&#9658; CHAT WITH SCOUT</button>
+</div>
+
+{% set wd_hp = 90 if autotrade.enabled else 35 %}
+<div class="agent-card" style="border-color:#ffaa00;color:#ffaa00;">
+  <div class="agent-top">
+    <div class="agent-emoji">&#128021;</div>
+    <div>
+      <div class="agent-name" style="color:#ffaa00;">WATCHDOG</div>
+      <div class="agent-role">Auto-Trade &middot; RSI+MACD</div>
+    </div>
+    <div class="agent-badge {% if autotrade.enabled %}active{% else %}idle{% endif %}" style="color:#ffaa00;">
+      {% if autotrade.enabled %}ARMED{% else %}SAFE{% endif %}
+    </div>
+  </div>
+  <div class="hp-lbl"><span>HP</span><span>{{ wd_hp }}%</span></div>
+  <div class="hp-track"><div class="hp-fill" style="width:{{ wd_hp }}%;background:#ffaa00;box-shadow:0 0 6px #ffaa00;"></div></div>
+  <div class="agent-stats">
+    trades: <span>{{ trades|length }}</span> &nbsp;
+    {% if autotrade.enabled %}scan: <span>{{ autotrade.scan_time }} UTC</span>{% else %}<span>disabled</span>{% endif %}
+  </div>
+  <button class="agent-chat-btn" onclick="openAgentChat('WATCHDOG')">&#9658; CHAT WITH WATCHDOG</button>
+</div>
+
+{% set cx_hp = 80 if codereview.date else 25 %}
+<div class="agent-card" style="border-color:#9b59b6;color:#9b59b6;">
+  <div class="agent-top">
+    <div class="agent-emoji">&#9881;&#65039;</div>
+    <div>
+      <div class="agent-name" style="color:#9b59b6;">CODEX</div>
+      <div class="agent-role">Code Review &middot; Auto-Upgrade</div>
+    </div>
+    <div class="agent-badge {% if codereview.date %}active{% else %}idle{% endif %}" style="color:#9b59b6;">
+      {% if codereview.date %}ACTIVE{% else %}IDLE{% endif %}
+    </div>
+  </div>
+  <div class="hp-lbl"><span>HP</span><span>{{ cx_hp }}%</span></div>
+  <div class="hp-track"><div class="hp-fill" style="width:{{ cx_hp }}%;background:#9b59b6;box-shadow:0 0 6px #9b59b6;"></div></div>
+  <div class="agent-stats">
+    {% if codereview.date %}last: <span>{{ codereview.date }}</span>{% else %}no reviews yet{% endif %}
+    &nbsp; skills: <span>{{ skills|length }}</span>
+  </div>
+  <button class="agent-chat-btn" onclick="openAgentChat('CODEX')">&#9658; CHAT WITH CODEX</button>
+</div>
+
+<div class="agent-card" style="border-color:#ff6b35;color:#ff6b35;">
+  <div class="agent-top">
+    <div class="agent-emoji">&#129438;</div>
+    <div>
+      <div class="agent-name" style="color:#ff6b35;">CLIPPER</div>
+      <div class="agent-role">CashClaw &middot; HumanVoice</div>
+    </div>
+    <div class="agent-badge active" style="color:#ff6b35;">READY</div>
+  </div>
+  <div class="hp-lbl"><span>HP</span><span>70%</span></div>
+  <div class="hp-track"><div class="hp-fill" style="width:70%;background:#ff6b35;box-shadow:0 0 6px #ff6b35;"></div></div>
+  <div class="agent-stats">
+    <a href="/clip-economy" style="color:#ff6b35;text-decoration:none;">&#8594; income panel</a>
+  </div>
+  <button class="agent-chat-btn" onclick="openAgentChat('CLIPPER')">&#9658; CHAT WITH CLIPPER</button>
+</div>
+
+{% set hk_hp = 85 if prices else 20 %}
+<div class="agent-card" style="border-color:#ff00aa;color:#ff00aa;">
+  <div class="agent-top">
+    <div class="agent-emoji">&#129413;</div>
+    <div>
+      <div class="agent-name" style="color:#ff00aa;">HAWK</div>
+      <div class="agent-role">Market Watch &middot; Prices</div>
+    </div>
+    <div class="agent-badge {% if prices %}active{% else %}idle{% endif %}" style="color:#ff00aa;">
+      {% if prices %}LIVE{% else %}DARK{% endif %}
+    </div>
+  </div>
+  <div class="hp-lbl"><span>HP</span><span>{{ hk_hp }}%</span></div>
+  <div class="hp-track"><div class="hp-fill" style="width:{{ hk_hp }}%;background:#ff00aa;box-shadow:0 0 6px #ff00aa;"></div></div>
+  <div class="agent-stats">
+    {% if prices %}
+      {% for coin, d in prices.items() %}<span style="color:#ff00aa;">{{ coin }}</span> ${{ "{:,.0f}".format(d.price) }} &nbsp;{% endfor %}
+    {% else %}CoinGecko offline{% endif %}
+  </div>
+  <button class="agent-chat-btn" onclick="openAgentChat('HAWK')">&#9658; CHAT WITH HAWK</button>
+</div>
+
+</div>
+
+<!-- SYSTEM OVERVIEW -->
+<div class="sec-hdr">&#9672; SYSTEM <em>OVERVIEW</em></div>
+<div class="status-grid">
+
+  <div class="status-card">
+    <div class="status-card-title">SYSTEM</div>
+    <div class="sr"><span class="sk">ClawBot</span>
+      <span class="sv {% if bot.running %}ok{% else %}warn{% endif %}">{% if bot.running %}&#9679; ACTIVE ({{ bot.last_seen }}){% else %}&#9675; IDLE ({{ bot.last_seen }}){% endif %}</span></div>
+    <div class="sr"><span class="sk">Ollama</span>
+      <span class="sv {% if ollama.online %}ok{% else %}err{% endif %}">{% if ollama.online %}&#9679; {{ ollama.active }}{% else %}&#10007; OFFLINE{% endif %}</span></div>
+    <div class="sr"><span class="sk">Claude API</span>
+      <span class="sv {% if claude_ok %}ok{% else %}warn{% endif %}">{% if claude_ok %}&#9679; SET{% else %}&#9675; NOT SET{% endif %}</span></div>
+    <div class="sr"><span class="sk">Crypto.com</span>
+      <span class="sv {% if crypto_ok %}ok{% else %}warn{% endif %}">{% if crypto_ok %}&#9679; SET{% else %}&#9675; NOT SET{% endif %}</span></div>
+    <div class="sr"><span class="sk">Cache</span>
+      <span class="sv">{{ cache.entries }} entries &middot; {{ cache.newest }}</span></div>
+    <div class="sr"><span class="sk">Auto-Trade</span>
+      <span class="sv {% if autotrade.enabled %}ok{% else %}warn{% endif %}">{% if autotrade.enabled %}ENABLED{% else %}DISABLED{% endif %}</span></div>
+  </div>
+
+  <div class="status-card">
+    <div class="status-card-title">LIVE PRICES</div>
+    {% if prices %}
+      {% for coin, d in prices.items() %}
+      <div class="pr">
+        <span class="pc">{{ coin }}</span>
+        <span class="pv">${{ "{:,.2f}".format(d.price) }}</span>
+        <span class="{% if d.change >= 0 %}up{% else %}dn{% endif %}">{{ d.sign }}{{ d.change }}%</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div style="color:var(--muted);font-size:11px;padding:8px 0;">CoinGecko unavailable</div>
+    {% endif %}
+  </div>
+
+  <div class="status-card">
+    <div class="status-card-title">BRAIN TODAY</div>
+    <div class="sr"><span class="sk">Ollama</span><span class="sv ok">{{ usage.ollama_calls }} calls</span></div>
+    <div class="sr"><span class="sk">Claude</span>
+      <span class="sv {% if usage.claude_calls > 0 %}warn{% else %}ok{% endif %}">{{ usage.claude_calls }} calls</span></div>
+    <div class="sr"><span class="sk">Cache hits</span><span class="sv ok">{{ usage.cache_hits }}</span></div>
+    <div class="sr"><span class="sk">Tokens in</span>
+      <span class="sv">{{ "{:,}".format(usage.claude_input_tokens) }}</span></div>
+    {% set cost = (usage.claude_input_tokens * 0.00000025) + (usage.claude_output_tokens * 0.00000125) %}
+    <div class="sr"><span class="sk">API cost</span>
+      <span class="sv {% if cost > 0.01 %}warn{% else %}ok{% endif %}">${{ "%.4f"|format(cost) }}</span></div>
+    <div class="sr"><span class="sk">Model</span>
+      <span class="sv" style="font-size:10px;">{{ ollama.active }}</span></div>
+  </div>
+
+</div>
+
+<!-- DATA FEEDS -->
+<div class="sec-hdr">&#9672; DATA <em>FEEDS</em></div>
+<div class="status-grid">
+
+  <div class="status-card">
+    <div class="status-card-title">REMINDERS</div>
+    {% if tasks %}
+      {% for t in tasks[:5] %}
+      <div class="sr">
+        <span class="sk">{{ t.time }}</span>
+        <span class="sv" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px;">{{ t.text[:38] }}{% if t.text|length > 38 %}&hellip;{% endif %}</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div style="color:var(--muted);font-size:10px;padding:8px 0;">No reminders. /remind HH:MM text</div>
+    {% endif %}
+  </div>
+
+  <div class="status-card">
+    <div class="status-card-title">KNOWLEDGE &middot; {{ notes.count }}</div>
+    {% if notes.count > 0 %}
+      {% for n in notes.recent[:4] %}
+      <div class="sr">
+        <span class="sk" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:65%;">{{ n.title[:32] }}</span>
+        <span class="sv" style="color:#444;font-size:10px;">{{ n.timestamp[:10] }}</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div style="color:var(--muted);font-size:10px;padding:8px 0;">No notes. /save in Telegram.</div>
+    {% endif %}
+  </div>
+
+  <div class="status-card">
+    <div class="status-card-title">BACKTEST</div>
+    {% if backtest and backtest.ranking %}
+      <div class="sr"><span class="sk">Strategy</span><span class="sv ok">{{ backtest.top_strategy }}</span></div>
+      <div class="sr"><span class="sk">Pair</span><span class="sv">{{ backtest.top_pair }}</span></div>
+      <div class="sr"><span class="sk">Return</span>
+        <span class="sv {% if backtest.top_return > 0 %}ok{% else %}err{% endif %}">{{ "%+.0f"|format(backtest.top_return) }}%</span></div>
+      <div class="sr"><span class="sk">Win rate</span><span class="sv">{{ backtest.top_winrate }}%</span></div>
+    {% else %}
+      <div style="color:var(--muted);font-size:10px;padding:8px 0;">No data. /backtest run</div>
+    {% endif %}
+  </div>
+
+</div>
+
+<!-- TRADE LOG -->
+<div class="sec-hdr">&#9672; TRADE <em>LOG</em> ({{ trades|length }} entries)</div>
+<div class="section-wrap">
+  {% if trades %}
+  <div style="overflow-x:auto;">
+    <table class="rtable">
+      <thead>
+        <tr><th>TIME</th><th>COIN</th><th>ACTION</th><th>USD</th><th>STATUS</th><th>NOTES</th></tr>
+      </thead>
+      <tbody>
+        {% for t in trades|reverse %}
+        <tr>
+          <td style="color:var(--muted);">{{ t.get('timestamp','')[:16]|replace('T',' ') }}</td>
+          <td style="color:var(--neon2);">{{ t.get('coin','?') }}</td>
+          <td>{% set act=t.get('action','') %}<span class="{% if act=='BUY' %}bb{% else %}bs{% endif %}">{{ act or '&mdash;' }}</span></td>
+          <td style="font-family:monospace;">${{ "%.2f"|format(t.get('usd_amount',0)|float) }}</td>
+          <td>{% set st=t.get('status','') %}<span style="color:{% if st=='executed' %}var(--neon){% elif st=='error' %}var(--red){% else %}var(--amber){% endif %};">{{ st or '&mdash;' }}</span></td>
+          <td style="color:var(--muted);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ t.get('reason',t.get('notes',''))[:50] }}</td>
+        </tr>
         {% endfor %}
-      {% else %}
-        <div class="text-center text-muted">CoinGecko unavailable — refresh to retry</div>
-      {% endif %}
-    </div>
+      </tbody>
+    </table>
   </div>
-</div>
-
-<!-- BRAIN STATS -->
-<div class="col-md-6 col-lg-4 mb-4">
-  <div class="card h-100">
-    <div class="card-header collapsible" onclick="toggleCard(this)">
-      <h5 class="mb-0"><i class="fas fa-brain section-icon"></i>Brain Stats — Today <i class="fas fa-chevron-down float-end"></i></h5>
-    </div>
-    <div class="card-body">
-      <div class="row mb-2">
-        <div class="col-7">Ollama (free)</div>
-        <div class="col-5 text-success">{{ usage.ollama_calls }} calls</div>
-      </div>
-      <div class="row mb-2">
-        <div class="col-7">Claude Haiku</div>
-        <div class="col-5 {% if usage.claude_calls > 0 %}text-warning{% endif %}">{{ usage.claude_calls }} calls</div>
-      </div>
-      <div class="row mb-2">
-        <div class="col-7">Cache hits</div>
-        <div class="col-5 text-success">{{ usage.cache_hits }} <i class="fas fa-database"></i></div>
-      </div>
-      <div class="row mb-2">
-        <div class="col-7">Tokens in / out</div>
-        <div class="col-5 text-muted">{{ "{:,}".format(usage.claude_input_tokens) }} / {{ "{:,}".format(usage.claude_output_tokens) }}</div>
-      </div>
-      <div class="row">
-        <div class="col-7">API cost today</div>
-        {% set cost = (usage.claude_input_tokens * 0.00000025) + (usage.claude_output_tokens * 0.00000125) %}
-        <div class="col-5 {% if cost > 0.01 %}text-warning{% else %}text-success{% endif %}">${{ "%.4f"|format(cost) }}</div>
-      </div>
-    </div>
+  {% else %}
+  <div style="font-family:'Press Start 2P',monospace;font-size:8px;color:var(--muted);padding:16px 0;">
+    NO TRADES LOGGED &mdash; /autotrade on
   </div>
+  {% endif %}
 </div>
-
-<!-- BACKTEST RESULTS -->
-<div class="col-md-6 col-lg-4 mb-4">
-  <div class="card h-100">
-    <div class="card-header collapsible" onclick="toggleCard(this)">
-      <h5 class="mb-0"><i class="fas fa-chart-bar section-icon"></i>Backtest Results <i class="fas fa-chevron-down float-end"></i></h5>
-    </div>
-    <div class="card-body">
-      {% if backtest and backtest.ranking %}
-        <div class="text-muted mb-3">{{ backtest.period_days // 365 }}Y history · generated {{ backtest.generated }}</div>
-        <div class="table-responsive">
-          <table class="table table-sm">
-            <thead>
-              <tr><th>#</th><th>Strategy / Pair</th><th>Return</th><th>Win%</th></tr>
-            </thead>
-            <tbody>
-              {% for r in backtest.ranking %}
-              <tr>
-                <td class="text-muted">{{ loop.index }}</td>
-                <td><span>{{ r.strategy }}</span><br><small class="text-muted">{{ r.pair }}</small></td>
-                <td class="{% if r.total_return_pct > 0 %}text-success{% else %}text-danger{% endif %}">
-                  {{ "%+.0f"|format(r.total_return_pct) }}%</td>
-                <td class="text-muted">{{ r.win_rate }}%</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      {% else %}
-        <div class="text-center text-muted">No backtest data yet.<br><small>Run /backtest run in Telegram.</small></div>
-      {% endif %}
-    </div>
-  </div>
-</div>
-
-<!-- KNOWLEDGE NOTES -->
-<div class="col-md-6 col-lg-4 mb-4">
-  <div class="card h-100">
-    <div class="card-header collapsible" onclick="toggleCard(this)">
-      <h5 class="mb-0"><i class="fas fa-book section-icon"></i>Knowledge Notes <i class="fas fa-chevron-down float-end"></i></h5>
-    </div>
-    <div class="card-body">
-      {% if notes.count > 0 %}
-        <div class="text-muted mb-3">{{ notes.count }} saved notes</div>
-        {% for n in notes.recent %}
-        <div class="mb-3">
-          <div class="fw-bold">{{ n.title[:60] }}{% if n.title|length > 60 %}…{% endif %}</div>
-          <div class="text-muted small">
-            {{ n.timestamp[:10] }}
-            {% for tag in n.tags[:3 %}<span class="badge bg-info ms-1">#{{ tag }}</span>{% endfor %}
-          </div>
-        </div>
-        {% endfor %}
-      {% else %}
-        <div class="text-center text-muted">No notes yet.<br><small>Use /save in Telegram after a good conversation.</small></div>
-      {% endif %}
-    </div>
-  </div>
-</div>
-
-<!-- REMINDERS -->
-<div class="col-md-6 col-lg-4 mb-4">
-  <div class="card h-100">
-    <div class="card-header collapsible" onclick="toggleCard(this)">
-      <h5 class="mb-0"><i class="fas fa-bell section-icon"></i>Pending Reminders <i class="fas fa-chevron-down float-end"></i></h5>
-    </div>
-    <div class="card-body">
-      {% if tasks %}
-        <div class="table-responsive">
-          <table class="table table-sm">
-            <thead>
-              <tr><th>Time (UTC)</th><th>Reminder</th></tr>
-            </thead>
-            <tbody>
-              {% for t in tasks %}
-              <tr>
-                <td class="text-success">{{ t.time }}</td>
-                <td>{{ t.text }}</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      {% else %}
-        <div class="text-center text-muted">No pending reminders.<br><small>Use /remind HH:MM text in Telegram.</small></div>
-      {% endif %}
-    </div>
-  </div>
-</div>
-
-<!-- ORCHESTRATION TASKS -->
-<div class="col-md-6 col-lg-4 mb-4">
-  <div class="card h-100">
-    <div class="card-header collapsible" onclick="toggleCard(this)">
-      <h5 class="mb-0"><i class="fas fa-users-cog section-icon"></i>Orchestration Tasks <i class="fas fa-chevron-down float-end"></i></h5>
-    </div>
-    <div class="card-body">
-      {% if orchestration %}
-        <div class="table-responsive">
-          <table class="table table-sm">
-            <thead>
-              <tr><th>ID</th><th>Task</th><th>State</th><th>Assigned</th><th>Actions</th></tr>
-            </thead>
-            <tbody>
-              {% for t in orchestration %}
-              <tr>
-                <td><small class="text-muted font-monospace">{{ t.id[-8:] }}</small></td>
-                <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis">{{ t.title }}</td>
-                <td>
-                  <span class="badge {% if t.state == 'done' %}bg-success{% elif t.state == 'in_progress' %}bg-warning{% elif t.state == 'review' %}bg-info{% else %}bg-secondary{% endif %}">
-                    {{ t.state|replace('_', ' ') }}
-                  </span>
-                </td>
-                <td><small class="text-muted">{{ t.assigned_to[:12] }}{% if t.assigned_to|length > 12 %}…{% endif %}</small></td>
-                <td>
-                  {% if t.state == 'pending' %}
-                    <button class="btn btn-sm btn-outline-success" onclick="updateTask('{{ t.id }}', 'start')"><i class="fas fa-play"></i></button>
-                  {% elif t.state == 'in_progress' %}
-                    <button class="btn btn-sm btn-outline-primary" onclick="updateTask('{{ t.id }}', 'review')"><i class="fas fa-check"></i></button>
-                  {% elif t.state == 'review' %}
-                    <button class="btn btn-sm btn-outline-success" onclick="updateTask('{{ t.id }}', 'done')"><i class="fas fa-check-double"></i></button>
-                  {% endif %}
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      {% else %}
-        <div class="text-center text-muted">No orchestration tasks yet.<br><small>Use /orchestrate create in Telegram.</small></div>
-      {% endif %}
-    </div>
-  </div>
-</div>
-
-<!-- CODE REVIEW -->
-<div class="col-md-6 col-lg-4 mb-4">
-  <div class="card h-100">
-    <div class="card-header collapsible" onclick="toggleCard(this)">
-      <h5 class="mb-0"><i class="fas fa-code section-icon"></i>Last Code Review <i class="fas fa-chevron-down float-end"></i></h5>
-    </div>
-    <div class="card-body">
-      {% if codereview.date %}
-        <div class="row mb-2">
-          <div class="col-4">Date</div>
-          <div class="col-8 text-success">{{ codereview.date }}</div>
-        </div>
-        <div class="text-muted small">{{ codereview.preview[:250] }}{% if codereview.preview|length > 250 %}…{% endif %}</div>
-      {% else %}
-        <div class="text-center text-muted">No code reviews yet.<br><small>Run /codereview run in Telegram.</small></div>
-      {% endif %}
-    </div>
-  </div>
-</div>
-
-<!-- RECENT TRADES (full width) -->
-<div class="col-12 mb-4">
-  <div class="card">
-    <div class="card-header collapsible" onclick="toggleCard(this)">
-      <h5 class="mb-0"><i class="fas fa-history section-icon"></i>Recent Trade Log <i class="fas fa-chevron-down float-end"></i></h5>
-    </div>
-    <div class="card-body">
-      {% if trades %}
-        <div class="table-responsive">
-          <table class="table table-sm">
-            <thead>
-              <tr><th>Time</th><th>Coin</th><th>Action</th><th>Conf</th><th>USD</th><th>Status</th><th>Notes</th></tr>
-            </thead>
-            <tbody>
-              {% for t in trades|reverse %}
-              <tr>
-                <td class="text-muted small">{{ t.get('timestamp','')[:16]|replace('T',' ') }}</td>
-                <td>{{ t.get('coin', t.get('action','?')) }}</td>
-                <td>
-                  {% set act = t.get('action','') %}
-                  <span class="badge {% if act == 'BUY' %}bg-success{% elif act == 'SELL' %}bg-danger{% else %}bg-warning{% endif %}">
-                    {{ act or '—' }}
-                  </span>
-                </td>
-                <td class="text-muted">{{ t.get('confidence','—') }}</td>
-                <td class="font-monospace">${{ "%.2f"|format(t.get('usd_amount',0)|float) }}</td>
-                <td>
-                  {% set st = t.get('status','') %}
-                  <span class="badge {% if st == 'executed' %}bg-success{% elif st == 'error' %}bg-danger{% else %}bg-warning{% endif %}">
-                    {{ st or '—' }}
-                  </span>
-                </td>
-                <td class="text-muted small">{{ t.get('reason', t.get('notes',''))[:60] }}</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      {% else %}
-        <div class="text-center text-muted">No trades logged yet. Enable /autotrade on in Telegram to start collecting data.</div>
-      {% endif %}
-    </div>
-  </div>
-</div>
-
-  </div><!-- /row -->
-</div><!-- /container -->
 
 <!-- CHAT PANEL -->
-<div class="chat-panel d-flex flex-column" id="chat-panel">
-  <!-- Header -->
-  <div class="chat-header d-flex align-items-center justify-content-between p-3" onclick="toggleChat()">
-    <span class="fw-bold text-success"><i class="fas fa-robot"></i> ClawBot Chat</span>
-    <div class="d-flex gap-2 align-items-center">
-      <span id="brain-badge" class="text-muted small font-monospace"></span>
-      <button onclick="clearChat(event)" class="btn btn-sm btn-outline-secondary" title="Clear chat"><i class="fas fa-redo"></i></button>
-      <span id="chat-toggle-icon"><i class="fas fa-chevron-up"></i></span>
-    </div>
+<div class="chat-panel" id="chat-panel">
+  <div class="chat-hdr" onclick="toggleChat()">
+    <span style="color:var(--neon);">&#9658;</span>
+    <span class="chat-title">CLAWBOT CHAT</span>
+    <span id="brain-badge" style="font-size:9px;color:var(--muted);"></span>
+    <button onclick="clearChat(event)" style="background:none;border:1px solid var(--muted);color:var(--muted);font-size:9px;padding:2px 7px;cursor:pointer;font-family:'Share Tech Mono',monospace;margin-left:8px;">CLR</button>
+    <span id="chat-toggle-icon" style="font-size:10px;color:var(--muted);margin-left:6px;">&#9650;</span>
   </div>
-
-  <!-- Messages -->
-  <div id="chat-messages" class="chat-messages d-flex flex-column gap-2 p-3">
-    <div class="msg-bot p-2 rounded">
-      Hey Ronnie — what's on your mind? Ask me anything about OpenClaw, trading, or ideas.
-    </div>
+  <div id="chat-messages" class="chat-msgs">
+    <div class="msg-b">CLAWBOT ONLINE &#8212; what's the move, Ronnie?</div>
   </div>
-
-  <!-- Input -->
-  <div class="p-3 border-top">
-    <div class="input-group">
-      <input id="chat-input" type="text" class="form-control" placeholder="Ask ClawBot..." onkeydown="if(event.key==='Enter' && !event.shiftKey){sendChat();event.preventDefault();}">
-      <button onclick="sendChat()" id="send-btn" class="btn btn-custom"><i class="fas fa-paper-plane"></i></button>
-    </div>
+  <div class="chat-in-row" id="chat-input-row">
+    <input id="chat-input" type="text" placeholder="> ask clawbot..."
+      onkeydown="if(event.key==='Enter'&&!event.shiftKey){sendChat();event.preventDefault();}">
+    <button class="chat-send" onclick="sendChat()" id="send-btn">&#9658;</button>
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-  // ── Dashboard auto-refresh (pauses while chat is active) ───────────────────
-  let t = 30;
-  let chatActive = false;  // pause refresh while user is chatting
-  const el = document.getElementById('cd');
-  setInterval(() => {
-    if (chatActive) { t = 30; el.textContent = t; return; }
-    t--;
-    if (t <= 0) location.reload();
-    else el.textContent = t;
-  }, 1000);
+// Clock
+function updateClock(){
+  const n=new Date(),p=s=>String(s).padStart(2,'0');
+  document.getElementById('live-clock').textContent=p(n.getHours())+':'+p(n.getMinutes())+':'+p(n.getSeconds());
+}
+updateClock();setInterval(updateClock,1000);
 
-  // ── Collapsible cards ──────────────────────────────────────────────────────
-  function toggleCard(header) {
-    const body = header.nextElementSibling;
-    const icon = header.querySelector('.fa-chevron-down, .fa-chevron-up');
-    if (body.style.display === 'none') {
-      body.style.display = 'block';
-      icon.classList.remove('fa-chevron-up');
-      icon.classList.add('fa-chevron-down');
+// Auto-refresh
+const RS=30;let t=RS,chatActive=false;
+const el=document.getElementById('cd'),bar=document.getElementById('refresh-bar');
+function upBar(){bar.style.width=((RS-t)/RS*100)+'%';}upBar();
+setInterval(()=>{
+  if(chatActive){t=RS;el.textContent=t;upBar();return;}
+  t--;el.textContent=t;upBar();if(t<=0)location.reload();
+},1000);
+
+// Copy commands
+function copyCmd(btn,cmd){
+  navigator.clipboard.writeText(cmd).catch(()=>{});
+  btn.classList.add('copied');setTimeout(()=>btn.classList.remove('copied'),1200);
+}
+
+// Chat
+let chatOpen=true;
+let _activeAgent=null;  // null = CLAWBOT (general), else "JARVIS"|"SCOUT" etc.
+const AGENT_COLORS={JARVIS:'#00ff88',SCOUT:'#00ffff',WATCHDOG:'#ffaa00',CODEX:'#9b59b6',CLIPPER:'#ff6b35',HAWK:'#ff00aa'};
+const msgs=document.getElementById('chat-messages');
+const inp=document.getElementById('chat-input');
+const CK='clawbot_chat_history';
+
+function _ckKey(){return _activeAgent?'agent_chat_'+_activeAgent:CK;}
+
+function _save(){
+  const items=[];
+  msgs.querySelectorAll('div[data-role]').forEach(d=>{
+    items.push({role:d.dataset.role,text:d.dataset.text,brain:d.dataset.brain||''});
+  });
+  localStorage.setItem(_ckKey(),JSON.stringify(items.slice(-20)));
+}
+function _restore(){
+  try{
+    const key=_ckKey();
+    // Clear visible messages first
+    while(msgs.children.length>0)msgs.removeChild(msgs.lastChild);
+    const saved=JSON.parse(localStorage.getItem(key)||'[]');
+    if(saved.length===0){
+      const welcome=document.createElement('div');
+      welcome.className='msg-b';
+      welcome.textContent=_activeAgent
+        ?(_activeAgent+' online — what do you need?')
+        :'CLAWBOT ONLINE \u2014 what\'s the move, Ronnie?';
+      msgs.appendChild(welcome);
     } else {
-      body.style.display = 'none';
-      icon.classList.remove('fa-chevron-down');
-      icon.classList.add('fa-chevron-up');
+      saved.forEach(m=>_add(m.text,m.role,m.brain));
     }
-  }
+  }catch(e){}
+}
+_restore();
 
-  // ── Chat panel ─────────────────────────────────────────────────────────────
-  let chatOpen = true;
-  const msgs   = document.getElementById('chat-messages');
-  const input  = document.getElementById('chat-input');
+function openAgentChat(agentName){
+  _activeAgent=agentName;
+  const color=AGENT_COLORS[agentName]||'var(--neon)';
+  // Update header
+  document.querySelector('.chat-title').textContent=agentName+' CHAT';
+  document.querySelector('.chat-hdr').style.borderBottomColor=color;
+  document.querySelector('.chat-panel').style.borderColor=color;
+  document.querySelector('.chat-panel').style.boxShadow='0 0 20px '+color+'33';
+  // Reload history for this agent
+  _restore();
+  // Open if closed
+  if(!chatOpen){chatOpen=true;msgs.style.display='flex';document.getElementById('chat-input-row').style.display='flex';document.getElementById('chat-toggle-icon').textContent='\u25B2';}
+  // Scroll panel into view on mobile
+  document.querySelector('.chat-panel').scrollIntoView({behavior:'smooth',block:'end'});
+  inp.focus();
+}
 
-  // Restore chat history from localStorage on page load
-  const _CHAT_KEY = 'clawbot_chat_history';
-  function _saveChat() {
-    const items = [];
-    msgs.querySelectorAll('div[data-role]').forEach(d => {
-      items.push({role: d.dataset.role, text: d.dataset.text, brain: d.dataset.brain || ''});
-    });
-    localStorage.setItem(_CHAT_KEY, JSON.stringify(items.slice(-20)));
-  }
-  function _restoreChat() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(_CHAT_KEY) || '[]');
-      saved.forEach(m => _addMsgRaw(m.text, m.role, m.brain));
-    } catch(e) {}
-  }
-  _restoreChat();
+function resetToClawbot(){
+  _activeAgent=null;
+  document.querySelector('.chat-title').textContent='CLAWBOT CHAT';
+  document.querySelector('.chat-hdr').style.borderBottomColor='var(--neon)';
+  document.querySelector('.chat-panel').style.borderColor='var(--neon)';
+  document.querySelector('.chat-panel').style.boxShadow='0 0 20px #00ff8822';
+  _restore();
+}
 
-  function toggleChat() {
-    chatOpen = !chatOpen;
-    const panel = document.getElementById('chat-panel');
-    const messages = panel.querySelector('.chat-messages');
-    const inputDiv = panel.querySelector('.border-top');
-    const icon = document.getElementById('chat-toggle-icon');
-    
-    if (chatOpen) {
-      messages.style.display = 'flex';
-      inputDiv.style.display = 'block';
-      icon.innerHTML = '<i class="fas fa-chevron-up"></i>';
+function toggleChat(){
+  chatOpen=!chatOpen;
+  msgs.style.display=chatOpen?'flex':'none';
+  document.getElementById('chat-input-row').style.display=chatOpen?'flex':'none';
+  document.getElementById('chat-toggle-icon').textContent=chatOpen?'\u25B2':'\u25BC';
+}
+function _add(text,type,brain){
+  const d=document.createElement('div');
+  d.className=type==='user'?'msg-u':'msg-b';
+  d.dataset.role=type;d.dataset.text=text;d.dataset.brain=brain||'';
+  d.textContent=text;
+  if(brain&&type==='bot'){
+    const b=document.createElement('span');
+    b.textContent=' ('+brain+')';b.style.cssText='color:#555;font-size:9px;';d.appendChild(b);
+    document.getElementById('brain-badge').textContent=brain;
+  }
+  msgs.appendChild(d);msgs.scrollTop=msgs.scrollHeight;return d;
+}
+async function sendChat(){
+  const text=inp.value.trim();if(!text)return;
+  inp.value='';inp.disabled=true;
+  document.getElementById('send-btn').disabled=true;chatActive=true;
+  _add(text,'user','');_save();
+  const th=_add('...','bot','');
+  try{
+    let endpoint,body;
+    if(_activeAgent){
+      endpoint='/api/chat/agent';
+      body={agent:_activeAgent,message:text};
     } else {
-      messages.style.display = 'none';
-      inputDiv.style.display = 'none';
-      icon.innerHTML = '<i class="fas fa-chevron-down"></i>';
+      endpoint='/api/chat';
+      body={message:text};
     }
-  }
-
-  function _addMsgRaw(text, type, brain) {
-    const div = document.createElement('div');
-    div.className = `p-2 rounded ${type === 'user' ? 'msg-user' : 'msg-bot'}`;
-    div.style.cssText = 'font-size: 0.9rem; line-height: 1.4; white-space: pre-wrap; word-break: break-word; max-width: 85%;';
-    if (type === 'user') div.style.alignSelf = 'flex-end';
-    div.dataset.role = type;
-    div.dataset.text = text;
-    div.dataset.brain = brain || '';
-    div.textContent = text;
-    if (brain && type === 'bot') {
-      const badge = document.createElement('span');
-      badge.textContent = ' (' + brain + ')';
-      badge.className = 'text-muted small ms-1';
-      div.appendChild(badge);
-      document.getElementById('brain-badge').textContent = brain;
+    const res=await fetch(endpoint,{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body)});
+    const data=await res.json();
+    if(data.error){th.textContent='ERROR: '+data.error;th.style.color='var(--red)';}
+    else{
+      th.textContent=data.reply;th.dataset.text=data.reply;th.dataset.brain=data.brain||'';
+      const b=document.createElement('span');
+      const label=data.agent?data.agent+'/'+data.brain:data.brain||'';
+      b.textContent=' ('+label+')';
+      b.style.cssText='color:#555;font-size:9px;';th.appendChild(b);
+      document.getElementById('brain-badge').textContent=label;
     }
-    msgs.appendChild(div);
-    msgs.scrollTop = msgs.scrollHeight;
-    return div;
+    _save();
+  }catch(e){th.textContent='CONNECTION ERROR';th.style.color='var(--red)';}
+  inp.disabled=false;document.getElementById('send-btn').disabled=false;
+  chatActive=false;inp.focus();
+}
+async function clearChat(e){
+  e.stopPropagation();
+  if(_activeAgent){
+    await fetch('/api/chat/agent/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:_activeAgent})});
+    localStorage.removeItem(_ckKey());
+  } else {
+    await fetch('/api/chat/clear',{method:'POST'});
+    localStorage.removeItem(CK);
   }
-
-  function addMsg(text, type, brain) {
-    return _addMsgRaw(text, type, brain);
-  }
-
-  async function sendChat() {
-    const text = input.value.trim();
-    if (!text) return;
-
-    input.value = '';
-    input.disabled = true;
-    document.getElementById('send-btn').disabled = true;
-    chatActive = true;  // pause auto-refresh while waiting
-
-    addMsg(text, 'user');
-    _saveChat();
-    const thinking = addMsg('...', 'bot');
-
-    try {
-      const res  = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({message: text}),
-      });
-      const data = await res.json();
-      if (data.error) {
-        thinking.textContent = 'Error: ' + data.error;
-        thinking.classList.add('text-danger');
-        thinking.dataset.text = 'Error: ' + data.error;
-      } else {
-        thinking.textContent = data.reply;
-        thinking.dataset.text = data.reply;
-        thinking.dataset.brain = data.brain || '';
-        const badge = document.createElement('span');
-        badge.textContent = ' (' + (data.brain || '') + ')';
-        badge.className = 'text-muted small ms-1';
-        thinking.appendChild(badge);
-        document.getElementById('brain-badge').textContent = data.brain || '';
-      }
-      _saveChat();
-    } catch (e) {
-      thinking.textContent = 'Connection error — is the dashboard running?';
-      thinking.classList.add('text-danger');
-    }
-    input.disabled = false;
-    document.getElementById('send-btn').disabled = false;
-    chatActive = false;  // allow auto-refresh again
-    input.focus();
-  }
-
-  async function clearChat(e) {
-    e.stopPropagation();
-    await fetch('/api/chat/clear', {method:'POST'});
-    localStorage.removeItem(_CHAT_KEY);
-    while (msgs.children.length > 1) msgs.removeChild(msgs.lastChild);
-    document.getElementById('brain-badge').textContent = '';
-  }
-
-  // ── Task management ────────────────────────────────────────────────────────
-  async function updateTask(taskId, action) {
-    try {
-      const res = await fetch('/api/task/update', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({task_id: taskId, action: action}),
-      });
-      const data = await res.json();
-      if (data.success) {
-        location.reload();
-      } else {
-        alert('Error updating task: ' + (data.error || 'Unknown error'));
-      }
-    } catch (e) {
-      alert('Connection error: ' + e.message);
-    }
-  }
-
-  input.focus();
+  while(msgs.children.length>0)msgs.removeChild(msgs.lastChild);
+  const welcome=document.createElement('div');welcome.className='msg-b';
+  welcome.textContent=_activeAgent?(_activeAgent+' memory cleared.'):('CLAWBOT ONLINE \u2014 what\'s the move, Ronnie?');
+  msgs.appendChild(welcome);
+  document.getElementById('brain-badge').textContent='';
+}
+// Click chat title to return to ClawBot
+document.querySelector('.chat-title').addEventListener('click',function(e){e.stopPropagation();resetToClawbot();});
+inp.focus();
 </script>
 </body>
-</html>"""
+</html>
+"""
 
 
 # ── Chat API ───────────────────────────────────────────────────────────────────
@@ -856,6 +1141,154 @@ def api_chat_clear():
     return jsonify({"ok": True})
 
 
+# ── Per-agent chat histories ───────────────────────────────────────────────────
+_agent_histories: dict = {}   # keyed by agent name
+
+_AGENT_SYSTEMS = {
+    "JARVIS": (
+        "You are JARVIS, the core brain of OpenClaw trading bot. "
+        "You handle LLM reasoning, market analysis, and decision-making via Ollama (mistral:latest) "
+        "with Claude Haiku fallback. Answer concisely. Ronnie is your operator."
+    ),
+    "SCOUT": (
+        "You are SCOUT, OpenClaw's job hunting agent. You search Whop, Discord, Upwork and other "
+        "platforms using 27 search terms across 5 categories: Telegram/Discord bots, Python scripts, "
+        "AI automation, content/ghostwriting, crypto newsletters. "
+        "Help Ronnie find and evaluate freelance gigs. Be direct and practical."
+    ),
+    "WATCHDOG": (
+        "You are WATCHDOG, OpenClaw's auto-trading sentinel. You monitor RSI+MACD signals on "
+        "Crypto.com, manage DCA positions, and guard against bad trades. "
+        "Give trading insights, risk assessments, and signal analysis. "
+        "Always note: real trades require /autotrade on in Telegram."
+    ),
+    "CODEX": (
+        "You are CODEX, OpenClaw's code intelligence agent. You run automated code reviews, "
+        "manage the auto-upgrade pipeline, and maintain code quality. "
+        "You know the full OpenClaw codebase: Python, Flask, python-telegram-bot, APScheduler. "
+        "Help with code questions, reviews, and debugging."
+    ),
+    "CLIPPER": (
+        "You are CLIPPER, OpenClaw's CashClaw income agent. You handle the full outreach pipeline: "
+        "Scout finds jobs → quality gate filters → HumanVoice (Ollama draft + Haiku rewrite) "
+        "humanizes cold outreach → Ronnie approves → message sent. "
+        "Help write and improve outreach messages. If given raw text, offer to humanize it."
+    ),
+    "HAWK": (
+        "You are HAWK, OpenClaw's market intelligence agent. You track live crypto prices, "
+        "fear & greed index, news sentiment, and macro signals. "
+        "Give sharp, data-driven market reads. No fluff."
+    ),
+}
+
+
+@app.route("/api/chat/agent", methods=["POST"])
+def api_chat_agent():
+    """POST {"agent": "JARVIS", "message": "..."} → {"reply": "...", "brain": "...", "agent": "..."}"""
+    global _agent_histories
+    try:
+        sys.path.insert(0, str(ROOT))
+        from core.brain import ask_hybrid
+
+        data    = request.get_json(force=True)
+        agent   = (data.get("agent") or "JARVIS").upper()
+        message = (data.get("message") or "").strip()
+        if not message:
+            return jsonify({"error": "Empty message"}), 400
+
+        system = _AGENT_SYSTEMS.get(agent, _AGENT_SYSTEMS["JARVIS"])
+        history = _agent_histories.get(agent, [])
+
+        # ── Agent-specific context injection ─────────────────────────────────
+        context_prefix = ""
+
+        if agent == "SCOUT":
+            scout_state = _read_json(DATA_DIR / "job_scout_state.json", {})
+            jobs = scout_state.get("pending_jobs", [])
+            applied = scout_state.get("applied", [])
+            context_prefix = (
+                f"[SCOUT STATE] Pending jobs: {len(jobs)}. Applied: {len(applied)}. "
+                f"Last scan: {scout_state.get('last_scan', 'never')}. "
+            )
+            if jobs:
+                context_prefix += f"Top job: {jobs[0].get('title','?')} on {jobs[0].get('platform','?')} "
+                context_prefix += f"(score {jobs[0].get('score','?')}). "
+
+        elif agent == "WATCHDOG":
+            prices = get_prices()
+            at     = get_autotrade_status()
+            trades = get_recent_trades(n=5)
+            price_str = " | ".join(f"{c}=${d['price']:,.0f}({d['sign']}{d['change']}%)" for c, d in prices.items()) if prices else "unavailable"
+            context_prefix = (
+                f"[MARKET] {price_str}. "
+                f"AutoTrade: {'ENABLED' if at.get('enabled') else 'DISABLED'}. "
+                f"Recent trades: {len(trades)}. "
+            )
+
+        elif agent == "HAWK":
+            prices = get_prices()
+            price_str = " | ".join(f"{c}=${d['price']:,.2f} ({d['sign']}{d['change']}%)" for c, d in prices.items()) if prices else "CoinGecko unavailable"
+            context_prefix = f"[LIVE PRICES] {price_str}. "
+
+        elif agent == "CODEX":
+            py_files = list(ROOT.rglob("*.py"))
+            file_count = len([f for f in py_files if ".venv" not in str(f)])
+            last_review = get_last_code_review()
+            context_prefix = (
+                f"[CODEBASE] {file_count} Python files. "
+                f"Last review: {last_review.get('date', 'none')}. "
+                f"Skills installed: {len(get_installed_skills())}. "
+            )
+
+        elif agent == "CLIPPER":
+            applier_state = _read_json(DATA_DIR / "applier_state.json", {})
+            income_log    = _read_json(DATA_DIR / "income_log.json", [])
+            context_prefix = (
+                f"[CASHCLAW] Pending drafts: {len(applier_state.get('pending_drafts', []))}. "
+                f"Sent total: {len(applier_state.get('sent', []))}. "
+                f"Income logged: {len(income_log)} entries. "
+            )
+            # If message looks like outreach text to humanize, run through HumanVoice
+            if len(message) > 80 and any(w in message.lower() for w in ["hi ", "hello", "hey ", "i saw", "i noticed", "i'm reaching", "i am reaching"]):
+                try:
+                    from agents.human_voice import humanize
+                    humanized = humanize(message, context="cold outreach")
+                    return jsonify({
+                        "reply": f"[HUMANIZED by HumanVoice]\n\n{humanized}",
+                        "brain": "haiku",
+                        "agent": agent,
+                    })
+                except Exception:
+                    pass  # fall through to regular LLM
+
+        # Inject context into message
+        full_message = context_prefix + message if context_prefix else message
+
+        history.append({"role": "user", "content": full_message})
+        history = history[-20:]
+
+        reply, brain = ask_hybrid(full_message, system=system, history=history[:-1])
+
+        history.append({"role": "assistant", "content": reply})
+        _agent_histories[agent] = history[-20:]
+
+        return jsonify({"reply": reply, "brain": brain, "agent": agent})
+
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/chat/agent/clear", methods=["POST"])
+def api_chat_agent_clear():
+    data  = request.get_json(force=True) or {}
+    agent = (data.get("agent") or "").upper()
+    if agent and agent in _agent_histories:
+        _agent_histories[agent] = []
+    elif not agent:
+        _agent_histories.clear()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/task/update", methods=["POST"])
 def api_task_update():
     """POST {"task_id": "...", "action": "start|review|done"} → {"success": true}"""
@@ -890,6 +1323,356 @@ def api_task_update():
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
+# ── Task Board API ─────────────────────────────────────────────────────────────
+
+_TASKBOARD_FILE = DATA_DIR / "taskboard.json"
+
+def _get_taskboard():
+    return _read_json(_TASKBOARD_FILE, [])
+
+def _save_taskboard(tasks):
+    with open(_TASKBOARD_FILE, "w", encoding="utf-8") as f:
+        json.dump(tasks, f, indent=2)
+
+@app.route("/api/taskboard")
+def api_taskboard():
+    return jsonify(_get_taskboard())
+
+@app.route("/api/taskboard/add", methods=["POST"])
+def api_taskboard_add():
+    import time
+    data = request.json or {}
+    task = {
+        "id": f"task_{int(time.time())}",
+        "title": data.get("title", "Untitled"),
+        "description": data.get("description", ""),
+        "status": data.get("status", "backlog"),
+        "priority": data.get("priority", "medium"),
+        "assigned_to": data.get("assigned_to", "user"),
+        "agent": data.get("agent"),
+        "tags": data.get("tags", []),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    tasks = _get_taskboard()
+    tasks.append(task)
+    _save_taskboard(tasks)
+    return jsonify({"ok": True, "task": task})
+
+@app.route("/api/taskboard/update", methods=["POST"])
+def api_taskboard_update():
+    data = request.json or {}
+    task_id = data.get("id")
+    tasks = _get_taskboard()
+    for t in tasks:
+        if t["id"] == task_id:
+            for k, v in data.items():
+                if k != "id":
+                    t[k] = v
+            t["updated_at"] = datetime.now(timezone.utc).isoformat()
+            _save_taskboard(tasks)
+            return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "Task not found"}), 404
+
+@app.route("/api/taskboard/delete", methods=["POST"])
+def api_taskboard_delete():
+    data = request.json or {}
+    task_id = data.get("id")
+    tasks = [t for t in _get_taskboard() if t["id"] != task_id]
+    _save_taskboard(tasks)
+    return jsonify({"ok": True})
+
+
+# ── Task Board Kanban Page ──────────────────────────────────────────────────────
+
+TASKBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenClaw Task Board</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+<style>
+  :root {
+    --bg-base: #0d0d0d; --bg-card: #141414; --bg-card-header: #1e1e1e;
+    --border-col: #242424; --text-main: #e0e0e0; --text-muted: #666;
+    --green: #00ff88; --red: #ff4455; --amber: #ffaa00; --blue: #4499ff;
+  }
+  body { background: linear-gradient(135deg, var(--bg-base) 0%, #1a1a1a 100%); color: var(--text-main); font-family: 'Segoe UI', sans-serif; min-height: 100vh; }
+  .navbar { background: var(--bg-card) !important; border-bottom: 1px solid var(--border-col); }
+  .navbar-brand { color: var(--green) !important; font-weight: bold; }
+  .nav-link-back { color: var(--text-muted) !important; font-size: 0.85rem; text-decoration: none; }
+  .nav-link-back:hover { color: var(--green) !important; }
+  .kanban-wrap { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; padding: 1.5rem; min-height: calc(100vh - 70px); }
+  .kanban-col { background: var(--bg-card); border: 1px solid var(--border-col); border-radius: 12px; display: flex; flex-direction: column; min-height: 400px; }
+  .kanban-col-header { background: var(--bg-card-header); border-bottom: 1px solid var(--border-col); border-radius: 12px 12px 0 0; padding: 0.85rem 1rem; display: flex; align-items: center; justify-content: space-between; }
+  .kanban-col-header h6 { margin: 0; font-weight: 600; font-size: 0.9rem; letter-spacing: 0.04em; text-transform: uppercase; }
+  .col-backlog .kanban-col-header h6 { color: #aaa; }
+  .col-in_progress .kanban-col-header h6 { color: var(--amber); }
+  .col-review .kanban-col-header h6 { color: var(--blue); }
+  .col-done .kanban-col-header h6 { color: var(--green); }
+  .kanban-col-body { padding: 0.75rem; flex: 1; display: flex; flex-direction: column; gap: 0.6rem; }
+  .count-badge { background: var(--border-col); color: var(--text-muted); border-radius: 20px; font-size: 0.75rem; padding: 1px 8px; font-weight: 600; }
+  .task-card { background: #1a1a1a; border: 1px solid var(--border-col); border-radius: 8px; padding: 0.75rem; transition: transform 0.15s, box-shadow 0.15s; }
+  .task-card:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.4); border-color: #333; }
+  .task-card .card-title { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.3rem; line-height: 1.3; }
+  .task-card .card-desc { font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.5rem; line-height: 1.4; }
+  .task-card .card-meta { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
+  .task-card .card-actions { display: flex; gap: 0.3rem; margin-top: 0.5rem; border-top: 1px solid var(--border-col); padding-top: 0.5rem; }
+  .pri-critical { background: rgba(255,68,85,0.15); color: var(--red); border: 1px solid rgba(255,68,85,0.3); border-radius: 4px; font-size: 0.7rem; padding: 1px 6px; font-weight: 700; text-transform: uppercase; }
+  .pri-high     { background: rgba(255,170,0,0.12); color: var(--amber); border: 1px solid rgba(255,170,0,0.3); border-radius: 4px; font-size: 0.7rem; padding: 1px 6px; font-weight: 700; text-transform: uppercase; }
+  .pri-medium   { background: rgba(68,153,255,0.12); color: var(--blue); border: 1px solid rgba(68,153,255,0.3); border-radius: 4px; font-size: 0.7rem; padding: 1px 6px; font-weight: 700; text-transform: uppercase; }
+  .pri-low      { background: rgba(102,102,102,0.12); color: #888; border: 1px solid #333; border-radius: 4px; font-size: 0.7rem; padding: 1px 6px; font-weight: 700; text-transform: uppercase; }
+  .tag { background: rgba(68,153,255,0.1); color: #88aaff; border: 1px solid rgba(68,153,255,0.2); border-radius: 4px; font-size: 0.68rem; padding: 1px 5px; }
+  .avatar-chip { font-size: 0.78rem; color: var(--text-muted); }
+  .agent-chip { font-size: 0.68rem; color: #555; font-style: italic; }
+  .btn-move { background: transparent; border: 1px solid var(--border-col); color: var(--text-muted); border-radius: 4px; padding: 2px 8px; font-size: 0.72rem; cursor: pointer; transition: all 0.15s; }
+  .btn-move:hover { border-color: var(--green); color: var(--green); }
+  .btn-del { background: transparent; border: 1px solid var(--border-col); color: var(--text-muted); border-radius: 4px; padding: 2px 7px; font-size: 0.72rem; cursor: pointer; transition: all 0.15s; margin-left: auto; }
+  .btn-del:hover { border-color: var(--red); color: var(--red); }
+  .btn-add-task { background: linear-gradient(45deg, var(--green), #00cc66); border: none; color: #000; font-weight: 700; border-radius: 8px; padding: 0.45rem 1.1rem; font-size: 0.85rem; cursor: pointer; transition: opacity 0.15s; }
+  .btn-add-task:hover { opacity: 0.85; }
+  .modal-content { background: var(--bg-card); border: 1px solid var(--border-col); color: var(--text-main); border-radius: 12px; }
+  .modal-header { border-bottom: 1px solid var(--border-col); }
+  .modal-footer { border-top: 1px solid var(--border-col); }
+  .form-control, .form-select { background: #1a1a1a; border: 1px solid var(--border-col); color: var(--text-main); border-radius: 6px; }
+  .form-control:focus, .form-select:focus { background: #1e1e1e; border-color: var(--green); color: var(--text-main); box-shadow: 0 0 0 2px rgba(0,255,136,0.12); }
+  .form-label { font-size: 0.85rem; color: #aaa; }
+  .form-select option { background: #1a1a1a; }
+  .auto-refresh { font-size: 0.8rem; color: var(--text-muted); }
+  @media (max-width: 900px) { .kanban-wrap { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 560px) { .kanban-wrap { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-dark">
+  <div class="container-fluid">
+    <span class="navbar-brand"><i class="fas fa-tasks me-2"></i>OpenClaw Task Board</span>
+    <div class="d-flex align-items-center gap-3">
+      <button class="btn-add-task" onclick="openAddModal()"><i class="fas fa-plus me-1"></i>Add Task</button>
+      <a href="/" class="nav-link-back"><i class="fas fa-arrow-left me-1"></i>Dashboard</a>
+      <a href="/portfolio" class="text-decoration-none text-muted small"><i class="fas fa-wallet"></i> Portfolio</a>
+      <a href="/holdings" class="text-decoration-none text-muted small"><i class="fas fa-coins"></i> Holdings</a>
+      <a href="/team" class="text-decoration-none text-muted small"><i class="fas fa-users"></i> Team</a>
+      <span class="auto-refresh"><i class="fas fa-clock me-1"></i>Auto-refresh <span id="cd">30</span>s</span>
+    </div>
+  </div>
+</nav>
+
+<div class="kanban-wrap" id="kanban-board"></div>
+
+<!-- Add Task Modal -->
+<div class="modal fade" id="addTaskModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="fas fa-plus-circle me-2 text-success"></i>New Task</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label">Title *</label>
+          <input type="text" class="form-control" id="new-title" placeholder="Task title">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Description</label>
+          <textarea class="form-control" id="new-desc" rows="2" placeholder="Short description"></textarea>
+        </div>
+        <div class="row g-2">
+          <div class="col-6">
+            <label class="form-label">Status</label>
+            <select class="form-select" id="new-status">
+              <option value="backlog">Backlog</option>
+              <option value="in_progress">In Progress</option>
+              <option value="review">Review</option>
+              <option value="done">Done</option>
+            </select>
+          </div>
+          <div class="col-6">
+            <label class="form-label">Priority</label>
+            <select class="form-select" id="new-priority">
+              <option value="low">Low</option>
+              <option value="medium" selected>Medium</option>
+              <option value="high">High</option>
+              <option value="critical">Critical</option>
+            </select>
+          </div>
+        </div>
+        <div class="row g-2 mt-1">
+          <div class="col-6">
+            <label class="form-label">Assigned to</label>
+            <select class="form-select" id="new-assigned">
+              <option value="user">User</option>
+              <option value="claude">Claude</option>
+            </select>
+          </div>
+          <div class="col-6">
+            <label class="form-label">Agent</label>
+            <input type="text" class="form-control" id="new-agent" placeholder="e.g. FeatureAgent">
+          </div>
+        </div>
+        <div class="mt-2">
+          <label class="form-label">Tags <small class="text-muted">(comma separated)</small></label>
+          <input type="text" class="form-control" id="new-tags" placeholder="bug, feature, trading">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn-add-task" onclick="submitNewTask()"><i class="fas fa-save me-1"></i>Save Task</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+const COLUMNS = [
+  { key: 'backlog',     label: 'Backlog',     icon: 'fa-inbox' },
+  { key: 'in_progress', label: 'In Progress', icon: 'fa-spinner' },
+  { key: 'review',      label: 'Review',      icon: 'fa-eye' },
+  { key: 'done',        label: 'Done',        icon: 'fa-check-circle' },
+];
+const COL_ORDER = ['backlog', 'in_progress', 'review', 'done'];
+let tasks = [];
+
+async function loadTasks() {
+  const res = await fetch('/api/taskboard');
+  tasks = await res.json();
+  renderBoard();
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.appendChild(document.createTextNode(s || ''));
+  return d.innerHTML;
+}
+
+function assigneeLabel(a) {
+  return a === 'claude' ? '&#x1F916; Claude' : '&#x1F464; User';
+}
+
+function renderCard(task) {
+  const idx = COL_ORDER.indexOf(task.status);
+  const canLeft  = idx > 0;
+  const canRight = idx < COL_ORDER.length - 1;
+  const tags = (task.tags || []).map(t => '<span class="tag">#' + escHtml(t) + '</span>').join('');
+  const agent = task.agent ? '<span class="agent-chip">' + escHtml(task.agent) + '</span>' : '';
+  const pri = task.priority || 'low';
+  return '<div class="task-card">' +
+    '<div class="card-title">' + escHtml(task.title) + '</div>' +
+    (task.description ? '<div class="card-desc">' + escHtml(task.description) + '</div>' : '') +
+    '<div class="card-meta">' +
+      '<span class="pri-' + pri + '">' + pri + '</span>' +
+      '<span class="avatar-chip">' + assigneeLabel(task.assigned_to) + '</span>' +
+      agent + tags +
+    '</div>' +
+    '<div class="card-actions">' +
+      (canLeft  ? '<button class="btn-move" onclick="moveTask(\'' + task.id + '\',-1)"><i class="fas fa-arrow-left"></i></button>' : '') +
+      (canRight ? '<button class="btn-move" onclick="moveTask(\'' + task.id + '\',1)"><i class="fas fa-arrow-right"></i></button>' : '') +
+      '<button class="btn-del" onclick="deleteTask(\'' + task.id + '\')"><i class="fas fa-trash"></i></button>' +
+    '</div>' +
+  '</div>';
+}
+
+function renderBoard() {
+  const board = document.getElementById('kanban-board');
+  const grouped = {};
+  COL_ORDER.forEach(k => { grouped[k] = []; });
+  tasks.forEach(t => {
+    const col = COL_ORDER.includes(t.status) ? t.status : 'backlog';
+    grouped[col].push(t);
+  });
+  board.innerHTML = COLUMNS.map(col => {
+    const cards = grouped[col.key].map(renderCard).join('');
+    return '<div class="kanban-col col-' + col.key + '">' +
+      '<div class="kanban-col-header">' +
+        '<h6><i class="fas ' + col.icon + ' me-2"></i>' + col.label + '</h6>' +
+        '<span class="count-badge">' + grouped[col.key].length + '</span>' +
+      '</div>' +
+      '<div class="kanban-col-body">' +
+        (cards || '<div style="color:#555;font-size:0.8rem;text-align:center;margin-top:2rem;padding:1rem;"><i class=\"fas fa-inbox\" style=\"font-size:2rem;display:block;margin-bottom:8px;\"></i>No tasks yet</div>') +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+async function moveTask(id, dir) {
+  const task = tasks.find(t => t.id === id);
+  if (!task) return;
+  const idx = COL_ORDER.indexOf(task.status);
+  const newIdx = idx + dir;
+  if (newIdx < 0 || newIdx >= COL_ORDER.length) return;
+  await fetch('/api/taskboard/update', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ id: id, status: COL_ORDER[newIdx] }),
+  });
+  await loadTasks();
+}
+
+async function deleteTask(id) {
+  if (!confirm('Delete this task?')) return;
+  await fetch('/api/taskboard/delete', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ id: id }),
+  });
+  await loadTasks();
+}
+
+let _modal;
+function openAddModal() {
+  if (!_modal) _modal = new bootstrap.Modal(document.getElementById('addTaskModal'));
+  ['new-title','new-desc','new-agent','new-tags'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('new-status').value   = 'backlog';
+  document.getElementById('new-priority').value = 'medium';
+  document.getElementById('new-assigned').value = 'user';
+  _modal.show();
+}
+
+async function submitNewTask() {
+  const title = document.getElementById('new-title').value.trim();
+  if (!title) { document.getElementById('new-title').focus(); return; }
+  const tagsRaw = document.getElementById('new-tags').value;
+  const tags = tagsRaw ? tagsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const agent = document.getElementById('new-agent').value.trim() || null;
+  await fetch('/api/taskboard/add', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      title:       title,
+      description: document.getElementById('new-desc').value.trim(),
+      status:      document.getElementById('new-status').value,
+      priority:    document.getElementById('new-priority').value,
+      assigned_to: document.getElementById('new-assigned').value,
+      agent:       agent,
+      tags:        tags,
+    }),
+  });
+  _modal.hide();
+  await loadTasks();
+}
+
+let countdown = 30;
+const cdEl = document.getElementById('cd');
+setInterval(() => {
+  countdown--;
+  if (countdown <= 0) { loadTasks(); countdown = 30; }
+  cdEl.textContent = countdown;
+}, 1000);
+
+loadTasks();
+</script>
+</body>
+</html>"""
+
+
+@app.route("/taskboard")
+def taskboard():
+    return render_template_string(TASKBOARD_HTML)
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -906,6 +1689,7 @@ def index():
     notes      = get_notes_summary()
     codereview = get_last_code_review()
     orchestration = get_orchestration_tasks()
+    skills      = get_installed_skills()
     claude_ok  = bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
     crypto_ok  = bool(os.getenv("CRYPTOCOM_API_KEY", "").strip())
     now        = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -916,13 +1700,1204 @@ def index():
         tasks=tasks, trades=trades, cache=cache,
         autotrade=autotrade, backtest=backtest,
         notes=notes, codereview=codereview,
-        orchestration=orchestration,
+        orchestration=orchestration, skills=skills,
         claude_ok=claude_ok, crypto_ok=crypto_ok, now=now,
     )
+
+
+# ── Team page ──────────────────────────────────────────────────────────────────
+
+TEAM_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="60">
+<title>OpenClaw — Team</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+<style>
+  body { background: linear-gradient(135deg, #0d0d0d 0%, #1a1a1a 100%); color: #e0e0e0; font-family: 'Segoe UI', sans-serif; min-height: 100vh; }
+  .navbar { background: #141414 !important; border-bottom: 1px solid #242424; }
+  .stats-bar { background: #141414; border-bottom: 1px solid #242424; padding: 0.6rem 1.5rem; font-size: 0.85rem; color: #aaa; }
+  .stats-bar span { margin-right: 2rem; }
+  .stats-bar .val { color: #00ff88; font-weight: 600; }
+  /* Lead card */
+  .lead-card { background: linear-gradient(135deg, #1a1f2e, #141414); border: 1px solid #00ff8844; border-radius: 18px; box-shadow: 0 0 30px #00ff8811; padding: 2rem; margin-bottom: 2rem; }
+  .lead-avatar { font-size: 3.5rem; line-height: 1; }
+  .lead-name { font-size: 1.6rem; font-weight: 700; color: #00ff88; }
+  .lead-role { color: #aaa; font-size: 0.95rem; }
+  .lead-badge { background: #00ff8822; border: 1px solid #00ff8866; color: #00ff88; border-radius: 20px; padding: 0.2rem 0.75rem; font-size: 0.8rem; font-weight: 600; display: inline-block; }
+  .skill-tag { background: #1e2a1e; border: 1px solid #00ff8833; color: #00ff88; border-radius: 12px; padding: 0.15rem 0.6rem; font-size: 0.75rem; display: inline-block; margin: 2px; }
+  /* Department sections */
+  .dept-section { margin-bottom: 2rem; }
+  .dept-header { border-radius: 10px 10px 0 0; padding: 0.6rem 1.2rem; font-weight: 700; font-size: 0.95rem; margin-bottom: 0; }
+  /* Agent cards */
+  .agent-card { background: #141414; border: 1px solid #242424; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); transition: transform 0.2s, box-shadow 0.2s; padding: 1.2rem; height: 100%; }
+  .agent-card:hover { transform: translateY(-3px); box-shadow: 0 6px 20px rgba(0,0,0,0.5); }
+  .agent-avatar { font-size: 2rem; }
+  .agent-name { font-size: 1rem; font-weight: 700; color: #e0e0e0; }
+  .agent-role { color: #888; font-size: 0.8rem; }
+  .badge-active { background: #00ff8822; border: 1px solid #00ff8866; color: #00ff88; border-radius: 20px; padding: 0.15rem 0.6rem; font-size: 0.72rem; font-weight: 600; }
+  .badge-oncall { background: #44444422; border: 1px solid #555; color: #aaa; border-radius: 20px; padding: 0.15rem 0.6rem; font-size: 0.72rem; font-weight: 600; }
+  .tasks-count { font-size: 1.3rem; font-weight: 700; color: #4fc3f7; }
+  .tasks-label { font-size: 0.7rem; color: #666; text-transform: uppercase; letter-spacing: 0.05em; }
+  .agent-skill-tag { background: #1e1e2e; border: 1px solid #333; color: #aaa; border-radius: 10px; padding: 0.1rem 0.5rem; font-size: 0.7rem; display: inline-block; margin: 2px; }
+  /* Nav links */
+  .nav-link-custom { color: #888; text-decoration: none; font-size: 0.85rem; }
+  .nav-link-custom:hover { color: #00ff88; }
+  .auto-refresh { font-size: 0.8rem; color: #666; }
+</style>
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-dark">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/"><i class="fas fa-robot"></i> OpenClaw Dashboard</a>
+    <div class="d-flex align-items-center gap-3">
+      <a href="/" class="nav-link-custom"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+      <a href="/taskboard" class="nav-link-custom"><i class="fas fa-clipboard-list"></i> Task Board</a>
+      <a href="/portfolio" class="nav-link-custom"><i class="fas fa-wallet"></i> Portfolio</a>
+      <a href="/holdings" class="nav-link-custom"><i class="fas fa-coins"></i> Holdings</a>
+      <button class="new-agent-btn" onclick="openNewAgentModal()" style="background:#0a0a0a;border:1px solid #ff00aa;color:#ff00aa;border-radius:8px;padding:5px 12px;font-size:.82rem;cursor:pointer;font-weight:600;">+ NEW AGENT</button>
+      <span class="auto-refresh"><i class="fas fa-sync-alt"></i> Auto-refresh 60s</span>
+    </div>
+  </div>
+</nav>
+
+<!-- Stats bar -->
+<div class="stats-bar d-flex align-items-center">
+  <span>Total Agents: <span class="val">{{ total_agents }}</span></span>
+  <span>Active Now: <span class="val">{{ active_count }}</span></span>
+  <span>Tasks Completed: <span class="val">{{ tasks_total }}</span></span>
+  <span class="ms-auto text-muted" style="font-size:0.78rem">{{ now }}</span>
+</div>
+
+<div class="container-fluid mt-4 pb-5">
+
+  <!-- Lead card -->
+  <div class="lead-card d-flex align-items-start gap-4 flex-wrap">
+    <div class="lead-avatar">{{ lead.avatar }}</div>
+    <div class="flex-grow-1">
+      <div class="d-flex align-items-center gap-3 flex-wrap mb-1">
+        <div class="lead-name">{{ lead.name }}</div>
+        <span class="lead-badge"><i class="fas fa-circle" style="font-size:0.55rem;margin-right:4px"></i>{{ lead.status }}</span>
+      </div>
+      <div class="lead-role mb-2">{{ lead.role }} &nbsp;·&nbsp; <span class="text-muted small font-monospace">{{ lead.model }}</span></div>
+      <div class="mb-2">
+        {% for s in lead.skills %}
+        <span class="skill-tag">{{ s }}</span>
+        {% endfor %}
+      </div>
+      <ul class="text-muted small mb-0 ps-3">
+        {% for r in lead.responsibilities %}
+        <li>{{ r }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+
+  <!-- Department sections -->
+  {% for dept in departments %}
+  {% set dept_agents = agents | selectattr("department", "equalto", dept.name) | list %}
+  {% if dept_agents %}
+  <div class="dept-section">
+    <div class="dept-header mb-3" style="background: {{ dept.color }}22; border-left: 4px solid {{ dept.color }}; color: {{ dept.color }};">
+      <i class="fas fa-layer-group me-2"></i>{{ dept.name }} &nbsp;<small class="fw-normal" style="color:{{ dept.color }}99">{{ dept_agents|length }} agent{{ 's' if dept_agents|length != 1 else '' }}</small>
+    </div>
+    <div class="row g-3">
+      {% for agent in dept_agents %}
+      <div class="col-md-6 col-lg-4 col-xl-3">
+        <div class="agent-card">
+          <div class="d-flex align-items-start justify-content-between mb-2">
+            <div class="d-flex align-items-center gap-2">
+              <span class="agent-avatar">{{ agent.avatar }}</span>
+              <div>
+                <div class="agent-name">{{ agent.name }}</div>
+                <div class="agent-role">{{ agent.role }}</div>
+              </div>
+            </div>
+            <div class="text-end">
+              {% if agent.status == 'active' %}
+              <span class="badge-active">active</span>
+              {% else %}
+              <span class="badge-oncall">on-call</span>
+              {% endif %}
+            </div>
+          </div>
+          <div class="d-flex align-items-end gap-3 mb-2">
+            <div>
+              <div class="tasks-count">{{ agent.tasks_completed }}</div>
+              <div class="tasks-label">tasks done</div>
+            </div>
+            <div class="text-muted small font-monospace" style="font-size:0.7rem;padding-bottom:0.15rem">{{ agent.model }}</div>
+          </div>
+          <div>
+            {% for sk in agent.skills %}
+            <span class="agent-skill-tag">{{ sk }}</span>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+  {% endfor %}
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+<!-- New Agent Modal -->
+<div id="new-agent-modal" style="display:none;position:fixed;inset:0;background:#000a;z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:#111;border:1px solid #ff00aa44;border-radius:12px;padding:24px;width:90%;max-width:480px;font-family:'Press Start 2P',monospace;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <span style="font-size:9px;color:#ff00aa;">+ NEW AGENT</span>
+      <button onclick="closeNewAgentModal()" style="background:none;border:none;color:#666;font-size:14px;cursor:pointer;">&#x2715;</button>
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:7px;color:#666;display:block;margin-bottom:4px;">AGENT NAME</label>
+      <input id="na-name" type="text" placeholder="e.g. TRACKER" style="width:100%;background:#0a0a0a;border:1px solid #333;color:#fff;padding:8px;font-family:'Press Start 2P',monospace;font-size:7px;border-radius:4px;">
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:7px;color:#666;display:block;margin-bottom:4px;">ROLES (comma separated)</label>
+      <input id="na-roles" type="text" placeholder="Research, Analysis, Reports" style="width:100%;background:#0a0a0a;border:1px solid #333;color:#fff;padding:8px;font-family:'Press Start 2P',monospace;font-size:7px;border-radius:4px;">
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:7px;color:#666;display:block;margin-bottom:4px;">EMOJI AVATAR</label>
+      <input id="na-emoji" type="text" placeholder="&#x1F916;" maxlength="2" style="width:60px;background:#0a0a0a;border:1px solid #333;color:#fff;padding:8px;font-size:16px;border-radius:4px;text-align:center;">
+    </div>
+    <div style="margin-bottom:16px;">
+      <label style="font-size:7px;color:#666;display:block;margin-bottom:4px;">NEON COLOR</label>
+      <select id="na-color" style="background:#0a0a0a;border:1px solid #333;color:#fff;padding:6px;font-family:'Press Start 2P',monospace;font-size:7px;border-radius:4px;">
+        <option value="#00ff88">GREEN</option>
+        <option value="#00ffff">CYAN</option>
+        <option value="#ff6b35">ORANGE</option>
+        <option value="#9b59b6">PURPLE</option>
+        <option value="#f39c12">YELLOW</option>
+        <option value="#3498db">BLUE</option>
+        <option value="#ff00aa">PINK</option>
+      </select>
+    </div>
+    <div id="na-msg" style="font-size:7px;margin-bottom:12px;min-height:16px;"></div>
+    <button onclick="submitNewAgent()" style="width:100%;background:#0a0a0a;border:1px solid #ff00aa;color:#ff00aa;font-family:'Press Start 2P',monospace;font-size:8px;padding:10px;cursor:pointer;border-radius:4px;letter-spacing:1px;">
+      &#x25B6; DEPLOY AGENT
+    </button>
+  </div>
+</div>
+
+<script>
+function openNewAgentModal() {
+  const m = document.getElementById('new-agent-modal');
+  m.style.display = 'flex';
+  document.getElementById('na-name').focus();
+}
+function closeNewAgentModal() {
+  document.getElementById('new-agent-modal').style.display = 'none';
+  document.getElementById('na-msg').textContent = '';
+}
+async function submitNewAgent() {
+  const name  = document.getElementById('na-name').value.trim().toUpperCase();
+  const roles = document.getElementById('na-roles').value.split(',').map(s=>s.trim()).filter(Boolean);
+  const emoji = document.getElementById('na-emoji').value.trim() || '&#x1F916;';
+  const color = document.getElementById('na-color').value;
+  const msgEl = document.getElementById('na-msg');
+  if (!name) { msgEl.style.color='#ff4455'; msgEl.textContent='NAME REQUIRED'; return; }
+  msgEl.style.color='#00ffff'; msgEl.textContent='DEPLOYING...';
+  try {
+    const res = await fetch('/api/agent/create', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({name, roles, emoji, color})
+    });
+    const data = await res.json();
+    if (data.ok) {
+      msgEl.style.color='#00ff88'; msgEl.textContent='AGENT DEPLOYED &#x2713;';
+      setTimeout(() => { closeNewAgentModal(); location.reload(); }, 1200);
+    } else {
+      msgEl.style.color='#ff4455'; msgEl.textContent = data.error || 'FAILED';
+    }
+  } catch(e) {
+    msgEl.style.color='#ff4455'; msgEl.textContent='CONNECTION ERROR';
+  }
+}
+document.getElementById('new-agent-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeNewAgentModal();
+});
+</script>
+</body>
+</html>"""
+
+
+@app.route("/api/team")
+def api_team():
+    return jsonify(_read_json(DATA_DIR / "team.json", {}))
+
+
+@app.route("/api/agent/create", methods=["POST"])
+def api_agent_create():
+    """Create a new custom agent entry. Saves to data/custom_agents.json."""
+    try:
+        data  = request.get_json(force=True)
+        name  = (data.get("name") or "").strip().upper()
+        roles = data.get("roles") or []
+        emoji = data.get("emoji") or "\U0001f916"
+        color = data.get("color") or "#00ff88"
+        if not name:
+            return jsonify({"ok": False, "error": "Name required"}), 400
+
+        agents_file = DATA_DIR / "custom_agents.json"
+        agents = _read_json(agents_file, [])
+        # Prevent duplicates
+        if any(a.get("name") == name for a in agents):
+            return jsonify({"ok": False, "error": f"Agent '{name}' already exists"}), 409
+
+        new_agent = {
+            "id":      f"P{len(agents)+7}",
+            "name":    name,
+            "emoji":   emoji,
+            "roles":   roles,
+            "color":   color,
+            "border":  color,
+            "created": datetime.now(timezone.utc).isoformat(),
+        }
+        agents.append(new_agent)
+        agents_file.write_text(json.dumps(agents, indent=2), encoding="utf-8")
+        return jsonify({"ok": True, "agent": new_agent})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/team")
+def team():
+    data        = _read_json(DATA_DIR / "team.json", {})
+    lead        = data.get("lead", {})
+    agents      = data.get("agents", [])
+    departments = data.get("departments", [])
+    total_agents = len(agents) + 1  # include lead
+    active_count = sum(1 for a in [lead] + agents if a.get("status") == "active")
+    tasks_total  = sum(a.get("tasks_completed", 0) for a in agents)
+    now          = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return render_template_string(
+        TEAM_HTML,
+        lead=lead, agents=agents, departments=departments,
+        total_agents=total_agents, active_count=active_count,
+        tasks_total=tasks_total, now=now,
+    )
+
+
+# ── Portfolio page ─────────────────────────────────────────────────────────────
+
+PORTFOLIO_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenClaw — Portfolio</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  body { background: linear-gradient(135deg,#0d0d0d 0%,#1a1a1a 100%); color:#e0e0e0; font-family:'Inter','Segoe UI',sans-serif; min-height:100vh; }
+  .navbar { background:#141414 !important; border-bottom:1px solid #242424; }
+  .navbar-brand { color:#00ff88 !important; font-weight:700; }
+  .nav-lnk { color:#aaa !important; text-decoration:none; font-size:0.875rem; }
+  .nav-lnk:hover,.nav-lnk-active { color:#00ff88 !important; }
+  .card { background:#141414; border:1px solid #242424; border-radius:16px; }
+  .card-header { background:#1e1e1e; border-bottom:1px solid #242424; border-radius:16px 16px 0 0 !important; padding:1rem 1.5rem; }
+  .card-body { padding:1.5rem; }
+  .tg { color:#00ff88 !important; }
+  .tr { color:#ff4455 !important; }
+  .tm { color:#666 !important; }
+  .stat-card { background:#141414; border:1px solid #242424; border-radius:16px; padding:1.25rem 1.5rem; }
+  .stat-label { font-size:0.7rem; color:#666; text-transform:uppercase; letter-spacing:.06em; margin-bottom:.3rem; }
+  .stat-value { font-size:1.6rem; font-weight:700; line-height:1.2; }
+  .stat-sub { font-size:0.78rem; color:#888; margin-top:.2rem; }
+  .price-strip { background:#0f0f0f; border:1px solid #1e1e1e; border-radius:12px; padding:.75rem 1.25rem; display:flex; gap:2rem; flex-wrap:wrap; align-items:center; }
+  .price-item { display:flex; align-items:center; gap:.4rem; }
+  .pi-coin { font-weight:700; font-size:.9rem; }
+  .pi-price { font-family:monospace; font-size:.9rem; }
+  .pi-chg { font-size:.8rem; }
+  .pos-table { width:100%; }
+  .pos-table th { color:#00ff88; font-size:.7rem; text-transform:uppercase; letter-spacing:.05em; font-weight:600; padding:.5rem .75rem; border-bottom:1px solid #242424; }
+  .pos-table td { padding:.75rem; border-bottom:1px solid #1a1a1a; font-size:.88rem; vertical-align:middle; }
+  .pos-table tr:last-child td { border-bottom:none; }
+  .pos-table tr:hover td { background:#1a1a1a; }
+  .coin-badge { background:#1e1e1e; border:1px solid #2e2e2e; border-radius:8px; padding:2px 10px; font-weight:700; font-size:.82rem; }
+  .empty-state { text-align:center; padding:3rem 1rem; color:#555; }
+  .empty-state i { font-size:3rem; margin-bottom:1rem; color:#333; display:block; }
+  .hint-badge { background:#1e1e1e; color:#00ff88; border:1px solid #2e2e2e; padding:7px 14px; border-radius:8px; font-size:.82rem; display:inline-block; margin:4px; }
+  @media (max-width:768px) {
+    .stat-value { font-size:1.3rem; }
+    .price-strip { gap:1rem; }
+    .card-body { padding:.9rem; }
+    .pos-table td,.pos-table th { padding:.5rem; font-size:.8rem; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-dark">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/"><i class="fas fa-robot me-2"></i>OpenClaw</a>
+    <button class="navbar-toggler border-0" type="button" data-bs-toggle="collapse" data-bs-target="#navPF">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navPF">
+      <div class="navbar-nav ms-auto d-flex gap-3 align-items-center flex-row">
+        <a href="/" class="nav-lnk"><i class="fas fa-tachometer-alt me-1"></i>Dashboard</a>
+        <a href="/portfolio" class="nav-lnk nav-lnk-active"><i class="fas fa-wallet me-1"></i>Portfolio</a>
+        <a href="/taskboard" class="nav-lnk"><i class="fas fa-clipboard-list me-1"></i>Tasks</a>
+        <a href="/team" class="nav-lnk"><i class="fas fa-users me-1"></i>Team</a>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid p-3 p-md-4">
+
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+      <h4 class="mb-0 fw-bold"><i class="fas fa-wallet me-2 tg"></i>Portfolio</h4>
+      <small class="tm">{{ now }}</small>
+    </div>
+    <a href="/" style="background:#1e1e1e;color:#00ff88;border:1px solid #2e2e2e;border-radius:8px;padding:6px 14px;font-size:.85rem;text-decoration:none;">
+      <i class="fas fa-arrow-left me-1"></i>Dashboard
+    </a>
+  </div>
+
+  {% if portfolio.prices %}
+  <div class="price-strip mb-4">
+    <span style="font-size:.7rem;color:#555;text-transform:uppercase;letter-spacing:.08em;">LIVE</span>
+    {% for coin, d in portfolio.prices.items() %}
+    <div class="price-item">
+      <span class="pi-coin">{{ coin }}</span>
+      <span class="pi-price">${{ "{:,.0f}".format(d.price) if d.price > 100 else "{:.4f}".format(d.price) }}</span>
+      <span class="pi-chg {{ 'tg' if d.change >= 0 else 'tr' }}">{{ d.sign }}{{ d.change }}%</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if portfolio.has_data %}
+
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+      <div class="stat-card">
+        <div class="stat-label">Total Trades</div>
+        <div class="stat-value tg">{{ portfolio.total_trades }}</div>
+        <div class="stat-sub">{{ portfolio.wins }}W &middot; {{ portfolio.losses }}L</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="stat-card">
+        <div class="stat-label">Win Rate</div>
+        <div class="stat-value {{ 'tg' if portfolio.win_rate >= 50 else 'tr' }}">{{ portfolio.win_rate }}%</div>
+        <div class="stat-sub">{{ portfolio.wins }} profitable</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="stat-card">
+        <div class="stat-label">Invested</div>
+        <div class="stat-value">${{ "{:,.2f}".format(portfolio.total_invested) }}</div>
+        <div class="stat-sub">cumulative BUYs</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="stat-card">
+        <div class="stat-label">Total P&amp;L</div>
+        <div class="stat-value {{ 'tg' if portfolio.total_pnl >= 0 else 'tr' }}">
+          {{ '+' if portfolio.total_pnl >= 0 else '' }}${{ "{:,.2f}".format(portfolio.total_pnl) }}
+        </div>
+        <div class="stat-sub">realized gains</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h6 class="mb-0 fw-semibold"><i class="fas fa-chart-bar me-2"></i>Positions by Coin</h6>
+      <small class="tm">sorted by P&amp;L</small>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="pos-table">
+          <thead>
+            <tr>
+              <th>Coin</th>
+              <th class="text-end">Price</th>
+              <th class="text-end">24h</th>
+              <th class="text-center">B / S</th>
+              <th class="text-end">Invested</th>
+              <th class="text-end">P&amp;L</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for pos in portfolio.positions | sort(attribute='pnl', reverse=True) %}
+            <tr>
+              <td><span class="coin-badge">{{ pos.coin }}</span></td>
+              <td class="text-end" style="font-family:monospace;">
+                {% if pos.current_price > 0 %}
+                  ${{ "{:,.0f}".format(pos.current_price) if pos.current_price > 100 else "{:.4f}".format(pos.current_price) }}
+                {% else %}<span class="tm">—</span>{% endif %}
+              </td>
+              <td class="text-end {{ 'tg' if pos.change_24h >= 0 else 'tr' }}">
+                {% if pos.current_price > 0 %}{{ pos.sign }}{{ pos.change_24h }}%{% else %}<span class="tm">—</span>{% endif %}
+              </td>
+              <td class="text-center">
+                <span class="tg">{{ pos.buys }}&uarr;</span>&nbsp;<span class="tr">{{ pos.sells }}&darr;</span>
+              </td>
+              <td class="text-end">${{ "{:,.2f}".format(pos.invested) }}</td>
+              <td class="text-end fw-semibold {{ 'tg' if pos.pnl >= 0 else 'tr' }}">
+                {{ '+' if pos.pnl >= 0 else '' }}${{ "{:,.2f}".format(pos.pnl) }}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  {% else %}
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="empty-state">
+        <i class="fas fa-wallet"></i>
+        <h5 style="color:#888;">No Trade History Yet</h5>
+        <p class="tm mb-3">Your portfolio P&amp;L will appear here once trades are executed.</p>
+        <div>
+          <span class="hint-badge"><i class="fas fa-robot me-1"></i>/autotrade on</span>
+          <span class="hint-badge" style="color:#aaa;"><i class="fas fa-bolt me-1"></i>/autotrade now</span>
+          <span class="hint-badge" style="color:#aaa;"><i class="fas fa-search me-1"></i>/scan 4h</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% if portfolio.prices %}
+  <div class="card">
+    <div class="card-header">
+      <h6 class="mb-0 fw-semibold"><i class="fas fa-globe me-2"></i>Live Market Prices</h6>
+    </div>
+    <div class="card-body p-0">
+      <table class="pos-table">
+        <thead><tr><th>Asset</th><th class="text-end">Price</th><th class="text-end">24h Change</th></tr></thead>
+        <tbody>
+          {% for coin, d in portfolio.prices.items() %}
+          <tr>
+            <td><span class="coin-badge">{{ coin }}</span></td>
+            <td class="text-end" style="font-family:monospace;">${{ "{:,.2f}".format(d.price) }}</td>
+            <td class="text-end {{ 'tg' if d.change >= 0 else 'tr' }}">{{ d.sign }}{{ d.change }}%</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {% endif %}
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>setTimeout(() => location.reload(), 30000);</script>
+</body>
+</html>"""
+
+
+@app.route("/portfolio")
+def portfolio():
+    portfolio_data = get_portfolio_data()
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return render_template_string(PORTFOLIO_HTML, portfolio=portfolio_data, now=now)
+
+
+HOLDINGS_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenClaw — Holdings</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  body { background: linear-gradient(135deg,#0d0d0d 0%,#1a1a1a 100%); color:#e0e0e0; font-family:'Inter','Segoe UI',sans-serif; min-height:100vh; }
+  .navbar { background:#141414 !important; border-bottom:1px solid #242424; }
+  .navbar-brand { color:#00ff88 !important; font-weight:700; }
+  .nav-lnk { color:#aaa !important; text-decoration:none; font-size:0.875rem; }
+  .nav-lnk:hover,.nav-lnk-active { color:#00ff88 !important; }
+  .card { background:#141414; border:1px solid #242424; border-radius:16px; }
+  .card-header { background:#1e1e1e; border-bottom:1px solid #242424; border-radius:16px 16px 0 0 !important; padding:1rem 1.5rem; }
+  .card-body { padding:1.5rem; }
+  .tg { color:#00ff88 !important; }
+  .tr { color:#ff4455 !important; }
+  .tm { color:#666 !important; }
+  .tw { color:#ffaa00 !important; }
+  /* Hero total value */
+  .hero-value { font-size:3rem; font-weight:700; color:#00ff88; line-height:1; }
+  .hero-label { font-size:.8rem; color:#666; text-transform:uppercase; letter-spacing:.08em; margin-bottom:.5rem; }
+  .hero-card { background:linear-gradient(135deg,#0f1f14,#141414); border:1px solid #00ff8833; border-radius:20px; padding:2rem; margin-bottom:1.5rem; }
+  /* Asset table */
+  .asset-table { width:100%; }
+  .asset-table th { color:#00ff88; font-size:.7rem; text-transform:uppercase; letter-spacing:.05em; padding:.6rem .75rem; border-bottom:1px solid #242424; font-weight:600; }
+  .asset-table td { padding:.75rem; border-bottom:1px solid #1a1a1a; font-size:.88rem; vertical-align:middle; }
+  .asset-table tr:last-child td { border-bottom:none; }
+  .asset-table tr:hover td { background:#1a1a1a; }
+  .currency-badge { background:#1e1e1e; border:1px solid #2e2e2e; border-radius:8px; padding:2px 10px; font-weight:700; font-size:.82rem; }
+  /* Transaction table */
+  .tx-table { width:100%; }
+  .tx-table th { color:#666; font-size:.7rem; text-transform:uppercase; padding:.5rem .75rem; border-bottom:1px solid #242424; }
+  .tx-table td { padding:.65rem .75rem; border-bottom:1px solid #1a1a1a; font-size:.82rem; }
+  .tx-table tr:last-child td { border-bottom:none; }
+  .side-buy { color:#00ff88; font-weight:600; }
+  .side-sell { color:#ff4455; font-weight:600; }
+  .empty-state { text-align:center; padding:2.5rem 1rem; color:#555; }
+  .empty-state i { font-size:2.5rem; color:#333; display:block; margin-bottom:.75rem; }
+  /* Pct bar */
+  .pct-bar { height:4px; background:#1e1e1e; border-radius:2px; margin-top:4px; }
+  .pct-fill { height:4px; background:#00ff88; border-radius:2px; }
+  @media (max-width:768px) {
+    .hero-value { font-size:2.2rem; }
+    .card-body { padding:1rem; }
+    .asset-table td,.asset-table th,.tx-table td,.tx-table th { padding:.5rem; font-size:.78rem; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-dark">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/"><i class="fas fa-robot me-2"></i>OpenClaw</a>
+    <button class="navbar-toggler border-0" type="button" data-bs-toggle="collapse" data-bs-target="#navH">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navH">
+      <div class="navbar-nav ms-auto d-flex gap-3 align-items-center flex-row">
+        <a href="/" class="nav-lnk">Dashboard</a>
+        <a href="/holdings" class="nav-lnk nav-lnk-active">Holdings</a>
+        <a href="/portfolio" class="nav-lnk">Portfolio</a>
+        <a href="/taskboard" class="nav-lnk">Tasks</a>
+        <a href="/team" class="nav-lnk">Team</a>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid p-3 p-md-4">
+
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h4 class="mb-0 fw-bold"><i class="fas fa-coins me-2 tg"></i>Live Holdings</h4>
+      <small class="tm">Crypto.com Exchange · {{ now }}</small>
+    </div>
+    <div class="d-flex gap-2">
+      <button onclick="location.reload()" style="background:#1e1e1e;color:#00ff88;border:1px solid #2e2e2e;border-radius:8px;padding:6px 14px;font-size:.82rem;cursor:pointer;">
+        <i class="fas fa-sync-alt me-1"></i>Refresh
+      </button>
+      <a href="/" style="background:#1e1e1e;color:#aaa;border:1px solid #2e2e2e;border-radius:8px;padding:6px 14px;font-size:.82rem;text-decoration:none;">
+        <i class="fas fa-arrow-left me-1"></i>Back
+      </a>
+    </div>
+  </div>
+
+  {% if not holdings.configured %}
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="empty-state">
+        <i class="fas fa-key"></i>
+        <h5 style="color:#888;">API Keys Not Configured</h5>
+        <p class="tm mb-2">Add your Crypto.com keys to <code>.env</code>:</p>
+        <code style="color:#00ff88;font-size:.85rem;">CRYPTOCOM_API_KEY=your_key<br>CRYPTOCOM_SECRET=your_secret</code>
+      </div>
+    </div>
+  </div>
+
+  {% elif holdings.error %}
+  <div class="card mb-3" style="border-color:#ff445533;">
+    <div class="card-body">
+      <div class="empty-state">
+        <i class="fas fa-exclamation-triangle" style="color:#ff4455;"></i>
+        <h5 style="color:#ff4455;">API Connection Error</h5>
+        <p class="tm mb-0"><code>{{ holdings.error }}</code></p>
+        <small class="tm">Check your API key permissions on Crypto.com Exchange</small>
+      </div>
+    </div>
+  </div>
+
+  {% else %}
+
+  <!-- Hero total value -->
+  <div class="hero-card">
+    <div class="row align-items-center">
+      <div class="col">
+        <div class="hero-label">Total Portfolio Value</div>
+        <div class="hero-value">${{ "{:,.2f}".format(holdings.total_usd) }}</div>
+        <div class="mt-2 tm" style="font-size:.82rem;">
+          {{ holdings.asset_count }} assets · fetched {{ holdings.fetched_at }}
+        </div>
+      </div>
+      <div class="col-auto text-end">
+        <div class="tm" style="font-size:.75rem;">Crypto.com Exchange</div>
+        <div class="tg" style="font-size:.85rem; margin-top:.25rem;">
+          <i class="fas fa-circle" style="font-size:.5rem;"></i> Live
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Holdings table -->
+  <div class="card mb-3">
+    <div class="card-header d-flex justify-content-between">
+      <h6 class="mb-0 fw-semibold"><i class="fas fa-layer-group me-2"></i>Asset Holdings</h6>
+      <small class="tm">{{ holdings.asset_count }} assets</small>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="asset-table">
+          <thead>
+            <tr>
+              <th>Asset</th>
+              <th class="text-end">Balance</th>
+              <th class="text-end">Price</th>
+              <th class="text-end">24h</th>
+              <th class="text-end">Value (USD)</th>
+              <th class="text-end">Allocation</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for currency, b in holdings.balances.items() %}
+            {% set pct = (b.value_usd / holdings.total_usd * 100) if holdings.total_usd > 0 else 0 %}
+            <tr>
+              <td><span class="currency-badge">{{ currency }}</span></td>
+              <td class="text-end" style="font-family:monospace;">
+                {{ "{:,.6f}".format(b.total) if b.total < 1 else "{:,.4f}".format(b.total) if b.total < 100 else "{:,.2f}".format(b.total) }}
+                {% if b.locked > 0 %}
+                  <br><small class="tw"><i class="fas fa-lock" style="font-size:.6rem;"></i> {{ "{:,.4f}".format(b.locked) }} locked</small>
+                {% endif %}
+              </td>
+              <td class="text-end" style="font-family:monospace;">
+                {% if b.price_usd > 0 %}
+                  ${{ "{:,.0f}".format(b.price_usd) if b.price_usd > 100 else "{:,.4f}".format(b.price_usd) }}
+                {% else %}<span class="tm">—</span>{% endif %}
+              </td>
+              <td class="text-end {{ 'tg' if b.change_24h >= 0 else 'tr' }}">
+                {% if b.change_24h != 0 %}{{ b.sign }}{{ "{:.2f}".format(b.change_24h) }}%
+                {% else %}<span class="tm">—</span>{% endif %}
+              </td>
+              <td class="text-end fw-semibold">
+                ${{ "{:,.2f}".format(b.value_usd) }}
+              </td>
+              <td class="text-end" style="min-width:80px;">
+                <small>{{ "{:.1f}".format(pct) }}%</small>
+                <div class="pct-bar"><div class="pct-fill" style="width:{{ [pct,100]|min }}%;"></div></div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Transaction history from trades.log -->
+  <div class="card">
+    <div class="card-header d-flex justify-content-between">
+      <h6 class="mb-0 fw-semibold"><i class="fas fa-exchange-alt me-2"></i>Bot Transactions</h6>
+      <small class="tm">Last 50 bot trades</small>
+    </div>
+    <div class="card-body p-0">
+      {% if trades %}
+      <div class="table-responsive">
+        <table class="tx-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Coin</th>
+              <th>Side</th>
+              <th class="text-end">Price</th>
+              <th class="text-end">Amount</th>
+              <th class="text-end">P&amp;L</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in trades | reverse %}
+            <tr>
+              <td class="tm" style="white-space:nowrap;">{{ t.get('timestamp','')[:16] if t.get('timestamp') else '—' }}</td>
+              <td><span class="currency-badge" style="font-size:.75rem;">{{ t.get('coin','?') }}</span></td>
+              <td class="{{ 'side-buy' if t.get('action','') == 'BUY' else 'side-sell' }}">
+                {{ t.get('action','?') }}
+              </td>
+              <td class="text-end" style="font-family:monospace;">${{ "{:,.2f}".format(t.get('price',0)|float) }}</td>
+              <td class="text-end" style="font-family:monospace;">${{ "{:,.2f}".format(t.get('usd_amount',0)|float) }}</td>
+              <td class="text-end fw-semibold {{ 'tg' if (t.get('pnl',0)|float) >= 0 else 'tr' }}">
+                {% set pnl = t.get('pnl',0)|float %}
+                {% if pnl != 0 %}{{ '+' if pnl >= 0 else '' }}${{ "{:,.2f}".format(pnl) }}
+                {% else %}<span class="tm">—</span>{% endif %}
+              </td>
+              <td>
+                {% if t.get('status') == 'executed' %}<span class="badge" style="background:#00ff8822;color:#00ff88;">executed</span>
+                {% elif t.get('status') == 'skipped' %}<span class="badge" style="background:#66666622;color:#666;">skipped</span>
+                {% else %}<span class="badge" style="background:#ffaa0022;color:#ffaa00;">{{ t.get('status','?') }}</span>{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty-state">
+        <i class="fas fa-history"></i>
+        <h6 style="color:#888;">No Bot Transactions Yet</h6>
+        <p class="tm mb-0" style="font-size:.82rem;">Bot trades appear here after /autotrade executes signals</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// Auto-refresh every 60 seconds
+setTimeout(() => location.reload(), 60000);
+</script>
+</body>
+</html>"""
+
+
+@app.route("/holdings")
+def holdings():
+    live = get_live_holdings()
+    trade_history = get_recent_trades(n=50)
+    prices = get_prices()
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return render_template_string(HOLDINGS_HTML, holdings=live, trades=trade_history, prices=prices, now=now)
+
+
+def _get_clip_economy_stats() -> dict:
+    """Return income projection stats for the clip economy dashboard card.
+    Falls back to base estimates when no real income has been logged yet.
+    """
+    projections: dict = {}
+    try:
+        from agents.clip_processor import calculate_projections  # type: ignore
+        projections = calculate_projections()
+    except Exception:
+        projections = {}
+
+    # If no income logged yet, show realistic base projections for motivation
+    if projections.get("actual_earned", 0) == 0:
+        projections = {
+            "actual_earned":        0.0,
+            "tiktok_fund_est":      0.0,
+            "conservative_monthly": 200.0,   # 2 gigs x $100
+            "current_monthly":      260.0,   # conservative x 1.3
+            "optimized_monthly":    500.0,   # full pipeline
+            "is_estimate":          True,
+        }
+    return {
+        "projections": projections,
+        "clips_processed": 0,
+    }
+
+
+@app.route("/clip-economy")
+def clip_economy():
+    stats = _get_clip_economy_stats()
+    proj  = stats.get("projections", {})
+    # Also pull income log for display
+    income_log_raw = _read_json(DATA_DIR / "income_log.json", [])
+    running_total  = 0.0
+    income_log     = []
+    for entry in income_log_raw[-50:]:
+        running_total += float(entry.get("amount", 0))
+        income_log.append({**entry, "running_total": round(running_total, 2)})
+    income_log = list(reversed(income_log))
+
+    scout = {}
+    applier = {}
+    try:
+        from agents.job_scout import get_scout_status
+        scout = get_scout_status()
+    except Exception:
+        pass
+    try:
+        from agents.cashclaw_applier import get_applier_status
+        applier = get_applier_status()
+    except Exception:
+        pass
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return render_template_string(CLIP_ECONOMY_HTML,
+        proj=proj, income_log=income_log, scout=scout, applier=applier, now=now)
+
+
+@app.route("/api/clip-economy/stats")
+def api_clip_economy_stats():
+    return jsonify(_get_clip_economy_stats())
+
+
+# ── /api/agents — real-time multi-agent status ────────────────────────────────
+
+def _get_agent_status() -> list:
+    """Build live status cards for all 8 revenue agents from their data files."""
+    import json as _json
+    from pathlib import Path as _Path
+    from datetime import datetime as _dt, timezone as _tz
+
+    DATA = _Path(__file__).parent.parent / "data"
+
+    def _ts_age(ts: str) -> str:
+        if not ts:
+            return "never"
+        try:
+            d = _dt.fromisoformat(ts.replace("Z", "+00:00"))
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=_tz.utc)
+            diff = (_dt.now(_tz.utc) - d).total_seconds()
+            if diff < 60:   return f"{int(diff)}s ago"
+            if diff < 3600: return f"{int(diff//60)}m ago"
+            return f"{int(diff//3600)}h ago"
+        except Exception:
+            return ts[:16]
+
+    def _load(f):
+        p = DATA / f
+        if p.exists():
+            try:
+                return _json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {}
+
+    agents = []
+
+    # 1. JOB SCOUT
+    scout = _load("job_scout_state.json")
+    pending = len(scout.get("pending_approval", []))
+    approved = len(scout.get("approved", []))
+    applied = len(scout.get("applied", []))
+    agents.append({
+        "id": "SCOUT", "name": "Job Scout", "icon": "🕵️",
+        "status": "idle",
+        "last_run": _ts_age(scout.get("last_run", "")),
+        "current_task": f"{pending} pending approval",
+        "metrics": {"pending": pending, "approved": approved, "applied": applied},
+        "revenue": None,
+        "errors": scout.get("last_error", None),
+    })
+
+    # 2. CASHCLAW APPLIER
+    applier = _load("applier_state.json")
+    drafts = len(applier.get("drafts", []))
+    sent = len(applier.get("sent", []))
+    agents.append({
+        "id": "APPLIER", "name": "CashClaw Applier", "icon": "📝",
+        "status": "idle",
+        "last_run": _ts_age(applier.get("last_updated", "")),
+        "current_task": f"{drafts} drafts · {sent} sent",
+        "metrics": {"drafts": drafts, "sent": sent},
+        "revenue": None,
+        "errors": None,
+    })
+
+    # 3. CLIP PROCESSOR
+    clip_data = _load("clip_jobs.json")
+    running = clip_data.get("jobs", [])
+    completed_clips = clip_data.get("completed", [])
+    failed_clips = clip_data.get("failed", [])
+    clip_status = "active" if running else "idle"
+    latest_clip = (completed_clips[-1] if completed_clips else {})
+    agents.append({
+        "id": "CLIP", "name": "Clip Processor", "icon": "✂️",
+        "status": clip_status,
+        "last_run": _ts_age(latest_clip.get("completed_at", "")),
+        "current_task": f"{len(running)} running" if running else f"{len(completed_clips)} clips done",
+        "metrics": {"running": len(running), "completed": len(completed_clips), "failed": len(failed_clips)},
+        "revenue": None,
+        "errors": failed_clips[-1].get("error") if failed_clips else None,
+    })
+
+    # 4. CONTENT PIPELINE
+    queue = _load("content_queue.json")
+    q_items = queue.get("queue", [])
+    posted_items = queue.get("posted", [])
+    queued_count = sum(1 for i in q_items if i.get("status") == "queued")
+    approved_count = sum(1 for i in q_items if i.get("status") == "approved")
+    agents.append({
+        "id": "CONTENT", "name": "Content Pipeline", "icon": "🎬",
+        "status": "idle" if not q_items else "active",
+        "last_run": _ts_age(queue.get("last_updated", "")),
+        "current_task": f"{queued_count} queued · {approved_count} approved",
+        "metrics": {"queued": queued_count, "approved": approved_count, "posted": len(posted_items)},
+        "revenue": None,
+        "errors": None,
+    })
+
+    # 5. SOCIAL PUBLISHER
+    pub_log = _load("publish_log.json")
+    pub_entries = pub_log.get("log", [])
+    pub_success = [e for e in pub_entries if e.get("status") == "posted"]
+    pub_fail = [e for e in pub_entries if e.get("status") == "failed"]
+    last_pub = pub_success[-1] if pub_success else {}
+    agents.append({
+        "id": "PUBLISHER", "name": "Social Publisher", "icon": "📤",
+        "status": "idle",
+        "last_run": _ts_age(last_pub.get("posted_at", "")),
+        "current_task": f"{len(pub_success)} posted · {len(pub_fail)} failed",
+        "metrics": {"posted": len(pub_success), "failed": len(pub_fail)},
+        "revenue": None,
+        "errors": pub_fail[-1].get("error") if pub_fail else None,
+    })
+
+    # 6. PERFORMANCE TRACKER
+    perf_db = _load("performance_db.json")
+    snaps = perf_db.get("snapshots", [])
+    proj = perf_db.get("latest_projections", {})
+    last_snap = snaps[-1] if snaps else {}
+    monthly_est = proj.get("current", 0)
+    agents.append({
+        "id": "PERF", "name": "Performance Tracker", "icon": "📈",
+        "status": "idle",
+        "last_run": _ts_age(last_snap.get("ts", "")),
+        "current_task": f"{len(snaps)} snapshots taken",
+        "metrics": {"snapshots": len(snaps), "tiktok": perf_db.get("tiktok_total_views", 0)},
+        "revenue": round(monthly_est, 2) if monthly_est else None,
+        "errors": None,
+    })
+
+    # 7. TRADING AGENT
+    trade_state = _load("trading_agent_state.json")
+    dca_count = len(trade_state.get("dca_schedules", []))
+    last_cycle = trade_state.get("last_cycle_ts", 0)
+    last_cycle_str = _ts_age(_dt.fromtimestamp(last_cycle, tz=_tz.utc).isoformat()) if last_cycle else "never"
+    agents.append({
+        "id": "TRADING", "name": "Trading Agent", "icon": "📊",
+        "status": "idle",
+        "last_run": last_cycle_str,
+        "current_task": f"{dca_count} DCA schedules active",
+        "metrics": {"dca_schedules": dca_count},
+        "revenue": None,
+        "errors": None,
+    })
+
+    # 8. INCOME LOG
+    income = _load("income_log.json")
+    entries = income if isinstance(income, list) else income.get("entries", [])
+    total_income = sum(float(e.get("amount", 0)) for e in entries)
+    agents.append({
+        "id": "INCOME", "name": "Income Logger", "icon": "💰",
+        "status": "idle",
+        "last_run": _ts_age(entries[-1].get("ts", "") if entries else ""),
+        "current_task": f"{len(entries)} entries logged",
+        "metrics": {"entries": len(entries)},
+        "revenue": round(total_income, 2),
+        "errors": None,
+    })
+
+    return agents
+
+
+@app.route("/api/agents")
+def api_agents():
+    """Real-time agent status — called every 30s by dashboard."""
+    agents = _get_agent_status()
+    total_revenue = sum(a["revenue"] or 0 for a in agents)
+    active_count = sum(1 for a in agents if a["status"] == "active")
+    return jsonify({
+        "agents": agents,
+        "summary": {
+            "total": len(agents),
+            "active": active_count,
+            "idle": len(agents) - active_count,
+            "total_revenue_logged": round(total_revenue, 2),
+            "updated_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        }
+    })
+
+
+@app.route("/api/life-dashboard")
+def api_life_dashboard():
+    """LifeOS metrics — fitness, finance, habits.
+
+    Returns JSON:
+    {
+        "fitness": {"weight": ..., "goal_weight": ..., "workouts": ...},
+        "finance": {"income": ..., "expenses": ..., "debt": ..., "investments": ...},
+        "habits":  {"score": ..., "streak": ..., "completionRate": ...},
+        "profile": {"coach_mode": ..., "setup_done": ...}
+    }
+    """
+    try:
+        from agents.lifeos_agent import get_dashboard_data
+        return jsonify(get_dashboard_data())
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+CLIP_ECONOMY_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CashClaw — Clip Economy</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+<style>
+  :root {--bg:#0d0d0d;--card:#141414;--border:#242424;--green:#00ff88;--amber:#ffaa00;--blue:#4499ff;--red:#ff4455;--text:#e0e0e0;--muted:#666;}
+  body { background: var(--bg); color: var(--text); font-family:'Segoe UI',sans-serif; }
+  .navbar { background:var(--card)!important; border-bottom:1px solid var(--border); }
+  .navbar-brand { color:var(--green)!important; font-weight:bold; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; }
+  .card-header { background:#1e1e1e; border-bottom:1px solid var(--border); border-radius:12px 12px 0 0!important; }
+  .proj-card { text-align:center; padding:1.5rem; }
+  .proj-val { font-size:2.2rem; font-weight:700; font-family:monospace; }
+  .proj-label { font-size:.8rem; color:var(--muted); margin-bottom:.5rem; }
+  .proj-sub { font-size:.75rem; color:var(--muted); margin-top:.3rem; }
+  .est-badge { font-size:.65rem; color:#555; border:1px solid #333; padding:1px 5px; border-radius:3px; vertical-align:middle; }
+  .section-title { font-size:.85rem; font-weight:700; color:var(--muted); letter-spacing:.08em; text-transform:uppercase; margin:1.5rem 0 .75rem; }
+  .stat-pill { display:inline-block; background:#1a1a1a; border:1px solid var(--border); border-radius:20px; padding:4px 12px; font-size:.8rem; margin:.2rem; }
+  .income-row { border-bottom:1px solid var(--border); padding:.5rem 0; font-size:.85rem; }
+  .income-row:last-child { border-bottom:none; }
+</style>
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-dark px-3 py-2">
+  <span class="navbar-brand"><i class="fas fa-film me-2"></i>CashClaw — Clip Economy</span>
+  <div class="d-flex gap-3 ms-auto align-items-center">
+    <a href="/" class="text-muted small text-decoration-none"><i class="fas fa-arrow-left me-1"></i>Dashboard</a>
+    <a href="/taskboard" class="text-muted small text-decoration-none">Task Board</a>
+    <small class="text-muted">{{ now }}</small>
+  </div>
+</nav>
+
+<div class="container-fluid py-4 px-4" style="max-width:1100px;">
+
+<!-- Income Projections -->
+<div class="section-title"><i class="fas fa-dollar-sign me-2"></i>Income Projections</div>
+<div class="row mb-4">
+  <div class="col-12 col-sm-4 mb-3">
+    <div class="card proj-card">
+      <div class="proj-label">💰 Conservative</div>
+      <div class="proj-val text-muted">
+        ${{ "%.0f"|format(proj.conservative_monthly) }}
+        {% if proj.is_estimate %}<span class="est-badge">est.</span>{% endif %}
+      </div>
+      <div class="proj-sub">{{ "Actual earned × 30d" if not proj.is_estimate else "2 gigs/mo × $100 avg" }}</div>
+    </div>
+  </div>
+  <div class="col-12 col-sm-4 mb-3">
+    <div class="card proj-card">
+      <div class="proj-label">📈 Current Pace</div>
+      <div class="proj-val" style="color:var(--amber);">
+        ${{ "%.0f"|format(proj.current_monthly) }}
+        {% if proj.is_estimate %}<span class="est-badge">est.</span>{% endif %}
+      </div>
+      <div class="proj-sub">{{ "Conservative × 1.3" if not proj.is_estimate else "4 gigs/mo + TikTok" }}</div>
+    </div>
+  </div>
+  <div class="col-12 col-sm-4 mb-3">
+    <div class="card proj-card">
+      <div class="proj-label">🚀 Optimized</div>
+      <div class="proj-val" style="color:var(--green);">
+        ${{ "%.0f"|format(proj.optimized_monthly) }}
+        {% if proj.is_estimate %}<span class="est-badge">est.</span>{% endif %}
+      </div>
+      <div class="proj-sub">{{ "Full pipeline running" }}</div>
+    </div>
+  </div>
+</div>
+
+{% if proj.is_estimate %}
+<div class="alert" style="background:#1a1a00;border:1px solid #ffaa0033;color:#ffaa00;font-size:.82rem;border-radius:8px;">
+  <i class="fas fa-info-circle me-2"></i>Projections are estimates — no income logged yet. Use <code>/log_income</code> in Telegram to track real earnings.
+</div>
+{% endif %}
+
+<!-- CashClaw Pipeline -->
+<div class="section-title"><i class="fas fa-robot me-2"></i>CashClaw Pipeline Status</div>
+<div class="row mb-4">
+  <div class="col-6 col-md-3 mb-3">
+    <div class="card p-3 text-center">
+      <div style="font-size:.7rem;color:var(--muted);">PENDING JOBS</div>
+      <div style="font-size:1.8rem;font-weight:700;color:var(--green);">{{ scout.get('pending', 0) }}</div>
+      <div style="font-size:.7rem;color:#555;">awaiting approval</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3 mb-3">
+    <div class="card p-3 text-center">
+      <div style="font-size:.7rem;color:var(--muted);">APPROVED</div>
+      <div style="font-size:1.8rem;font-weight:700;color:var(--amber);">{{ scout.get('approved', 0) }}</div>
+      <div style="font-size:.7rem;color:#555;">ready for outreach</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3 mb-3">
+    <div class="card p-3 text-center">
+      <div style="font-size:.7rem;color:var(--muted);">DRAFTS READY</div>
+      <div style="font-size:1.8rem;font-weight:700;color:var(--blue);">{{ applier.get('pending_drafts', 0) }}</div>
+      <div style="font-size:.7rem;color:#555;">outreach drafted</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3 mb-3">
+    <div class="card p-3 text-center">
+      <div style="font-size:.7rem;color:var(--muted);">APPLIED</div>
+      <div style="font-size:1.8rem;font-weight:700;color:#888;">{{ scout.get('applied', 0) }}</div>
+      <div style="font-size:.7rem;color:#555;">sent this cycle</div>
+    </div>
+  </div>
+</div>
+
+<!-- Income Log -->
+<div class="section-title"><i class="fas fa-receipt me-2"></i>Income Log</div>
+<div class="card">
+  <div class="card-body">
+  {% if income_log %}
+    {% for entry in income_log %}
+    <div class="income-row d-flex justify-content-between align-items-center">
+      <div>
+        <span style="color:var(--green);font-weight:600;">${{ "%.2f"|format(entry.amount|float) }}</span>
+        <span class="text-muted ms-2">{{ entry.source }}</span>
+        {% if entry.note %}<span class="text-muted ms-1">— {{ entry.note }}</span>{% endif %}
+      </div>
+      <div style="text-align:right;">
+        <span class="text-muted" style="font-size:.75rem;">{{ entry.get('timestamp','')[:10] }}</span>
+        <span class="ms-3" style="font-size:.75rem;color:#555;">total: ${{ "%.2f"|format(entry.running_total) }}</span>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="text-center py-4" style="color:var(--muted);">
+      <i class="fas fa-receipt" style="font-size:2rem;display:block;margin-bottom:8px;"></i>
+      No income logged yet.<br>
+      <small>Use <code>/log_income 150 whop "clip job"</code> in Telegram</small>
+    </div>
+  {% endif %}
+  </div>
+</div>
+
+<!-- Quick Commands -->
+<div class="section-title mt-4"><i class="fas fa-terminal me-2"></i>Quick Commands</div>
+<div class="mb-4" style="display:flex;flex-wrap:wrap;gap:8px;">
+  {% for cmd in ['/scout run', '/approve_job 1', '/apply_job 1', '/send_apply 1', '/cashclaw', '/log_income'] %}
+  <code style="background:#1a1a1a;border:1px solid var(--border);padding:6px 12px;border-radius:6px;font-size:.8rem;color:var(--green);">{{ cmd }}</code>
+  {% endfor %}
+</div>
+
+</div>
+<script>setTimeout(() => location.reload(), 60000);</script>
+</body>
+</html>"""
 
 
 if __name__ == "__main__":
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     print("OpenClaw Dashboard → http://localhost:8080")
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    app.run(host="127.0.0.1", port=8080, debug=False)
