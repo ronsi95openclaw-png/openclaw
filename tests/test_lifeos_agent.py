@@ -214,7 +214,7 @@ def test_streak_resets_after_gap(tmp_path):
     scores = {
         "total": 0,
         "streak": 5,
-        "last_active_date": (date.today() - timedelta(days=3)).isoformat(),
+        "last_active_date": (datetime.now(timezone.utc).date() - timedelta(days=3)).isoformat(),
         "history": [],
     }
     m._SCORES_FILE.parent.mkdir(parents=True, exist_ok=True)

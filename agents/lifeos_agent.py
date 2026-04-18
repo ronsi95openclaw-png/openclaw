@@ -77,15 +77,17 @@ def _log_path(day: Optional[str] = None) -> Path:
 
 
 def log_daily_entry(section: str, data: Dict[str, Any]) -> None:
-    """Write morning or evening check-in data for today.
+    """Merge morning or evening check-in data into today's log.
 
     section: "morning" | "evening"
-    data: arbitrary dict of check-in fields
+    data: arbitrary dict of check-in fields (merged into any existing section data)
     """
     path    = _log_path()
     entry   = _read_json(path, {})
     ts      = datetime.now(timezone.utc).isoformat()
-    entry[section] = {"timestamp": ts, **data}
+    existing_section = entry.get(section, {})
+    existing_section.update({"timestamp": ts, **data})
+    entry[section] = existing_section
     _write_json(path, entry)
 
 
@@ -115,7 +117,7 @@ def get_recent_logs(n: int = 7) -> List[Dict[str, Any]]:
     """Return the last n days of logs as a list of dicts."""
     results = []
     for i in range(n):
-        day  = (date.today() - timedelta(days=i)).isoformat()
+        day  = (datetime.now(timezone.utc).date() - timedelta(days=i)).isoformat()
         log  = get_log_for_date(day)
         if log:
             results.append({"date": day, **log})
@@ -157,7 +159,7 @@ def record_active_day() -> Dict[str, Any]:
     if last == today:
         return scores  # already recorded today
 
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    yesterday = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
     if last == yesterday:
         scores["streak"] = scores.get("streak", 0) + 1
     elif last != today:
