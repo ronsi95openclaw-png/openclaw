@@ -20,6 +20,8 @@ from flask import Flask, render_template_string, request, jsonify
 ROOT     = Path(__file__).parent.parent
 DATA_DIR = ROOT / "data"
 
+sys.path.insert(0, str(ROOT))
+
 load_dotenv(ROOT / ".env", override=True)
 
 app = Flask(__name__)
@@ -628,9 +630,52 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     font-size:8px;padding:6px 10px;cursor:pointer;
   }
   .chat-send:hover{background:var(--neon);color:#000;}
+  /* Mobile tap responsiveness — removes 300ms iOS delay on all interactive elements */
+  button,a,.agent-chat-btn,.chat-hdr,.chat-send,.cmd-btn,.btn-move,.btn-del,.btn-add-task,.new-agent-btn{
+    touch-action:manipulation;
+    -webkit-tap-highlight-color:rgba(0,255,136,0.15);
+  }
+  /* Visual tap feedback for mobile */
+  button:active, .agent-chat-btn:active, .chat-send:active, .cmd-btn:active {
+    opacity: 0.7;
+    transform: scale(0.97);
+  }
   @media(max-width:560px){
-    .chat-panel{width:100%;right:0;left:0;}
-    body{padding-bottom:200px;}
+    .chat-panel{
+      width:100%;right:0;left:0;bottom:0;
+      border-left:none;border-right:none;
+      /* Taller chat on mobile */
+    }
+    .chat-msgs{max-height:220px;}
+    body{padding-bottom:260px;}
+    /* Larger tap targets on mobile */
+    .agent-chat-btn{
+      padding:16px !important;
+      font-size:9px !important;
+      letter-spacing:1px !important;
+      min-height:44px;
+    }
+    .chat-send{padding:12px 18px !important;min-width:44px;min-height:44px;}
+    .chat-hdr{padding:16px !important;min-height:48px;}
+    .chat-in-row input{
+      font-size:16px !important; /* prevents iOS zoom-in on focus */
+      min-height:44px;
+      padding:10px !important;
+    }
+    .chat-in-row{padding:10px !important;}
+    /* Compact header for iPhone */
+    .hdr{padding:0 12px;gap:8px;height:48px;}
+    .hdr-title{font-size:7px;letter-spacing:1px;}
+    .hdr-clock{display:none;}
+    .hdr-nav a{font-size:8px;padding:3px 6px;}
+    .hdr-status{font-size:6px;padding:3px 6px;}
+    /* Cmd bar wraps nicely */
+    .cmd-bar{padding:8px 12px;}
+    .cmd-btn{font-size:10px;padding:8px 10px;min-height:36px;}
+    /* Status cards readable */
+    .sr{font-size:12px;}
+    /* Section headers smaller */
+    .sec-hdr{font-size:6px;padding:14px 12px 6px;}
   }
 </style>
 </head>
@@ -915,6 +960,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   {% endif %}
 </div>
 
+<!-- Mobile: floating chat hint button -->
+<button id="mobile-chat-hint" onclick="window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'})" style="display:none;position:fixed;bottom:80px;right:16px;z-index:450;background:#0a120a;border:1px solid var(--neon);color:var(--neon);font-family:'Press Start 2P',monospace;font-size:7px;padding:10px 14px;cursor:pointer;box-shadow:0 0 12px #00ff8844;border-radius:2px;touch-action:manipulation;">
+  &#9660; CHAT
+</button>
+
 <!-- CHAT PANEL -->
 <div class="chat-panel" id="chat-panel">
   <div class="chat-hdr" onclick="toggleChat()">
@@ -1007,7 +1057,13 @@ function openAgentChat(agentName){
   // Open if closed
   if(!chatOpen){chatOpen=true;msgs.style.display='flex';document.getElementById('chat-input-row').style.display='flex';document.getElementById('chat-toggle-icon').textContent='\u25B2';}
   // Scroll panel into view on mobile
-  document.querySelector('.chat-panel').scrollIntoView({behavior:'smooth',block:'end'});
+  // Fixed elements don't respond to scrollIntoView — scroll page to bottom instead
+  window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});
+  // Flash the chat panel so user knows it activated
+  const cp = document.querySelector('.chat-panel');
+  cp.style.transition = 'transform 0.3s ease';
+  cp.style.transform = 'translateY(-8px)';
+  setTimeout(() => { cp.style.transform = 'translateY(0)'; }, 300);
   inp.focus();
 }
 
@@ -1067,7 +1123,7 @@ async function sendChat(){
       document.getElementById('brain-badge').textContent=label;
     }
     _save();
-  }catch(e){th.textContent='CONNECTION ERROR';th.style.color='var(--red)';}
+  }catch(e){th.textContent='⚠️ CONNECTION ERROR — Is Ollama running on your PC? Check Task Manager or run: ollama serve';th.style.color='var(--red)';}
   inp.disabled=false;document.getElementById('send-btn').disabled=false;
   chatActive=false;inp.focus();
 }
@@ -1088,7 +1144,21 @@ async function clearChat(e){
 }
 // Click chat title to return to ClawBot
 document.querySelector('.chat-title').addEventListener('click',function(e){e.stopPropagation();resetToClawbot();});
-inp.focus();
+// Only auto-focus on desktop — on mobile this pops the keyboard and breaks layout
+if(!/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)){inp.focus();}
+
+// Show mobile chat hint button when user is not at bottom
+(function(){
+  const hint = document.getElementById('mobile-chat-hint');
+  if(!hint) return;
+  if(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)){
+    hint.style.display = 'block';
+    window.addEventListener('scroll', function(){
+      const atBottom = (window.innerHeight + window.scrollY) >= document.body.scrollHeight - 80;
+      hint.style.display = atBottom ? 'none' : 'block';
+    });
+  }
+})();
 </script>
 </body>
 </html>
@@ -2725,21 +2795,16 @@ def api_agents():
 
 @app.route("/api/life-dashboard")
 def api_life_dashboard():
-    """LifeOS metrics — fitness, finance, habits.
-
-    Returns JSON:
-    {
-        "fitness": {"weight": ..., "goal_weight": ..., "workouts": ...},
-        "finance": {"income": ..., "expenses": ..., "debt": ..., "investments": ...},
-        "habits":  {"score": ..., "streak": ..., "completionRate": ...},
-        "profile": {"coach_mode": ..., "setup_done": ...}
-    }
-    """
+    """LifeOS metrics — fitness, finance, habits."""
     try:
+        from pathlib import Path as _Path
+        # Ensure data/lifeos dirs exist before importing agent
+        (_Path(__file__).parent.parent / "data" / "lifeos" / "daily_logs").mkdir(parents=True, exist_ok=True)
         from agents.lifeos_agent import get_dashboard_data
         return jsonify(get_dashboard_data())
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        import traceback
+        return jsonify({"error": str(exc), "trace": traceback.format_exc()[-500:]}), 500
 
 
 CLIP_ECONOMY_HTML = """<!DOCTYPE html>
@@ -2899,5 +2964,7 @@ CLIP_ECONOMY_HTML = """<!DOCTYPE html>
 if __name__ == "__main__":
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    print("OpenClaw Dashboard → http://localhost:8080")
-    app.run(host="127.0.0.1", port=8080, debug=False)
+    import socket
+    local_ip = socket.gethostbyname(socket.gethostname())
+    print(f"OpenClaw Dashboard → http://localhost:8080  |  LAN/Tailscale → http://{local_ip}:8080")
+    app.run(host="0.0.0.0", port=8080, debug=True)
