@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib
 import json
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 
 
@@ -21,6 +21,22 @@ def _reload_module(tmp_path: Path):
     m._INTAKE_FILE  = tmp_path / "lifeos" / "intake.json"
     m._SCORES_FILE  = tmp_path / "lifeos" / "scores.json"
     m._LOGS_DIR     = tmp_path / "lifeos" / "daily_logs"
+
+    # _today() uses UTC (datetime.now(timezone.utc)) while get_recent_logs()
+    # iterates using date.today() (local time).  On machines where the local
+    # clock is behind UTC midnight the two can disagree, causing log_daily_entry
+    # to write YYYY-MM-DD+1.json while get_recent_logs looks for YYYY-MM-DD.json.
+    # Fix: replace the module-level `date` with a subclass whose today() mirrors
+    # the UTC date used by _today(), keeping test isolation without touching
+    # production code.
+    _utc_today = datetime.now(timezone.utc).date()
+
+    class _UTCDate(date):
+        @classmethod
+        def today(cls):  # type: ignore[override]
+            return _utc_today
+
+    m.date = _UTCDate  # type: ignore[attr-defined]
 
     return m
 
