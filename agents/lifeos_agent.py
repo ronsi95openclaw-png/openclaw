@@ -104,6 +104,31 @@ def log_expense(amount: float, category: str, description: str = "") -> None:
     _write_json(path, entry)
 
 
+def log_income(amount: float, source: str, description: str = "") -> None:
+    """Append an income entry to today's log and the persistent income log."""
+    path  = _log_path()
+    entry = _read_json(path, {})
+    entry.setdefault("income", []).append({
+        "amount":      amount,
+        "source":      source,
+        "description": description,
+        "timestamp":   datetime.now(timezone.utc).isoformat(),
+    })
+    _write_json(path, entry)
+
+    # Also append to data/income_log.json for the dashboard clip-economy view
+    income_log_path = _ROOT / "data" / "income_log.json"
+    income_log = _read_json(income_log_path, [])
+    income_log.append({
+        "amount":      amount,
+        "source":      source,
+        "description": description,
+        "date":        _today(),
+        "timestamp":   datetime.now(timezone.utc).isoformat(),
+    })
+    _write_json(income_log_path, income_log)
+
+
 def get_today_log() -> Dict[str, Any]:
     return _read_json(_log_path(), {})
 

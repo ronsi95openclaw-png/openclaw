@@ -106,6 +106,7 @@ from agents.lifeos_agent import (
     get_scores,
     load_intake,
     log_expense,
+    log_income,
     log_weight,
     save_intake,
 )
@@ -910,6 +911,36 @@ async def cmd_logexpense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"Expense logged: <b>${amount:.2f}</b> — {category}"
         + (f" ({description})" if description else "")
         + "\n+5 pts")
+
+
+async def cmd_logincome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/log_income 150 freelance website job — log income earned."""
+    if not is_authorized(update.effective_chat.id):
+        return
+    if not context.args or len(context.args) < 2:
+        await _safe_reply(update.message,
+            "Usage: /log_income [amount] [source] [description]\n"
+            "Example: /log_income 150 freelance website job\n"
+            "Example: /log_income 50 crypto BTC sell profit")
+        return
+    try:
+        amount = float(context.args[0])
+    except ValueError:
+        await _safe_reply(update.message, "Invalid amount. Example: /log_income 150 freelance")
+        return
+    if amount <= 0:
+        await _safe_reply(update.message, "Amount must be a positive number.")
+        return
+    source      = context.args[1]
+    description = " ".join(context.args[2:]) if len(context.args) > 2 else ""
+    log_income(amount, source, description)
+    add_score("deep_work", +15)  # income = productive work, reward it
+    intake = load_intake()
+    monthly = intake.get("monthly_income", 0)
+    await _safe_reply(update.message,
+        f"Income logged: <b>${amount:.2f}</b> — {source}"
+        + (f" ({description})" if description else "")
+        + f"\n+15 pts\n\n<i>Monthly target: ${monthly}</i>")
 
 
 async def cmd_lifesetup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2697,6 +2728,8 @@ def main() -> None:
     _app.add_handler(CommandHandler("score",        cmd_score))
     _app.add_handler(CommandHandler("logweight",    cmd_logweight))
     _app.add_handler(CommandHandler("logexpense",   cmd_logexpense))
+    _app.add_handler(CommandHandler("log_income",   cmd_logincome))
+    _app.add_handler(CommandHandler("logincome",    cmd_logincome))
     _app.add_handler(CommandHandler("lifesetup",    cmd_lifesetup))
     _app.add_handler(CommandHandler("lifemode",     cmd_lifemode))
     _app.add_handler(CommandHandler("lifeschedule", cmd_lifeschedule))
