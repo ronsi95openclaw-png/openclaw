@@ -18,7 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 _DATA_DIR        = Path(__file__).parent.parent / "data"
-_TASKS_FILE      = _DATA_DIR / "tasks.json"
+_TASKS_FILE      = _DATA_DIR / "reminders.json"   # separate from orchestrator tasks.json
 _AUTOTRADE_FILE  = _DATA_DIR / "autotrade.json"
 _AUTOTRADE_JOB   = "clawbot_autotrade_daily"
 
@@ -40,6 +40,7 @@ def start_scheduler() -> AsyncIOScheduler:
     _scheduler = AsyncIOScheduler(timezone="UTC")
     _scheduler.start()
     _reload_from_disk()
+    reload_lifeos_schedule()
     return _scheduler
 
 
@@ -314,3 +315,103 @@ def reload_autotrade() -> None:
             id=_AUTOTRADE_JOB,
             replace_existing=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# LifeOS daily check-in jobs
+# ---------------------------------------------------------------------------
+
+_MORNING_CHECKIN_JOB = "lifeos_morning_checkin"
+_EVENING_CHECKIN_JOB = "lifeos_evening_checkin"
+_LIFEOS_CONFIG_FILE  = _DATA_DIR / "lifeos_schedule.json"
+
+
+def _load_lifeos_schedule() -> dict:
+    if _LIFEOS_CONFIG_FILE.exists():
+        try:
+            return json.loads(_LIFEOS_CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"enabled": False, "chat_id": None, "morning_time": "07:00", "evening_time": "20:00"}
+
+
+def _save_lifeos_schedule(cfg: dict) -> None:
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _LIFEOS_CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+
+async def _fire_morning_checkin() -> None:
+    cfg = _load_lifeos_schedule()
+    if not cfg.get("enabled") or not cfg.get("chat_id"):
+        return
+    from agents.lifeos_checkin import start_morning_checkin
+    first_q = start_morning_checkin(cfg["chat_id"])
+    if _send_fn:
+        await _send_fn(cfg["chat_id"], f"<b>Morning Check-in</b>\n\n{first_q}")
+
+
+async def _fire_evening_checkin() -> None:
+    cfg = _load_lifeos_schedule()
+    if not cfg.get("enabled") or not cfg.get("chat_id"):
+        return
+    from agents.lifeos_checkin import start_evening_checkin
+    first_q = start_evening_checkin(cfg["chat_id"])
+    if _send_fn:
+        await _send_fn(cfg["chat_id"], f"<b>Evening Check-in</b>\n\n{first_q}")
+
+
+def enable_lifeos_schedule(
+    chat_id: int,
+    morning_time: str = "07:00",
+    evening_time: str = "20:00",
+) -> dict:
+    """Enable automatic morning + evening check-ins for chat_id.
+
+    Times are UTC HH:MM strings.
+    """
+    cfg = {
+        "enabled":      True,
+        "chat_id":      chat_id,
+        "morning_time": morning_time,
+        "evening_time": evening_time,
+    }
+    _save_lifeos_schedule(cfg)
+    _register_lifeos_jobs(cfg)
+    return cfg
+
+
+def disable_lifeos_schedule() -> None:
+    """Disable automatic morning/evening check-ins."""
+    cfg = _load_lifeos_schedule()
+    cfg["enabled"] = False
+    _save_lifeos_schedule(cfg)
+    if _scheduler:
+        for job_id in (_MORNING_CHECKIN_JOB, _EVENING_CHECKIN_JOB):
+            if _scheduler.get_job(job_id):
+                _scheduler.remove_job(job_id)
+
+
+def _register_lifeos_jobs(cfg: dict) -> None:
+    if not _scheduler:
+        return
+    mh, mm = cfg["morning_time"].split(":")
+    eh, em = cfg["evening_time"].split(":")
+    _scheduler.add_job(
+        _fire_morning_checkin,
+        CronTrigger(hour=int(mh), minute=int(mm), timezone="UTC"),
+        id=_MORNING_CHECKIN_JOB,
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _fire_evening_checkin,
+        CronTrigger(hour=int(eh), minute=int(em), timezone="UTC"),
+        id=_EVENING_CHECKIN_JOB,
+        replace_existing=True,
+    )
+
+
+def reload_lifeos_schedule() -> None:
+    """Re-register LifeOS jobs after bot restart if they were enabled."""
+    cfg = _load_lifeos_schedule()
+    if cfg.get("enabled") and cfg.get("chat_id"):
+        _register_lifeos_jobs(cfg)
