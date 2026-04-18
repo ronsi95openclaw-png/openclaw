@@ -2891,7 +2891,8 @@ def main() -> None:
         _gw_token = os.getenv("GATEWAY_TOKEN", "").strip()
         if _gw_token:
             start_gateway_thread()
-            logger.info("JARVIS Gateway started on ws://127.0.0.1:18789")
+            _gw_port = int(os.getenv("JARVIS_GATEWAY_PORT", "18790"))
+            logger.info(f"JARVIS Gateway started on ws://127.0.0.1:{_gw_port}")
         else:
             logger.info("JARVIS Gateway: set GATEWAY_TOKEN in .env to enable")
     except Exception as _gw_err:

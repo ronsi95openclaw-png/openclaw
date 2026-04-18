@@ -1376,11 +1376,9 @@ def api_execute_command():
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Health check endpoint for load balancers."""
-    monitor = _get_monitor()
-    status = monitor.get_status()
-    system_ok = status.get("system", {}).get("status") == "healthy"
-    return jsonify({"status": "ok" if system_ok else "degraded"}), 200 if system_ok else 503
+    """Health check endpoint. Returns 200 as long as the Flask process is alive.
+    Use /api/system-status for detailed health breakdown."""
+    return jsonify({"status": "ok"}), 200
 
 
 @app.route("/api/system-status", methods=["GET"])
