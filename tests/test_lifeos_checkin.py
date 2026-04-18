@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import patch, call
 
 
 def _reload_modules(tmp_path: Path):

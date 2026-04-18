@@ -38,12 +38,20 @@ EVENING_QUESTIONS = [
 
 def start_morning_checkin(chat_id: int) -> str:
     """Start the morning check-in for chat_id. Returns the first question."""
+    if chat_id in _STATES:
+        state = _STATES[chat_id]
+        questions = MORNING_QUESTIONS if state["type"] == "morning" else EVENING_QUESTIONS
+        return f"You already have an active check-in. Next question:\n\n{questions[state['step']]}"
     _STATES[chat_id] = {"type": "morning", "step": 0, "data": {}}
     return MORNING_QUESTIONS[0]
 
 
 def start_evening_checkin(chat_id: int) -> str:
     """Start the evening check-in for chat_id. Returns the first question."""
+    if chat_id in _STATES:
+        state = _STATES[chat_id]
+        questions = MORNING_QUESTIONS if state["type"] == "morning" else EVENING_QUESTIONS
+        return f"You already have an active check-in. Next question:\n\n{questions[state['step']]}"
     _STATES[chat_id] = {"type": "evening", "step": 0, "data": {}}
     return EVENING_QUESTIONS[0]
 
@@ -96,12 +104,14 @@ def _handle_morning_step(
 
     elif step == 2:
         data["top3"] = text
-        log_daily_entry("morning", data)
-        record_active_day()
-        if data.get("gym"):
-            add_score("workout")
         _STATES.pop(chat_id, None)
-
+        try:
+            log_daily_entry("morning", data)
+            record_active_day()
+            if data.get("gym"):
+                add_score("workout")
+        except Exception:
+            return True, "⚠️ Check-in data couldn't be saved, but your session is cleared. Try again with /morning."
         gym_line = "Gym: scheduled ✅" if data["gym"] else "Gym: not scheduled"
         return True, (
             f"Morning check-in saved.\n\n"
@@ -147,20 +157,22 @@ def _handle_evening_step(
 
     elif step == 4:
         try:
-            data["energy"] = int(text.strip())
+            data["energy"] = max(1, min(int(text.strip()), 10))
         except ValueError:
             data["energy"] = 5
 
-        # Persist
-        log_daily_entry("evening", data)
-        if data.get("expenses", 0) > 0:
-            log_expense(data["expenses"], "untracked", "evening check-in total")
-            add_score("expense_tracked")
-        if data.get("diet_ok"):
-            add_score("diet_adherence")
-        record_active_day()
         _STATES.pop(chat_id, None)
-
+        try:
+            # Persist
+            log_daily_entry("evening", data)
+            if data.get("expenses", 0) > 0:
+                log_expense(data["expenses"], "untracked", "evening check-in total")
+                add_score("expense_tracked")
+            if data.get("diet_ok"):
+                add_score("diet_adherence")
+            record_active_day()
+        except Exception:
+            return True, "⚠️ Check-in data couldn't be saved, but your session is cleared. Try again with /evening."
         energy_bar = "🔥" * min(data["energy"], 10)
         return True, (
             f"Evening check-in saved.\n\n"
