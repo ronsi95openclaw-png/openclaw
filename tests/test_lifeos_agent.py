@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -188,6 +190,21 @@ def test_streak_no_double_count(tmp_path):
     r2 = m.record_active_day()
     assert r1["streak"] == r2["streak"]
     assert r1["last_active_date"] == r2["last_active_date"]
+
+
+def test_streak_resets_after_gap(tmp_path):
+    """When last active date is 2+ days ago, streak resets to 1."""
+    m = _reload_module(tmp_path)
+    scores = {
+        "total": 0,
+        "streak": 5,
+        "last_active_date": (date.today() - timedelta(days=3)).isoformat(),
+        "history": [],
+    }
+    m._SCORES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    m._SCORES_FILE.write_text(json.dumps(scores), encoding="utf-8")
+    result = m.record_active_day()
+    assert result["streak"] == 1
 
 
 def test_get_scores_defaults(tmp_path):
