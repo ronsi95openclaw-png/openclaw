@@ -3477,4 +3477,4 @@ if __name__ == "__main__":
     import socket
     local_ip = socket.gethostbyname(socket.gethostname())
     print(f"OpenClaw Dashboard → http://localhost:8080  |  LAN/Tailscale → http://{local_ip}:8080")
-    app.run(host="0.0.0.0", port=8080, debug=True)
+    app.run(host="0.0.0.0", port=8080, debug=False, use_reloader=False)
