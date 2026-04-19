@@ -68,6 +68,38 @@ def _security_headers(response):
     )
     return response
 
+
+@app.errorhandler(500)
+def _handle_500(exc):
+    """Return JSON for API routes, styled HTML for page routes."""
+    if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "error": "Internal server error", "detail": str(exc)}), 500
+    _ERR_HTML = (
+        "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+        "<title>OpenClaw \u2014 Error</title>"
+        "<style>body{background:#0d0d0d;color:#e0e0e0;font-family:'Share Tech Mono',monospace;"
+        "display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}"
+        ".box{text-align:center;padding:40px;border:1px solid #ff4455;border-radius:12px;"
+        "background:#141414;max-width:480px;}"
+        ".title{font-family:'Press Start 2P',monospace;font-size:12px;color:#ff4455;margin-bottom:16px;}"
+        ".msg{color:#888;font-size:11px;line-height:1.8;}"
+        "a{color:#00ff88;}</style></head>"
+        "<body><div class='box'>"
+        "<div class='title'>&#9888; SERVER ERROR</div>"
+        "<div class='msg'>Something went wrong on this page.<br><br>"
+        "<a href='/'>&#8592; Back to Dashboard</a></div>"
+        "</div></body></html>"
+    )
+    return _ERR_HTML, 500
+
+
+@app.errorhandler(404)
+def _handle_404(exc):
+    if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    from flask import redirect
+    return redirect("/")
+
 # ── Dashboard token auth ──────────────────────────────────────────────────────
 
 import secrets as _secrets
