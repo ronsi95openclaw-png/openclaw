@@ -2905,10 +2905,19 @@ HOLDINGS_HTML = """<!DOCTYPE html>
 <div class="container-fluid p-3 p-md-4">
 
   {% if holdings_error %}
-  <div style="background:#1a0000;border:1px solid #ff4455;border-radius:8px;padding:16px 20px;margin-bottom:20px;color:#ff8888;font-family:'Share Tech Mono',monospace;font-size:12px;">
-    <div style="font-family:'Press Start 2P',monospace;font-size:8px;color:#ff4455;margin-bottom:8px;">&#9888; EXCHANGE CONNECTION ERROR</div>
-    <div>{{ holdings_error[:120] }}</div>
-    <div style="margin-top:10px;color:#555;font-size:11px;">Fix: In Crypto.com Exchange &rarr; API Management &rarr; Remove IP restriction on your key, or whitelist your PC&apos;s public IP.</div>
+  <div style="background:#1a0000;border:1px solid #ff4455;border-radius:8px;padding:16px 20px;margin-bottom:20px;font-family:'Share Tech Mono',monospace;font-size:12px;">
+    <div style="font-family:'Press Start 2P',monospace;font-size:8px;color:#ff4455;margin-bottom:10px;">&#9888; EXCHANGE ERROR</div>
+    {% if '10002' in holdings_error or 'UNAUTHORIZED' in holdings_error %}
+    <div style="color:#ff8888;">API key rejected (error 10002 &#8212; UNAUTHORIZED)</div>
+    <ul style="color:#888;font-size:11px;margin-top:10px;padding-left:16px;line-height:1.8;">
+      <li>Check <code>CRYPTOCOM_API_KEY</code> and <code>CRYPTOCOM_API_SECRET</code> in <code>.env</code></li>
+      <li>In Crypto.com Exchange &#8594; API Management &#8594; confirm the key is active</li>
+      <li>Remove IP restriction or whitelist your PC&#39;s public IP</li>
+    </ul>
+    {% else %}
+    <div style="color:#ff8888;">{{ holdings_error[:160] }}</div>
+    <div style="margin-top:10px;color:#555;font-size:11px;">Check your Crypto.com API credentials in .env and ensure the exchange is reachable.</div>
+    {% endif %}
   </div>
   {% endif %}
 
