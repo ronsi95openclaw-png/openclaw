@@ -932,6 +932,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .chat-in-row input{font-size:16px !important;min-height:44px;padding:10px !important;}
     .chat-in-row{padding:10px !important;}
   }
+  /* ── Inline command status bar ──────────────────────────────── */
+  #cmd-status{font-family:'Share Tech Mono',monospace;font-size:10px;padding:5px 12px;min-height:22px;color:var(--muted);transition:color 0.2s;letter-spacing:0.03em;}
+  #cmd-status.running{color:var(--neon);}
+  #cmd-status.ok{color:var(--neon);}
+  #cmd-status.err{color:var(--red);}
   /* ── Toast notifications ─────────────────────────────────────── */
   #toast-container{position:fixed;bottom:20px;right:20px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none;}
   .toast-msg{background:#141414;border:1px solid #333;border-radius:8px;padding:10px 16px;font-family:'Share Tech Mono',monospace;font-size:11px;color:#e0e0e0;opacity:0;transform:translateY(10px);transition:opacity 0.25s,transform 0.25s;pointer-events:auto;max-width:320px;word-break:break-word;}
@@ -970,6 +975,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   {% endfor %}
   <span style="margin-left:auto;font-family:'Press Start 2P',monospace;font-size:6px;color:var(--muted);">REFRESH <span id="cd">30</span>s</span>
 </div>
+<div id="cmd-status"></div>
 
 <!-- AGENTS -->
 <div class="sec-hdr">&#9672; AGENT <em>STATUS</em> &#8212; {{ now }}</div>
@@ -1266,27 +1272,42 @@ setInterval(()=>{
 },1000);
 
 // Execute dashboard commands
-async function runCmd(btn,cmd){
-  if(btn.disabled) return;
+async function runCmd(btn, cmd) {
+  if (btn.disabled) return;
   btn.disabled = true;
-  const tip = btn.querySelector('.tip');
-  const original = tip.textContent;
-  tip.textContent = 'RUNNING';
-  try{
-    const res = await fetch('/api/execute-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})});
-    const data = await res.json();
-    if(data.success){
-      tip.textContent = 'DONE';
-      alert(data.output);
+  var tip = btn.querySelector('.tip');
+  var original = tip ? tip.textContent : 'RUN';
+  if (tip) tip.textContent = 'RUNNING';
+  var bar = document.getElementById('cmd-status');
+  if (bar) { bar.className = 'running'; bar.textContent = '\u25B6 Running ' + cmd + '...'; }
+  try {
+    var res = await fetch('/api/execute-command', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({command: cmd})
+    });
+    var data = await res.json();
+    if (data.success) {
+      if (tip) tip.textContent = 'DONE';
+      if (bar) { bar.className = 'ok'; bar.textContent = '\u2713 ' + cmd + ' \u2014 done'; }
+      var summary = (data.output || '').replace(/<[^>]+>/g, '').trim().slice(0, 120);
+      if (summary) showToast(summary, 'ok');
+      setTimeout(function() { if (bar) { bar.className = ''; bar.textContent = ''; } }, 5000);
     } else {
-      tip.textContent = 'ERROR';
-      alert('Command failed: ' + (data.error || res.statusText));
+      if (tip) tip.textContent = 'ERR';
+      var errMsg = data.error || res.statusText || 'unknown error';
+      if (bar) { bar.className = 'err'; bar.textContent = '\u2717 ' + cmd + ' failed \u2014 ' + errMsg.slice(0, 80); }
+      showToast(cmd + ' failed: ' + errMsg.slice(0, 100), 'err');
+      setTimeout(function() { if (bar) { bar.className = ''; bar.textContent = ''; } }, 8000);
     }
-  }catch(e){
-    tip.textContent = 'ERROR';
-    alert('Command request failed: ' + e);
+  } catch(e) {
+    if (tip) tip.textContent = 'ERR';
+    var msg = 'Connection error \u2014 Is dashboard running?';
+    if (bar) { bar.className = 'err'; bar.textContent = '\u2717 ' + msg; }
+    showToast(msg, 'err');
+    setTimeout(function() { if (bar) { bar.className = ''; bar.textContent = ''; } }, 8000);
   }
-  setTimeout(()=>{tip.textContent = original; btn.disabled=false;},2000);
+  setTimeout(function() { if (tip) tip.textContent = original; btn.disabled = false; }, 2000);
 }
 
 // Chat
