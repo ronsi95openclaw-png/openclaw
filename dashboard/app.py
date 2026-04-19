@@ -944,9 +944,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .toast-msg.ok{border-color:#00ff8866;color:#00ff88;}
   .toast-msg.warn{border-color:#ffaa0066;color:#ffaa00;}
   .toast-msg.err{border-color:#ff445566;color:#ff8888;}
+  /* ── Config health banner ───────────────────────────────────── */
+  #config-banner{display:none;background:#1a1200;border-bottom:1px solid #ffaa0055;padding:7px 16px;font-family:'Share Tech Mono',monospace;font-size:10px;color:#ffaa00;align-items:center;gap:12px;flex-wrap:wrap;}
+  #config-banner.visible{display:flex;}
+  #config-banner .cb-dismiss{margin-left:auto;cursor:pointer;color:#555;font-size:14px;line-height:1;background:none;border:none;padding:0;}
+  #config-banner .cb-dismiss:hover{color:#ffaa00;}
 </style>
 </head>
 <body>
+<div id="config-banner">
+  <span>&#9888;</span>
+  <span id="config-banner-text"></span>
+  <button class="cb-dismiss" onclick="dismissConfigBanner()" title="Dismiss">&#x2715;</button>
+</div>
 <div id="refresh-bar"></div>
 
 <!-- HEADER -->
@@ -1500,6 +1510,29 @@ async function submitNewAgent() {
 document.getElementById('new-agent-modal').addEventListener('click', function(e) {
   if (e.target === this) closeNewAgentModal();
 });
+
+// ── Config health banner ─────────────────────────────────────────
+async function loadConfigBanner() {
+  if (sessionStorage.getItem('config-banner-dismissed') === '1') return;
+  try {
+    var res = await fetch('/api/system-status');
+    if (!res.ok) return;
+    var data = await res.json();
+    var issues = data.issues || [];
+    if (issues.length === 0) return;
+    var banner = document.getElementById('config-banner');
+    var text = document.getElementById('config-banner-text');
+    if (!banner || !text) return;
+    text.textContent = issues.length + ' issue' + (issues.length > 1 ? 's' : '') + ': ' + issues.join(' \u00B7 ');
+    banner.classList.add('visible');
+  } catch(e) { /* non-critical */ }
+}
+function dismissConfigBanner() {
+  var banner = document.getElementById('config-banner');
+  if (banner) banner.classList.remove('visible');
+  sessionStorage.setItem('config-banner-dismissed', '1');
+}
+loadConfigBanner();
 
 // ── Toast notifications ──────────────────────────────────────────
 function showToast(msg, type) {
