@@ -33,7 +33,7 @@ from ollama import chat as ollama_chat
 # Config
 # ---------------------------------------------------------------------------
 
-DEFAULT_OLLAMA_MODEL = "gemma3:4b"
+DEFAULT_OLLAMA_MODEL = "qwen2.5:14b"
 CLAUDE_MODEL         = "claude-haiku-4-5"   # user-specified: Haiku for complex tasks
 MAX_TOKENS           = int(os.getenv("MAX_TOKENS_PER_RESPONSE", "500"))
 COMPLEXITY_THRESHOLD = int(os.getenv("COMPLEXITY_THRESHOLD", "50"))   # word count
@@ -365,7 +365,9 @@ def ask_hybrid(
             result = ask_llm(prompt, system=system, history=history)
             brain = "ollama"
         except OllamaOfflineError:
-            # Ollama offline — silently route to Claude
+            # Ollama offline — route to Claude API (logged as warning)
+            import logging as _log
+            _log.warning("Ollama offline or model unavailable — routing to Claude API")
             result = ask_claude(prompt, system=system, history=history)
             brain = "claude"
 

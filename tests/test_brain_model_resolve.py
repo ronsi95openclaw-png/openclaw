@@ -78,13 +78,15 @@ def test_cache_avoids_repeated_ollama_list_calls():
 def test_cache_expires_after_ttl():
     """Cache expires after MODEL_CACHE_TTL seconds."""
     brain = _fresh_brain()
-    brain.MODEL_CACHE_TTL = 0  # instant expiry
     mock_model = MagicMock()
     mock_model.model = "mistral:latest"
 
-    with patch("ollama.list") as mock_list:
-        mock_list.return_value = MagicMock(models=[mock_model])
-        brain._resolve_ollama_model()
-        brain._resolve_ollama_model()
+    # Simulate two calls 120 seconds apart (beyond 60s TTL)
+    with patch("core.brain.time") as mock_time:
+        mock_time.time.side_effect = [1000.0, 1120.0]
+        with patch("ollama.list") as mock_list:
+            mock_list.return_value = MagicMock(models=[mock_model])
+            brain._resolve_ollama_model()
+            brain._resolve_ollama_model()
 
     assert mock_list.call_count == 2  # cache expired, re-fetched
