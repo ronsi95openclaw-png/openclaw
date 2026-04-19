@@ -950,6 +950,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <a href="/portfolio">PORTFOLIO</a>
     <a href="/holdings">HOLDINGS</a>
     <a href="/clip-economy">CASHCLAW</a>
+    <a href="#" class="new-agent-btn" onclick="openNewAgentModal();return false;" style="color:var(--pink);border-left:1px solid var(--border);">+ NEW AGENT</a>
   </div>
   <div class="hdr-clock" id="live-clock">00:00:00</div>
 </div>
@@ -1433,7 +1434,84 @@ if(!/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)){inp.focus();}
     });
   }
 })();
+
+function openNewAgentModal() {
+  const m = document.getElementById('new-agent-modal');
+  m.style.display = 'flex';
+  document.getElementById('na-name').focus();
+}
+function closeNewAgentModal() {
+  document.getElementById('new-agent-modal').style.display = 'none';
+  document.getElementById('na-msg').textContent = '';
+}
+async function submitNewAgent() {
+  const name  = document.getElementById('na-name').value.trim().toUpperCase();
+  const roles = document.getElementById('na-roles').value.split(',').map(s=>s.trim()).filter(Boolean);
+  const emoji = document.getElementById('na-emoji').value.trim() || '🤖';
+  const color = document.getElementById('na-color').value;
+  const msgEl = document.getElementById('na-msg');
+  if (!name) { msgEl.style.color='#ff4455'; msgEl.textContent='NAME REQUIRED'; return; }
+  msgEl.style.color='#00ffff'; msgEl.textContent='DEPLOYING...';
+  try {
+    const res = await fetch('/api/agent/create', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({name, roles, emoji, color})
+    });
+    const data = await res.json();
+    if (data.ok) {
+      msgEl.style.color='#00ff88'; msgEl.textContent='AGENT DEPLOYED \u2713';
+      setTimeout(() => { closeNewAgentModal(); location.reload(); }, 1200);
+    } else {
+      msgEl.style.color='#ff4455'; msgEl.textContent = data.error || 'FAILED';
+    }
+  } catch(e) {
+    msgEl.style.color='#ff4455'; msgEl.textContent='CONNECTION ERROR';
+  }
+}
+document.getElementById('new-agent-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeNewAgentModal();
+});
 </script>
+
+<!-- New Agent Modal -->
+<div id="new-agent-modal" style="display:none;position:fixed;inset:0;background:#000a;z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:#111;border:1px solid #ff00aa44;border-radius:12px;padding:24px;width:90%;max-width:480px;font-family:'Press Start 2P',monospace;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <span style="font-size:9px;color:#ff00aa;">+ NEW AGENT</span>
+      <button onclick="closeNewAgentModal()" style="background:none;border:none;color:#666;font-size:14px;cursor:pointer;">&#x2715;</button>
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:7px;color:#666;display:block;margin-bottom:4px;">AGENT NAME</label>
+      <input id="na-name" type="text" placeholder="e.g. TRACKER" style="width:100%;background:#0a0a0a;border:1px solid #333;color:#fff;padding:8px;font-family:'Press Start 2P',monospace;font-size:7px;border-radius:4px;">
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:7px;color:#666;display:block;margin-bottom:4px;">ROLES (comma separated)</label>
+      <input id="na-roles" type="text" placeholder="Research, Analysis, Reports" style="width:100%;background:#0a0a0a;border:1px solid #333;color:#fff;padding:8px;font-family:'Press Start 2P',monospace;font-size:7px;border-radius:4px;">
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:7px;color:#666;display:block;margin-bottom:4px;">EMOJI AVATAR</label>
+      <input id="na-emoji" type="text" placeholder="&#x1F916;" maxlength="2" style="width:60px;background:#0a0a0a;border:1px solid #333;color:#fff;padding:8px;font-size:16px;border-radius:4px;text-align:center;">
+    </div>
+    <div style="margin-bottom:16px;">
+      <label style="font-size:7px;color:#666;display:block;margin-bottom:4px;">NEON COLOR</label>
+      <select id="na-color" style="background:#0a0a0a;border:1px solid #333;color:#fff;padding:6px;font-family:'Press Start 2P',monospace;font-size:7px;border-radius:4px;">
+        <option value="#00ff88">GREEN</option>
+        <option value="#00ffff">CYAN</option>
+        <option value="#ff6b35">ORANGE</option>
+        <option value="#9b59b6">PURPLE</option>
+        <option value="#f39c12">YELLOW</option>
+        <option value="#3498db">BLUE</option>
+        <option value="#ff00aa">PINK</option>
+      </select>
+    </div>
+    <div id="na-msg" style="font-size:7px;margin-bottom:12px;min-height:16px;"></div>
+    <button onclick="submitNewAgent()" style="width:100%;background:#0a0a0a;border:1px solid #ff00aa;color:#ff00aa;font-family:'Press Start 2P',monospace;font-size:8px;padding:10px;cursor:pointer;border-radius:4px;letter-spacing:1px;">
+      &#x25B6; DEPLOY AGENT
+    </button>
+  </div>
+</div>
+
 </body>
 </html>
 """
@@ -1509,9 +1587,26 @@ def health():
 
 @app.route("/api/system-status", methods=["GET"])
 def api_system_status():
-    """Get real-time system monitoring status."""
+    """Get real-time system monitoring status with computed issues list."""
     monitor = _get_monitor()
-    return jsonify(monitor.get_status()), 200
+    status = monitor.get_status()
+
+    issues = []
+    ollama = get_ollama_status()
+    if not ollama.get("online"):
+        issues.append("Ollama offline")
+    elif ollama.get("cfg_missing"):
+        configured = os.getenv("OLLAMA_MODEL", "—")
+        active = ollama.get("active", "unknown")
+        issues.append(f"Ollama model mismatch: '{configured}' not installed, using '{active}'")
+
+    if not os.getenv("ANTHROPIC_API_KEY", "").strip():
+        issues.append("Claude API key not set (ANTHROPIC_API_KEY)")
+    if not os.getenv("CRYPTOCOM_API_KEY", "").strip():
+        issues.append("Crypto.com API key not set (CRYPTOCOM_API_KEY)")
+
+    status["issues"] = issues
+    return jsonify(status), 200
 
 
 # ── Per-agent chat histories ───────────────────────────────────────────────────
@@ -1934,8 +2029,14 @@ const COL_ORDER = ['backlog', 'in_progress', 'review', 'done'];
 let tasks = [];
 
 async function loadTasks() {
-  const res = await fetch('/api/taskboard');
-  tasks = await res.json();
+  try {
+    const res = await fetch('/api/taskboard');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    tasks = await res.json();
+  } catch(e) {
+    console.error('Failed to load tasks:', e);
+    tasks = tasks || [];
+  }
   renderBoard();
 }
 
@@ -2059,6 +2160,7 @@ setInterval(() => {
   cdEl.textContent = countdown;
 }, 1000);
 
+renderBoard();
 loadTasks();
 </script>
 </body>
@@ -3224,7 +3326,7 @@ CLIP_ECONOMY_HTML = """<!DOCTYPE html>
     <div class="card proj-card">
       <div class="proj-label">💰 Conservative</div>
       <div class="proj-val text-muted">
-        ${{ "%.0f"|format(proj.conservative_monthly) }}
+        ${{ "%.0f"|format(proj.conservative_monthly|default(0)) }}
         {% if proj.is_estimate %}<span class="est-badge">est.</span>{% endif %}
       </div>
       <div class="proj-sub">{{ "Actual earned × 30d" if not proj.is_estimate else "2 gigs/mo × $100 avg" }}</div>
@@ -3234,7 +3336,7 @@ CLIP_ECONOMY_HTML = """<!DOCTYPE html>
     <div class="card proj-card">
       <div class="proj-label">📈 Current Pace</div>
       <div class="proj-val" style="color:var(--amber);">
-        ${{ "%.0f"|format(proj.current_monthly) }}
+        ${{ "%.0f"|format(proj.current_monthly|default(0)) }}
         {% if proj.is_estimate %}<span class="est-badge">est.</span>{% endif %}
       </div>
       <div class="proj-sub">{{ "Conservative × 1.3" if not proj.is_estimate else "4 gigs/mo + TikTok" }}</div>
@@ -3244,7 +3346,7 @@ CLIP_ECONOMY_HTML = """<!DOCTYPE html>
     <div class="card proj-card">
       <div class="proj-label">🚀 Optimized</div>
       <div class="proj-val" style="color:var(--green);">
-        ${{ "%.0f"|format(proj.optimized_monthly) }}
+        ${{ "%.0f"|format(proj.optimized_monthly|default(0)) }}
         {% if proj.is_estimate %}<span class="est-badge">est.</span>{% endif %}
       </div>
       <div class="proj-sub">{{ "Full pipeline running" }}</div>
