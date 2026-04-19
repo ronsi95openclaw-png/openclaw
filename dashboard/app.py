@@ -932,6 +932,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .chat-in-row input{font-size:16px !important;min-height:44px;padding:10px !important;}
     .chat-in-row{padding:10px !important;}
   }
+  /* ── Toast notifications ─────────────────────────────────────── */
+  #toast-container{position:fixed;bottom:20px;right:20px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none;}
+  .toast-msg{background:#141414;border:1px solid #333;border-radius:8px;padding:10px 16px;font-family:'Share Tech Mono',monospace;font-size:11px;color:#e0e0e0;opacity:0;transform:translateY(10px);transition:opacity 0.25s,transform 0.25s;pointer-events:auto;max-width:320px;word-break:break-word;}
+  .toast-msg.show{opacity:1;transform:translateY(0);}
+  .toast-msg.ok{border-color:#00ff8866;color:#00ff88;}
+  .toast-msg.warn{border-color:#ffaa0066;color:#ffaa00;}
+  .toast-msg.err{border-color:#ff445566;color:#ff8888;}
 </style>
 </head>
 <body>
@@ -1472,6 +1479,27 @@ async function submitNewAgent() {
 document.getElementById('new-agent-modal').addEventListener('click', function(e) {
   if (e.target === this) closeNewAgentModal();
 });
+
+// ── Toast notifications ──────────────────────────────────────────
+function showToast(msg, type) {
+  var container = document.getElementById('toast-container');
+  if (!container) return;
+  while (container.children.length >= 3) {
+    container.removeChild(container.firstChild);
+  }
+  var el = document.createElement('div');
+  el.className = 'toast-msg ' + (type || 'ok');
+  el.textContent = msg;
+  container.appendChild(el);
+  requestAnimationFrame(function() {
+    requestAnimationFrame(function() { el.classList.add('show'); });
+  });
+  var delay = type === 'err' ? 8000 : 3000;
+  setTimeout(function() {
+    el.classList.remove('show');
+    setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, 300);
+  }, delay);
+}
 </script>
 
 <!-- New Agent Modal -->
@@ -1512,6 +1540,7 @@ document.getElementById('new-agent-modal').addEventListener('click', function(e)
   </div>
 </div>
 
+<div id="toast-container"></div>
 </body>
 </html>
 """
