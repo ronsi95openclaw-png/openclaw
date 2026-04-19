@@ -963,6 +963,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .chat-hdr{padding:14px !important;min-height:48px;}
     .chat-in-row input{font-size:16px !important;min-height:44px;padding:10px !important;}
     .chat-in-row{padding:10px !important;}
+    #cmd-status{font-size:9px;padding:4px 8px;}
+    #toast-container{right:50%;transform:translateX(50%);bottom:12px;width:92vw;max-width:340px;}
+    .toast-msg{max-width:100%;}
+    #config-banner{font-size:9px;padding:6px 10px;}
   }
   /* ── Inline command status bar ──────────────────────────────── */
   #cmd-status{font-family:'Share Tech Mono',monospace;font-size:10px;padding:5px 12px;min-height:22px;color:var(--muted);transition:color 0.2s;letter-spacing:0.03em;}
