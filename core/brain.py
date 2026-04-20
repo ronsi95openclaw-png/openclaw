@@ -51,6 +51,49 @@ _COMPLEX_KEYWORDS = {
     "recommendation", "suggest", "evaluate", "assessment",
 }
 
+# ---------------------------------------------------------------------------
+# Ollama model resolution — auto-detect with lazy TTL cache
+# ---------------------------------------------------------------------------
+
+class OllamaOfflineError(RuntimeError):
+    """Raised when Ollama is unreachable (connection refused, not running)."""
+
+MODEL_CACHE_TTL = 60  # seconds before re-checking installed models
+
+_resolved_model: Optional[str] = None
+_resolved_model_ts: float = 0.0
+
+
+def _resolve_ollama_model() -> str:
+    """Return the best available Ollama model, with 60-second TTL cache.
+
+    Resolution order:
+      1. OLLAMA_MODEL env var, if that model is installed.
+      2. First model returned by ollama.list().
+      3. OllamaOfflineError if ollama.list() raises (Ollama not running).
+    """
+    global _resolved_model, _resolved_model_ts
+    now = time.time()
+    if _resolved_model is not None and (now - _resolved_model_ts) < MODEL_CACHE_TTL:
+        return _resolved_model
+
+    try:
+        from ollama import list as _ol_list
+        models = [m.model for m in _ol_list().models]
+    except Exception as exc:
+        raise OllamaOfflineError(f"Ollama unreachable: {exc}") from exc
+
+    if not models:
+        raise OllamaOfflineError("Ollama is running but has no models installed.")
+
+    configured = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+    chosen = configured if configured in models else models[0]
+
+    _resolved_model = chosen
+    _resolved_model_ts = now
+    return chosen
+
+
 CLAWBOT_SYSTEM = """\
 You are ClawBot — a sharp, decisive AI assistant for Ronnie (OpenClaw brand).
 
@@ -228,8 +271,8 @@ def ask_llm(
     system: Optional[str] = None,
     history: Optional[List[dict]] = None,
 ) -> str:
-    """Ask local Ollama. Used for simple tasks and as fallback."""
-    model = model or os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+    """Ask local Ollama. Uses auto-detected model unless overridden."""
+    resolved = model or _resolve_ollama_model()  # may raise OllamaOfflineError
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -238,12 +281,12 @@ def ask_llm(
     messages.append({"role": "user", "content": prompt})
 
     try:
-        response = ollama_chat(model=model, messages=messages)
+        response = ollama_chat(model=resolved, messages=messages)
         result = response.message.content.strip()
-        _track_usage(model=model)
+        _track_usage(model=resolved)
         return result
     except Exception as exc:
-        raise RuntimeError(f"Ollama generation failed: {exc}") from exc
+        raise RuntimeError(f"Ollama generation failed ({resolved}): {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -318,8 +361,15 @@ def ask_hybrid(
         result = ask_claude(prompt, system=system, history=history)
         brain = "claude"
     else:
-        result = ask_llm(prompt, system=system, history=history)
-        brain = "ollama"
+        try:
+            result = ask_llm(prompt, system=system, history=history)
+            brain = "ollama"
+        except OllamaOfflineError:
+            # Ollama offline — route to Claude API (logged as warning)
+            import logging as _log
+            _log.warning("Ollama offline or model unavailable — routing to Claude API")
+            result = ask_claude(prompt, system=system, history=history)
+            brain = "claude"
 
     _set_cached(prompt, result)
     return result, brain

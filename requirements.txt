@@ -14,9 +14,13 @@ openai-whisper
 pydantic==2.12.5
 pydantic_core==2.41.5
 python-dotenv==1.2.2
-python-telegram-bot==21.3
+python-telegram-bot>=21.10
+flask>=3.0
 requests==2.33.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 urllib3==2.6.3
 watchdog==4.0.0
+# Google Sheets (optional — set GOOGLE_SERVICE_ACCOUNT_JSON in .env to enable)
+gspread>=6.0.0
+google-auth>=2.0.0

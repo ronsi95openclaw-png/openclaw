@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-data/logs/
+data/
 .venv/
 venv/
 *.egg-info/
@@ -11,3 +11,4 @@ dist/
 build/
 .DS_Store
 .claude/
+.superpowers/

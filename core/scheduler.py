@@ -1,10 +1,8 @@
-"""APScheduler-based reminder system for ClawBot.
+"""APScheduler-based reminder + auto-trade system for ClawBot.
 
 Reminders are persisted to data/tasks.json and survive bot restarts.
+Auto-trade job runs daily at 08:00 UTC when enabled.
 The scheduler is started once in receiver.py and shared globally.
-
-Usage:
-    from core.scheduler import start_scheduler, add_reminder, get_reminders, cancel_reminder
 """
 from __future__ import annotations
 
@@ -19,8 +17,10 @@ from typing import List, Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-_DATA_DIR   = Path(__file__).parent.parent / "data"
-_TASKS_FILE = _DATA_DIR / "tasks.json"
+_DATA_DIR        = Path(__file__).parent.parent / "data"
+_TASKS_FILE      = _DATA_DIR / "reminders.json"   # separate from orchestrator tasks.json
+_AUTOTRADE_FILE  = _DATA_DIR / "autotrade.json"
+_AUTOTRADE_JOB   = "clawbot_autotrade_daily"
 
 _scheduler: Optional[AsyncIOScheduler] = None
 _send_fn = None   # injected by receiver.py: async def send_fn(chat_id, text)
@@ -40,7 +40,13 @@ def start_scheduler() -> AsyncIOScheduler:
     _scheduler = AsyncIOScheduler(timezone="UTC")
     _scheduler.start()
     _reload_from_disk()
+    reload_lifeos_schedule()
     return _scheduler
+
+
+def get_scheduler() -> Optional[AsyncIOScheduler]:
+    """Return the running scheduler instance (for external job registration)."""
+    return _scheduler if _scheduler and _scheduler.running else None
 
 
 def _load_tasks() -> List[dict]:
@@ -54,7 +60,10 @@ def _load_tasks() -> List[dict]:
 
 def _save_tasks(tasks: List[dict]) -> None:
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _TASKS_FILE.write_text(json.dumps(tasks, indent=2), encoding="utf-8")
+    try:
+        _TASKS_FILE.write_text(json.dumps(tasks, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"[scheduler] Failed to save tasks: {exc}")
 
 
 def _reload_from_disk() -> None:
@@ -164,3 +173,254 @@ def cancel_reminder(task_id: str) -> bool:
                 _scheduler.remove_job(task_id)
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Auto-trade daily job
+# ---------------------------------------------------------------------------
+
+def _load_autotrade() -> dict:
+    if _AUTOTRADE_FILE.exists():
+        try:
+            return json.loads(_AUTOTRADE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"enabled": False, "chat_id": None, "scan_time": "08:00", "timeframe": "4h"}
+
+
+def _save_autotrade(cfg: dict) -> None:
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        _AUTOTRADE_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"[scheduler] Failed to save autotrade config: {exc}")
+
+
+async def _run_autotrade() -> None:
+    """Daily auto-trade job: scan → execute HIGH signals → notify."""
+    cfg = _load_autotrade()
+    if not cfg.get("enabled") or not cfg.get("chat_id"):
+        return
+
+    chat_id   = cfg["chat_id"]
+    timeframe = cfg.get("timeframe", "4h")
+
+    if _send_fn:
+        await _send_fn(chat_id, "🤖 <b>Auto-Trade Scan running...</b>")
+
+    try:
+        from trading.exchange import fetch_all_closes, get_account_balance, get_portfolio_value_usd
+        from trading.strategy import RSIMACDStrategy
+        from trading.executor import execute_signals
+
+        strategy     = RSIMACDStrategy()
+        candle_data  = fetch_all_closes(strategy.config.coins, timeframe=timeframe, count=100)
+        signals      = strategy.scan_all(candle_data)
+        high_signals = [s for s in signals if s.action != "HOLD" and s.confidence == "HIGH"]
+
+        if not high_signals:
+            # Show current RSI status even if no signals
+            from trading.strategy import calculate_rsi, calculate_macd
+            lines = [f"📊 <b>Daily Scan — {timeframe}</b>\n<i>No HIGH confidence signals</i>\n"]
+            for coin, closes in candle_data.items():
+                try:
+                    rsi        = calculate_rsi(closes)
+                    _, _, hist = calculate_macd(closes)
+                    trend      = "↑" if hist > 0 else "↓"
+                    lines.append(f"⚪ {coin}: RSI <code>{rsi:.1f}</code> {trend}")
+                except Exception:
+                    pass
+            if _send_fn:
+                await _send_fn(chat_id, "\n".join(lines))
+            return
+
+        # Get portfolio value for position sizing
+        try:
+            balances      = get_account_balance()
+            portfolio_usd = get_portfolio_value_usd(balances)
+        except Exception:
+            portfolio_usd = 1000.0  # fallback if balance fetch fails
+
+        results = execute_signals(high_signals, portfolio_usd)
+
+        # Build Telegram notification
+        ts    = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        lines = [f"🤖 <b>Auto-Trade Report — {ts}</b>\n"]
+
+        for signal, result in zip(high_signals, results):
+            status = result.get("status", "unknown")
+            if status == "executed":
+                action_emoji = "🟢" if signal.action == "BUY" else "🔴"
+                lines.append(
+                    f"{action_emoji} <b>{signal.action} {signal.coin}</b>\n"
+                    f"   Amount: <code>${result.get('usd_amount', 0):.2f}</code>\n"
+                    f"   Price:  <code>${result.get('price', 0):,.2f}</code>\n"
+                    f"   RSI:    <code>{signal.rsi:.1f}</code>\n"
+                    f"   Order:  <code>{result.get('order_id', 'N/A')}</code>"
+                )
+            elif status == "skipped":
+                lines.append(f"⚪ Skipped {signal.coin}: {result.get('reason', '')}")
+            else:
+                lines.append(f"🚨 Error {signal.coin}: {result.get('reason', 'unknown error')}")
+
+        lines.append(f"\n<i>Portfolio: ~${portfolio_usd:,.0f} | Risk: 1.5% per trade</i>")
+
+        if _send_fn:
+            await _send_fn(chat_id, "\n".join(lines))
+
+    except Exception as exc:
+        if _send_fn:
+            await _send_fn(chat_id, f"🚨 <b>Auto-Trade error:</b> <code>{exc}</code>")
+
+
+def enable_autotrade(chat_id: int, scan_time: str = "08:00", timeframe: str = "4h") -> dict:
+    """Enable daily auto-trade. Returns the config."""
+    cfg = {
+        "enabled":   True,
+        "chat_id":   chat_id,
+        "scan_time": scan_time,
+        "timeframe": timeframe,
+        "enabled_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _save_autotrade(cfg)
+
+    if _scheduler:
+        hour, minute = scan_time.split(":")
+        _scheduler.add_job(
+            _run_autotrade,
+            CronTrigger(hour=int(hour), minute=int(minute), timezone="UTC"),
+            id=_AUTOTRADE_JOB,
+            replace_existing=True,
+        )
+    return cfg
+
+
+def disable_autotrade() -> None:
+    """Disable the daily auto-trade job."""
+    cfg = _load_autotrade()
+    cfg["enabled"] = False
+    _save_autotrade(cfg)
+    if _scheduler and _scheduler.get_job(_AUTOTRADE_JOB):
+        _scheduler.remove_job(_AUTOTRADE_JOB)
+
+
+def get_autotrade_status() -> dict:
+    """Return current auto-trade config."""
+    return _load_autotrade()
+
+
+def reload_autotrade() -> None:
+    """Re-register auto-trade job after restart if it was enabled."""
+    cfg = _load_autotrade()
+    if cfg.get("enabled") and cfg.get("chat_id") and _scheduler:
+        scan_time = cfg.get("scan_time", "08:00")
+        hour, minute = scan_time.split(":")
+        _scheduler.add_job(
+            _run_autotrade,
+            CronTrigger(hour=int(hour), minute=int(minute), timezone="UTC"),
+            id=_AUTOTRADE_JOB,
+            replace_existing=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# LifeOS daily check-in jobs
+# ---------------------------------------------------------------------------
+
+_MORNING_CHECKIN_JOB = "lifeos_morning_checkin"
+_EVENING_CHECKIN_JOB = "lifeos_evening_checkin"
+_LIFEOS_CONFIG_FILE  = _DATA_DIR / "lifeos_schedule.json"
+
+
+def _load_lifeos_schedule() -> dict:
+    if _LIFEOS_CONFIG_FILE.exists():
+        try:
+            return json.loads(_LIFEOS_CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"enabled": False, "chat_id": None, "morning_time": "07:00", "evening_time": "20:00"}
+
+
+def _save_lifeos_schedule(cfg: dict) -> None:
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        _LIFEOS_CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"[scheduler] Failed to save lifeos schedule: {exc}")
+
+
+async def _fire_morning_checkin() -> None:
+    cfg = _load_lifeos_schedule()
+    if not cfg.get("enabled") or not cfg.get("chat_id"):
+        return
+    from agents.lifeos_checkin import start_morning_checkin
+    first_q = start_morning_checkin(cfg["chat_id"])
+    if _send_fn:
+        await _send_fn(cfg["chat_id"], f"<b>Morning Check-in</b>\n\n{first_q}")
+
+
+async def _fire_evening_checkin() -> None:
+    cfg = _load_lifeos_schedule()
+    if not cfg.get("enabled") or not cfg.get("chat_id"):
+        return
+    from agents.lifeos_checkin import start_evening_checkin
+    first_q = start_evening_checkin(cfg["chat_id"])
+    if _send_fn:
+        await _send_fn(cfg["chat_id"], f"<b>Evening Check-in</b>\n\n{first_q}")
+
+
+def enable_lifeos_schedule(
+    chat_id: int,
+    morning_time: str = "07:00",
+    evening_time: str = "20:00",
+) -> dict:
+    """Enable automatic morning + evening check-ins for chat_id.
+
+    Times are UTC HH:MM strings.
+    """
+    cfg = {
+        "enabled":      True,
+        "chat_id":      chat_id,
+        "morning_time": morning_time,
+        "evening_time": evening_time,
+    }
+    _save_lifeos_schedule(cfg)
+    _register_lifeos_jobs(cfg)
+    return cfg
+
+
+def disable_lifeos_schedule() -> None:
+    """Disable automatic morning/evening check-ins."""
+    cfg = _load_lifeos_schedule()
+    cfg["enabled"] = False
+    _save_lifeos_schedule(cfg)
+    if _scheduler:
+        for job_id in (_MORNING_CHECKIN_JOB, _EVENING_CHECKIN_JOB):
+            if _scheduler.get_job(job_id):
+                _scheduler.remove_job(job_id)
+
+
+def _register_lifeos_jobs(cfg: dict) -> None:
+    if not _scheduler:
+        return
+    mh, mm = cfg["morning_time"].split(":")
+    eh, em = cfg["evening_time"].split(":")
+    _scheduler.add_job(
+        _fire_morning_checkin,
+        CronTrigger(hour=int(mh), minute=int(mm), timezone="UTC"),
+        id=_MORNING_CHECKIN_JOB,
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _fire_evening_checkin,
+        CronTrigger(hour=int(eh), minute=int(em), timezone="UTC"),
+        id=_EVENING_CHECKIN_JOB,
+        replace_existing=True,
+    )
+
+
+def reload_lifeos_schedule() -> None:
+    """Re-register LifeOS jobs after bot restart if they were enabled."""
+    cfg = _load_lifeos_schedule()
+    if cfg.get("enabled") and cfg.get("chat_id"):
+        _register_lifeos_jobs(cfg)
