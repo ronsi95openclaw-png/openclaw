@@ -938,6 +938,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     opacity: 0.7;
     transform: scale(0.97);
   }
+  /* ── Inline command status bar ──────────────────────────────── */
+  #cmd-status{font-family:'Share Tech Mono',monospace;font-size:10px;padding:5px 12px;min-height:22px;color:var(--muted);transition:color 0.2s;letter-spacing:0.03em;}
+  #cmd-status.running{color:var(--neon);}
+  #cmd-status.ok{color:var(--neon);}
+  #cmd-status.err{color:var(--red);}
+  /* ── Toast notifications ─────────────────────────────────────── */
+  #toast-container{position:fixed;bottom:20px;right:20px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none;}
+  .toast-msg{background:#141414;border:1px solid #333;border-radius:8px;padding:10px 16px;font-family:'Share Tech Mono',monospace;font-size:11px;color:#e0e0e0;opacity:0;transform:translateY(10px);transition:opacity 0.25s,transform 0.25s;pointer-events:auto;max-width:320px;word-break:break-word;}
+  .toast-msg.show{opacity:1;transform:translateY(0);}
+  .toast-msg.ok{border-color:#00ff8866;color:#00ff88;}
+  .toast-msg.warn{border-color:#ffaa0066;color:#ffaa00;}
+  .toast-msg.err{border-color:#ff445566;color:#ff8888;}
+  /* ── Config health banner ───────────────────────────────────── */
+  #config-banner{display:none;background:#1a1200;border-bottom:1px solid #ffaa0055;padding:7px 16px;font-family:'Share Tech Mono',monospace;font-size:10px;color:#ffaa00;align-items:center;gap:12px;flex-wrap:wrap;}
+  #config-banner.visible{display:flex;}
+  #config-banner .cb-dismiss{margin-left:auto;cursor:pointer;color:#555;font-size:14px;line-height:1;background:none;border:none;padding:0;}
+  #config-banner .cb-dismiss:hover{color:#ffaa00;}
   @media(max-width:560px){
     .chat-panel{width:100%;right:0;left:0;bottom:0;border-left:none;border-right:none;}
     .chat-msgs{max-height:220px;}
@@ -968,23 +985,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .toast-msg{max-width:100%;}
     #config-banner{font-size:9px;padding:6px 10px;}
   }
-  /* ── Inline command status bar ──────────────────────────────── */
-  #cmd-status{font-family:'Share Tech Mono',monospace;font-size:10px;padding:5px 12px;min-height:22px;color:var(--muted);transition:color 0.2s;letter-spacing:0.03em;}
-  #cmd-status.running{color:var(--neon);}
-  #cmd-status.ok{color:var(--neon);}
-  #cmd-status.err{color:var(--red);}
-  /* ── Toast notifications ─────────────────────────────────────── */
-  #toast-container{position:fixed;bottom:20px;right:20px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none;}
-  .toast-msg{background:#141414;border:1px solid #333;border-radius:8px;padding:10px 16px;font-family:'Share Tech Mono',monospace;font-size:11px;color:#e0e0e0;opacity:0;transform:translateY(10px);transition:opacity 0.25s,transform 0.25s;pointer-events:auto;max-width:320px;word-break:break-word;}
-  .toast-msg.show{opacity:1;transform:translateY(0);}
-  .toast-msg.ok{border-color:#00ff8866;color:#00ff88;}
-  .toast-msg.warn{border-color:#ffaa0066;color:#ffaa00;}
-  .toast-msg.err{border-color:#ff445566;color:#ff8888;}
-  /* ── Config health banner ───────────────────────────────────── */
-  #config-banner{display:none;background:#1a1200;border-bottom:1px solid #ffaa0055;padding:7px 16px;font-family:'Share Tech Mono',monospace;font-size:10px;color:#ffaa00;align-items:center;gap:12px;flex-wrap:wrap;}
-  #config-banner.visible{display:flex;}
-  #config-banner .cb-dismiss{margin-left:auto;cursor:pointer;color:#555;font-size:14px;line-height:1;background:none;border:none;padding:0;}
-  #config-banner .cb-dismiss:hover{color:#ffaa00;}
 </style>
 </head>
 <body>
