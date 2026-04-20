@@ -33,7 +33,7 @@ from ollama import chat as ollama_chat
 # Config
 # ---------------------------------------------------------------------------
 
-DEFAULT_OLLAMA_MODEL = "qwen2.5:14b"
+DEFAULT_OLLAMA_MODEL = "gemma3"
 CLAUDE_MODEL         = "claude-haiku-4-5"   # user-specified: Haiku for complex tasks
 MAX_TOKENS           = int(os.getenv("MAX_TOKENS_PER_RESPONSE", "500"))
 COMPLEXITY_THRESHOLD = int(os.getenv("COMPLEXITY_THRESHOLD", "50"))   # word count

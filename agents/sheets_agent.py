@@ -435,7 +435,7 @@ def generate_report(analysis: dict) -> str:
 
     try:
         from ollama import chat as ollama_chat
-        model = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+        model = os.getenv("OLLAMA_MODEL", "gemma3")
         resp  = ollama_chat(
             model=model,
             messages=[

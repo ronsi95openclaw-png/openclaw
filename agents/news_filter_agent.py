@@ -22,6 +22,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -165,7 +166,7 @@ def _ask_llm(prompt: str) -> dict:
     raw = ""
     try:
         from ollama import chat as ollama_chat
-        model = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+        model = os.getenv("OLLAMA_MODEL", "gemma3")
         response = ollama_chat(
             model=model,
             messages=[
@@ -280,20 +281,53 @@ def format_telegram_message(result: dict, now_utc: Optional[datetime] = None) ->
 # APScheduler job — wire into scheduler.py
 # ---------------------------------------------------------------------------
 
+_ALERTS_SENT_FILE = Path(__file__).parent.parent / "data" / "logs" / "news_alerts_sent.json"
+
+
+def _load_sent_keys() -> set:
+    """Load persisted set of already-sent alert keys (survives restarts)."""
+    try:
+        if _ALERTS_SENT_FILE.exists():
+            data = json.loads(_ALERTS_SENT_FILE.read_text(encoding="utf-8"))
+            # Prune keys older than today to keep file small
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            return {k for k in data if k.endswith(f"|{today}")}
+    except Exception:
+        pass
+    return set()
+
+
+def _save_sent_key(key: str) -> None:
+    """Persist a sent alert key to disk."""
+    try:
+        _ALERTS_SENT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        keys = _load_sent_keys()
+        keys.add(key)
+        _ALERTS_SENT_FILE.write_text(json.dumps(list(keys)), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"Could not save news alert key: {e}")
+
+
 async def check_and_alert(bot, chat_id: int) -> None:
     """
     APScheduler async job. Call every 15 min.
-    Only sends Telegram alert when BLOCK is triggered.
-
-    Wire-up in core/scheduler.py:
-        from agents.news_filter_agent import check_and_alert
-        scheduler.add_job(
-            check_and_alert, "interval", minutes=15,
-            id="news_filter", args=[bot, chat_id]
-        )
+    Only sends Telegram alert when BLOCK is triggered AND it's a new event.
+    Dedup key persisted to disk — survives bot restarts.
     """
     result = check_news_filter()
-    if result["decision"] == "BLOCK":
-        msg = format_telegram_message(result)
-        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
-        logger.info(f"News BLOCK alert sent: {result['event_detected']}")
+    if result["decision"] != "BLOCK":
+        return
+
+    # Build dedup key: EventName|YYYY-MM-DD — one alert per event per day
+    now_utc = datetime.now(timezone.utc)
+    event_key = f"{result.get('event_detected', 'unknown')}|{now_utc.strftime('%Y-%m-%d')}"
+
+    sent_keys = _load_sent_keys()
+    if event_key in sent_keys:
+        logger.debug(f"News BLOCK suppressed (already alerted today): {event_key}")
+        return
+
+    _save_sent_key(event_key)  # persist so restarts don't re-alert
+    msg = format_telegram_message(result)
+    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
+    logger.info(f"News BLOCK alert sent: {event_key}")

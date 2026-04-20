@@ -139,10 +139,10 @@ Instructions:
     try:
         import ollama
         resp = ollama.chat(
-            model=os.getenv("OLLAMA_MODEL", "qwen2.5:14b"),
+            model=os.getenv("OLLAMA_MODEL", "gemma3"),
             messages=[{"role": "user", "content": prompt}],
         )
-        result = resp["message"]["content"].strip()
+        result = resp.message.content.strip()
         if result == "CANNOT_FIX":
             return None
         # Strip markdown fences if present
@@ -159,7 +159,11 @@ Instructions:
     # Haiku fallback
     try:
         import anthropic
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
+        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if not api_key:
+            logger.error("ANTHROPIC_API_KEY not set — cannot use Haiku fallback")
+            return None
+        client = anthropic.Anthropic(api_key=api_key)
         msg = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=4096,

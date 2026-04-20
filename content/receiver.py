@@ -185,7 +185,7 @@ def _ping_ollama() -> str:
     try:
         from ollama import list as _ol_list
         models = [m.model for m in _ol_list().models]
-        model = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+        model = os.getenv("OLLAMA_MODEL", "gemma3")
         if not models:
             return "offline ❌ (no models)"
         if model not in models:

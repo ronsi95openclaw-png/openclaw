@@ -114,7 +114,9 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
         _log_trade({"action": "SKIP", "coin": coin, "reason": msg, "confidence": signal.confidence})
         return {"status": "skipped", "reason": msg}
 
-    # Position sizing: 1.5% of portfolio per trade
+    # Position sizing: TRADE_RISK_PCT% of portfolio per trade (default 5.0)
+    # Set TRADE_RISK_PCT in .env — e.g. 5.0 gives $5 on a $100 portfolio
+    risk_pct = float(os.getenv("TRADE_RISK_PCT", "5.0"))
     from trading.exchange import fetch_ticker_price
     try:
         price = fetch_ticker_price(coin)
@@ -123,7 +125,7 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
         _log_trade({"action": "ERROR", "coin": coin, "reason": msg})
         return {"status": "error", "reason": msg}
 
-    sizing     = calculate_position_size(portfolio_usd, price, risk_pct=1.5)
+    sizing     = calculate_position_size(portfolio_usd, price, risk_pct=risk_pct)
     usd_amount = sizing["usd_amount"]
     min_order  = _MIN_ORDER_USD.get(coin, 5.0)
 

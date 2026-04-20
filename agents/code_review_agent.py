@@ -67,6 +67,27 @@ PRIORITY: HIGH / MEDIUM / LOW (based on impact to trading performance or stabili
 
 If the file looks good, say so briefly. Don't pad output.
 Focus on things that would actually make the bot more profitable, stable, or secure.
+
+## Security Checklist (apply to every file)
+- No hardcoded API keys, tokens, or passwords — all secrets via env vars
+- No string concatenation in SQL or shell commands (injection risk)
+- All user/external inputs validated before use
+- Error messages must not leak internal state or stack traces
+- No sensitive data (keys, balances, order IDs) written to logs in plaintext
+
+## Trading Agent Security (apply to trading files)
+- Prompt injection: external data (news, coin names, webhooks) must NOT enter execution-capable prompts unsanitized
+- Spend limits enforced independently from model output — never rely solely on LLM judgment for position sizing
+- Circuit breaker: check consecutive losses and hourly PnL drawdown before executing
+- Private keys and API secrets come from env vars only, never hardcoded or logged
+- All trade decisions audit-logged (not just successful ones)
+- Slippage/min_amount_out validated before order send
+
+## Systematic Bug Detection
+- Trace data flow for any calculation: follow values from source → transform → output
+- Flag any "it worked before" patterns — check if recent changes broke an assumption
+- Identify race conditions in async code (shared state, ordering dependencies)
+- Check error handling completeness — every external call should have a fallback
 """
 
 
@@ -82,7 +103,7 @@ def _review_file(filepath: str, content: str) -> str:
     # Try Ollama first
     try:
         from ollama import chat as ollama_chat
-        model = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+        model = os.getenv("OLLAMA_MODEL", "gemma3")
         resp  = ollama_chat(
             model=model,
             messages=[
@@ -129,7 +150,7 @@ def _generate_summary(file_reviews: list[dict]) -> str:
 
     try:
         from ollama import chat as ollama_chat
-        model = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+        model = os.getenv("OLLAMA_MODEL", "gemma3")
         resp  = ollama_chat(
             model=model,
             messages=[
