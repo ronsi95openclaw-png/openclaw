@@ -157,7 +157,12 @@ def sync_all_trades() -> int:
         return 0
 
     trades = []
-    for line in _TRADES_LOG.read_text(encoding="utf-8").strip().splitlines():
+    try:
+        raw_text = _TRADES_LOG.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.error(f"Could not read trades log: {exc}")
+        return 0
+    for line in raw_text.strip().splitlines():
         line = line.strip()
         if not line:
             continue
@@ -210,15 +215,18 @@ def sync_all_trades() -> int:
 # Trade analysis
 # ---------------------------------------------------------------------------
 
-def analyze_trades() -> dict:
+def analyze_trades(period: str = "all") -> dict:
     """
     Analyze trades.log and return performance metrics.
     Works even without Google Sheets configured.
+
+    period: "today" = last 24h, "week" = last 7 days,
+            "month" = last 30 days, "all" = no filter
     """
     if not _TRADES_LOG.exists():
         return {"error": "No trades log found", "total_trades": 0}
 
-    trades = []
+    all_trades = []
     for line in _TRADES_LOG.read_text(encoding="utf-8").strip().splitlines():
         line = line.strip()
         if not line:
@@ -231,23 +239,102 @@ def analyze_trades() -> dict:
         else:
             continue
         try:
-            trades.append(json.loads(raw))
+            all_trades.append(json.loads(raw))
         except json.JSONDecodeError:
             continue
 
-    if not trades:
+    if not all_trades:
         return {"error": "No trades found in log", "total_trades": 0}
+
+    # --- Period filtering ---
+    now_utc = datetime.now(timezone.utc)
+    period = period.lower() if period else "all"
+    if period == "today":
+        from datetime import timedelta
+        cutoff = now_utc - timedelta(hours=24)
+    elif period == "week":
+        from datetime import timedelta
+        cutoff = now_utc - timedelta(days=7)
+    elif period == "month":
+        from datetime import timedelta
+        cutoff = now_utc - timedelta(days=30)
+    else:
+        period = "all"
+        cutoff = None
+
+    trades = []
+    for t in all_trades:
+        if cutoff is not None:
+            ts_raw = t.get("timestamp", "")
+            try:
+                ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if ts < cutoff:
+                    continue
+            except (ValueError, TypeError):
+                pass  # keep trade if timestamp can't be parsed
+        trades.append(t)
+
+    if not trades:
+        return {
+            "error": f"No trades found for period: {period}",
+            "total_trades": 0,
+            "period": period,
+        }
+
+    # Date range string
+    timestamps = []
+    for t in trades:
+        ts_raw = t.get("timestamp", "")
+        try:
+            ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+            timestamps.append(ts)
+        except (ValueError, TypeError):
+            pass
+    if timestamps:
+        date_range = (
+            f"{min(timestamps).strftime('%Y-%m-%d')} to "
+            f"{max(timestamps).strftime('%Y-%m-%d')}"
+        )
+    else:
+        date_range = "unknown"
 
     executed = [t for t in trades if t.get("status") not in ("skipped", "error")]
     skipped  = [t for t in trades if t.get("status") == "skipped"]
     errors   = [t for t in trades if t.get("status") == "error"]
 
-    # PnL analysis (only trades with pnl field)
-    pnl_trades = [t for t in executed if t.get("pnl") not in (None, "", 0)]
-    total_pnl  = sum(float(t.get("pnl", 0)) for t in pnl_trades)
-    wins       = [t for t in pnl_trades if float(t.get("pnl", 0)) > 0]
-    losses     = [t for t in pnl_trades if float(t.get("pnl", 0)) <= 0]
-    win_rate   = len(wins) / len(pnl_trades) * 100 if pnl_trades else 0
+    # Action breakdown
+    buy_count  = sum(1 for t in executed if t.get("action") == "BUY")
+    sell_count = sum(1 for t in executed if t.get("action") == "SELL")
+
+    # PnL analysis — treat missing/null/empty PnL as 0
+    def _pnl(t: dict) -> float:
+        v = t.get("pnl", 0)
+        try:
+            return float(v) if v not in (None, "") else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    pnl_trades = [t for t in executed if _pnl(t) != 0.0]
+    total_pnl  = sum(_pnl(t) for t in executed)
+    wins       = [t for t in executed if _pnl(t) > 0]
+    losses     = [t for t in executed if _pnl(t) < 0]
+    win_rate   = len(wins) / len(executed) * 100 if executed else 0
+
+    # Best and worst individual trade
+    def _trade_label(t: dict) -> dict:
+        ts_raw = t.get("timestamp", "")
+        try:
+            date_str = datetime.fromisoformat(
+                str(ts_raw).replace("Z", "+00:00")
+            ).strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            date_str = str(ts_raw)[:10] if ts_raw else "unknown"
+        return {"coin": t.get("coin", "?"), "pnl": round(_pnl(t), 2), "date": date_str}
+
+    best_trade  = _trade_label(max(executed, key=_pnl)) if executed else {"coin": "N/A", "pnl": 0.0, "date": "—"}
+    worst_trade = _trade_label(min(executed, key=_pnl)) if executed else {"coin": "N/A", "pnl": 0.0, "date": "—"}
 
     # Per-coin breakdown
     coins: dict[str, dict] = {}
@@ -256,35 +343,53 @@ def analyze_trades() -> dict:
         if coin not in coins:
             coins[coin] = {"trades": 0, "pnl": 0.0, "wins": 0, "losses": 0}
         coins[coin]["trades"] += 1
-        pnl = float(t.get("pnl", 0))
+        pnl = _pnl(t)
         coins[coin]["pnl"] += pnl
         if pnl > 0:
             coins[coin]["wins"] += 1
         elif pnl < 0:
             coins[coin]["losses"] += 1
 
-    # Best and worst coin
+    # Build by_coin with win_rate
+    by_coin = {
+        coin: {
+            "trades": data["trades"],
+            "pnl": round(data["pnl"], 2),
+            "win_rate": round(
+                data["wins"] / data["trades"] * 100 if data["trades"] else 0, 1
+            ),
+        }
+        for coin, data in coins.items()
+    }
+
+    # Legacy fields kept for backward compat (push_report_to_sheet uses them)
     best_coin  = max(coins.items(), key=lambda x: x[1]["pnl"])[0] if coins else "N/A"
     worst_coin = min(coins.items(), key=lambda x: x[1]["pnl"])[0] if coins else "N/A"
 
-    # Action breakdown
-    longs  = [t for t in executed if t.get("action") == "BUY"]
-    shorts = [t for t in executed if t.get("action") == "SELL"]
-
     return {
+        # New fields
+        "period": period,
+        "date_range": date_range,
+        "buy_count": buy_count,
+        "sell_count": sell_count,
+        "win_rate": round(win_rate, 1),
+        "best_trade": best_trade,
+        "worst_trade": worst_trade,
+        "avg_pnl_per_trade": round(total_pnl / len(executed), 2) if executed else 0,
+        "by_coin": by_coin,
+        # Legacy / shared fields
         "total_trades": len(trades),
         "executed": len(executed),
         "skipped": len(skipped),
         "errors": len(errors),
         "total_pnl_usd": round(total_pnl, 2),
-        "win_rate_pct": round(win_rate, 1),
+        "win_rate_pct": round(win_rate, 1),  # kept for backward compat
         "wins": len(wins),
         "losses": len(losses),
-        "avg_pnl_per_trade": round(total_pnl / len(pnl_trades), 2) if pnl_trades else 0,
         "best_coin": best_coin,
         "worst_coin": worst_coin,
-        "longs": len(longs),
-        "shorts": len(shorts),
+        "longs": buy_count,
+        "shorts": sell_count,
         "coin_breakdown": coins,
     }
 
@@ -407,28 +512,66 @@ def push_report_to_sheet(analysis: dict, llm_report: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def format_telegram_report(analysis: dict, llm_report: str) -> str:
-    """Format trade analysis as a Telegram HTML message."""
+    """Format trade analysis as a beautiful Telegram HTML message with tree layout."""
     if analysis.get("error"):
         return f"📭 <b>No trade data:</b> {analysis['error']}"
 
-    pnl_icon = "📈" if analysis["total_pnl_usd"] >= 0 else "📉"
-    win_icon = "🏆" if analysis["win_rate_pct"] >= 50 else "⚠️"
+    period_label = {
+        "today": "Today",
+        "week":  "Last 7 Days",
+        "month": "Last 30 Days",
+        "all":   "All Time",
+    }.get(analysis.get("period", "all"), "All Time")
 
-    # Truncate LLM report for Telegram (4096 char limit)
-    report_preview = llm_report[:800] + "..." if len(llm_report) > 800 else llm_report
+    total   = analysis["total_trades"]
+    buys    = analysis.get("buy_count", analysis.get("longs", 0))
+    sells   = analysis.get("sell_count", analysis.get("shorts", 0))
+    wins    = analysis["wins"]
+    wr      = analysis.get("win_rate", analysis.get("win_rate_pct", 0))
+    pnl     = analysis["total_pnl_usd"]
+    avg_pnl = analysis.get("avg_pnl_per_trade", 0)
+
+    pnl_sign = "+" if pnl >= 0 else ""
+    avg_sign = "+" if avg_pnl >= 0 else ""
+
+    # Best / worst trade
+    best  = analysis.get("best_trade",  {"coin": analysis.get("best_coin", "N/A"),  "pnl": 0.0, "date": "—"})
+    worst = analysis.get("worst_trade", {"coin": analysis.get("worst_coin", "N/A"), "pnl": 0.0, "date": "—"})
+    best_str  = f"{best['coin']} {'+' if best['pnl'] >= 0 else ''}{best['pnl']:.2f} ({best['date']})"
+    worst_str = f"{worst['coin']} {'+' if worst['pnl'] >= 0 else ''}{worst['pnl']:.2f} ({worst['date']})"
+
+    # By-coin section (up to 5 coins, sorted by PnL descending)
+    by_coin = analysis.get("by_coin", {})
+    sorted_coins = sorted(by_coin.items(), key=lambda x: x[1]["pnl"], reverse=True)[:5]
+    coin_lines = []
+    for i, (coin, data) in enumerate(sorted_coins):
+        prefix = "└" if i == len(sorted_coins) - 1 else "├"
+        sign   = "+" if data["pnl"] >= 0 else ""
+        coin_lines.append(
+            f"{prefix} {coin}: {data['trades']} trades · Win {data['win_rate']}% · {sign}${data['pnl']:.2f}"
+        )
+    coin_section = "\n".join(coin_lines) if coin_lines else "└ No coin data yet"
+
+    # Truncate LLM report to 600 chars
+    report_preview = llm_report[:600].rstrip()
+    if len(llm_report) > 600:
+        report_preview += "…"
 
     return (
-        f"📊 <b>ClawBot Trade Report</b>\n\n"
-        f"{pnl_icon} <b>Total PnL:</b> <code>${analysis['total_pnl_usd']:+.2f}</code>\n"
-        f"{win_icon} <b>Win Rate:</b> <code>{analysis['win_rate_pct']}%</code> "
-        f"({analysis['wins']}W / {analysis['losses']}L)\n"
-        f"📋 <b>Trades:</b> {analysis['total_trades']} total "
-        f"({analysis['executed']} exec, {analysis['skipped']} skipped)\n"
-        f"🥇 <b>Best Coin:</b> {analysis['best_coin']}\n"
-        f"🥴 <b>Worst Coin:</b> {analysis['worst_coin']}\n\n"
-        f"<b>🤖 AI Analysis:</b>\n"
+        f"📊 <b>Trade Report — {period_label}</b>\n\n"
+        f"📅 Period: {analysis.get('date_range', '—')}\n"
+        f"📈 Total Trades: {total} ({buys} BUY · {sells} SELL)\n"
+        f"🏆 Win Rate: {wr}% ({wins}/{total} profitable)\n\n"
+        f"<b>💰 P&amp;L Summary</b>\n"
+        f"├ Total: {pnl_sign}${pnl:.2f}\n"
+        f"├ Avg/trade: {avg_sign}${avg_pnl:.2f}\n"
+        f"├ Best: {best_str}\n"
+        f"└ Worst: {worst_str}\n\n"
+        f"<b>📊 By Coin</b>\n"
+        f"{coin_section}\n\n"
+        f"<b>🤖 AI Analysis</b>\n"
         f"<i>{report_preview}</i>\n\n"
-        f"<i>Full report saved to Google Sheets.</i>"
+        f"💾 <i>Saved locally</i>"
     )
 
 
@@ -436,14 +579,14 @@ def format_telegram_report(analysis: dict, llm_report: str) -> str:
 # Main report runner
 # ---------------------------------------------------------------------------
 
-async def run_report(bot=None, chat_id: int = 0) -> tuple[str, dict]:
+async def run_report(bot=None, chat_id: int = 0, period: str = "all") -> tuple[str, dict]:
     """
     Full pipeline: analyze → LLM report → push to sheets → return Telegram message.
     Can be used as APScheduler job or called directly from /report command.
     """
     _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    analysis   = analyze_trades()
+    analysis   = analyze_trades(period=period)
     llm_report = generate_report(analysis)
 
     # Save report locally (always works, even without Sheets)

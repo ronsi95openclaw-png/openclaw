@@ -60,7 +60,10 @@ def _load_tasks() -> List[dict]:
 
 def _save_tasks(tasks: List[dict]) -> None:
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _TASKS_FILE.write_text(json.dumps(tasks, indent=2), encoding="utf-8")
+    try:
+        _TASKS_FILE.write_text(json.dumps(tasks, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"[scheduler] Failed to save tasks: {exc}")
 
 
 def _reload_from_disk() -> None:
@@ -187,7 +190,10 @@ def _load_autotrade() -> dict:
 
 def _save_autotrade(cfg: dict) -> None:
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _AUTOTRADE_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    try:
+        _AUTOTRADE_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"[scheduler] Failed to save autotrade config: {exc}")
 
 
 async def _run_autotrade() -> None:
@@ -337,7 +343,10 @@ def _load_lifeos_schedule() -> dict:
 
 def _save_lifeos_schedule(cfg: dict) -> None:
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _LIFEOS_CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    try:
+        _LIFEOS_CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"[scheduler] Failed to save lifeos schedule: {exc}")
 
 
 async def _fire_morning_checkin() -> None:
