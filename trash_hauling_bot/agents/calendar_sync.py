@@ -10,6 +10,7 @@ the Telegram bot calls directly.
 import logging
 from typing import Optional
 
+from config import config
 from integrations.gcal import CalendarClient
 from integrations.sheets import (
     SheetsClient,
@@ -99,3 +100,11 @@ class CalendarSyncAgent:
         self._sheets.update_lead(lead_id, {"status": STATUS_CANCELLED, "calendar_event_id": ""})
         self._audit.log(self.AGENT_NAME, "job_cancelled", {"lead_id": lead_id})
         return True
+
+    def mark_stale_leads(self) -> int:
+        """Age leads with no activity beyond the configured threshold to no_response."""
+        count = self._sheets.mark_stale_leads(config.lead_stale_days)
+        if count:
+            self._audit.log(self.AGENT_NAME, "leads_aged", {"count": count, "stale_days": config.lead_stale_days})
+            logger.info("Aged %d stale lead(s) to no_response", count)
+        return count

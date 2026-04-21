@@ -73,6 +73,14 @@ async def main() -> None:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        cal_sync.mark_stale_leads,
+        "interval",
+        hours=24,
+        id="lead_aging",
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.start()
     audit.log("orchestrator", "startup", {
         "scraper_interval_min": config.scraper_interval_minutes,

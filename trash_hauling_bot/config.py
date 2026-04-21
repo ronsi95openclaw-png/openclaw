@@ -63,6 +63,10 @@ class Config:
     # Scheduler intervals
     scraper_interval_minutes: int = field(default_factory=lambda: _int_env("SCRAPER_INTERVAL_MINUTES", 30))
     calendar_sync_interval_minutes: int = field(default_factory=lambda: _int_env("CALENDAR_SYNC_INTERVAL_MINUTES", 5))
+    lead_stale_days: int = field(default_factory=lambda: _int_env("LEAD_STALE_DAYS", 7))
+
+    # Dry-run mode — set DRY_RUN=true to run without real Google credentials or FB session
+    dry_run: bool = field(default_factory=lambda: os.getenv("DRY_RUN", "false").lower() == "true")
 
     # Paths
     data_dir: str = field(default_factory=lambda: os.getenv("DATA_DIR", "data"))
@@ -75,6 +79,8 @@ class Config:
         missing = []
         if not self.bot_token:
             missing.append("TRASH_BOT_TOKEN")
+        if self.dry_run:
+            return missing  # Google credentials and FB location not required in dry-run
         if not self.google_sheet_id:
             missing.append("GOOGLE_SHEET_ID")
         if not self.fb_search_location:
