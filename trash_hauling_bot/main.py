@@ -20,8 +20,8 @@ from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
-# Load .env before importing anything that reads config
-load_dotenv(Path(__file__).parent / ".env")
+# Load HaulYeah bot config — separate from ClawBot's root .env
+load_dotenv(Path(__file__).parent / ".env.haulyeah")
 
 from agents.calendar_sync import CalendarSyncAgent
 from agents.outreach import OutreachAgent
@@ -47,7 +47,7 @@ async def main() -> None:
     missing = config.validate()
     if missing:
         logger.error("Missing required config: %s", ", ".join(missing))
-        logger.error("Copy .env.example to .env and fill in the values.")
+        logger.error("Fill in trash_hauling_bot/.env.haulyeah with your keys.")
         sys.exit(1)
 
     audit = AuditLogger(config.audit_log_file)

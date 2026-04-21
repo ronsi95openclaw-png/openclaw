@@ -5,7 +5,9 @@ from typing import List
 
 from dotenv import load_dotenv
 
-load_dotenv()
+_HERE = Path(__file__).parent
+# Explicit path so this never accidentally picks up ClawBot's root .env
+load_dotenv(_HERE / ".env.haulyeah")
 
 
 def _int_env(key: str, default: int) -> int:
