@@ -55,11 +55,15 @@ def _is_authorized(chat_id: int) -> bool:
 
 
 def _require_auth(func):
-    async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    async def wrapper(*args, **kwargs):
+        # Class methods receive (self, update, ctx) — find the Update by type
+        update = next((a for a in args if isinstance(a, Update)), None)
+        if update is None:
+            return
         if not _is_authorized(update.effective_chat.id):
             await update.message.reply_text("Unauthorized.")
             return
-        return await func(update, ctx)
+        return await func(*args, **kwargs)
     return wrapper
 
 
