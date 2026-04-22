@@ -1,4 +1,5 @@
 import logging
+import traceback
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -85,6 +86,7 @@ class TrashHaulingBot:
 
     def _register_handlers(self) -> None:
         add = self._app.add_handler
+        self._app.add_error_handler(self._on_error)
         add(CommandHandler("start", self._cmd_start))
         add(CommandHandler("help", self._cmd_help))
         add(CommandHandler("status", self._cmd_status))
@@ -100,7 +102,25 @@ class TrashHaulingBot:
         add(CommandHandler("cancel", self._cmd_cancel))
         add(CommandHandler("scan", self._cmd_scan))
         add(CommandHandler("sync", self._cmd_sync))
+        add(CommandHandler("ping", self._cmd_ping))
         add(CallbackQueryHandler(self._on_callback))
+
+    async def _cmd_ping(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """No-auth ping to confirm the bot is alive and receiving updates."""
+        cid = update.effective_chat.id
+        logger.info("PING from chat_id=%s", cid)
+        await update.message.reply_text(
+            f"Pong! Bot is alive.\nYour chat_id: `{cid}`\nAdd it to TRASH_BOT_CHAT_IDS in .env.haulyeah",
+            parse_mode="Markdown",
+        )
+
+    async def _on_error(self, update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.error("Unhandled exception in handler:\n%s", traceback.format_exc())
+        if isinstance(update, Update) and update.message:
+            try:
+                await update.message.reply_text(f"Internal error: {ctx.error}")
+            except Exception:
+                pass
 
     async def start(self) -> None:
         await self._app.initialize()
