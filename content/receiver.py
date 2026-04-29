@@ -66,7 +66,9 @@ from core.conversation import add_message, clear_history, get_history
 from core import scheduler as sched
 from core.startup import ensure_data_dirs
 from core.event_bus import register as bus_register, emit as bus_emit
+from core.task_queue import run_in_pool
 from lib.brain import brain
+from lib.humanizer import humanize
 from security.whitelist import is_authorized
 
 ensure_data_dirs()
@@ -153,7 +155,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         response = result["text"]
         add_message(chat_id, "assistant", response)
         await thinking_msg.edit_text(
-            f"🦾 <b>ClawBot</b> <i>({result['brain']})</i>\n\n{response}",
+            f"🦾 <b>ClawBot</b> <i>({result['brain']})</i>\n\n{humanize(response)}",
             parse_mode="HTML",
         )
     except Exception as exc:
@@ -752,6 +754,162 @@ async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 
+# ── Video upload → content pipeline ──────────────────────────────────────────
+
+# In-memory store: chat_id → (reel_path, captions) awaiting /approve
+_pending_reels: dict[int, tuple] = {}
+
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Receive a video file, run the full pipeline in the thread pool, prompt for approval."""
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    chat_id = update.effective_chat.id
+    msg     = update.message
+
+    file_obj = msg.video or msg.document
+    if file_obj is None:
+        return
+
+    status_msg = await msg.reply_text(
+        "🎬 <b>Video received</b> — downloading and processing...\n"
+        "<i>Whisper + FFmpeg running in the background.</i>",
+        parse_mode="HTML",
+    )
+
+    try:
+        # Download to a temp path
+        import tempfile
+        tg_file  = await context.bot.get_file(file_obj.file_id)
+        suffix   = Path(file_obj.file_name).suffix if hasattr(file_obj, "file_name") and file_obj.file_name else ".mp4"
+        tmp      = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        tmp_path = Path(tmp.name)
+        tmp.close()
+        await tg_file.download_to_drive(tmp_path)
+
+        await status_msg.edit_text(
+            "⚙️ <b>Stage 1/3</b> — Editing (trim, 9:16, captions, music)...",
+            parse_mode="HTML",
+        )
+
+        # Heavy work in thread pool — does NOT block the event loop
+        from content.pipeline import process
+        result = await run_in_pool(process, tmp_path, return_artifacts=True)
+
+        if result is None:
+            await status_msg.edit_text("✅ Pipeline complete. Check Telegram for the reel.")
+            return
+
+        reel_path, captions = result
+        _pending_reels[chat_id] = (reel_path, captions)
+
+        await status_msg.edit_text(
+            "✅ <b>Reel ready!</b>\n\n"
+            f"<b>Instagram:</b>\n<code>{captions.instagram[:300]}</code>\n\n"
+            f"<b>TikTok:</b>\n<code>{captions.tiktok[:150]}</code>\n\n"
+            "Reply <b>/approve</b> to post to TikTok + Instagram\n"
+            "or <b>/reject</b> to discard.",
+            parse_mode="HTML",
+        )
+
+    except Exception as exc:
+        await status_msg.edit_text(
+            f"🚨 <b>Pipeline failed:</b>\n<code>{exc}</code>", parse_mode="HTML"
+        )
+        logger.error(f"Video pipeline error: {exc}")
+
+
+async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Post the pending reel to TikTok + Instagram."""
+    if not is_authorized(update.effective_chat.id):
+        return
+    chat_id = update.effective_chat.id
+    pending = _pending_reels.pop(chat_id, None)
+    if pending is None:
+        await update.message.reply_text("No reel pending approval. Upload a video first.")
+        return
+
+    reel_path, captions = pending
+    thinking_msg = await update.message.reply_text(
+        "📱 <b>Posting to TikTok + Instagram...</b>", parse_mode="HTML"
+    )
+    try:
+        from content.poster import post_to_socials_sync
+        result = await run_in_pool(post_to_socials_sync, reel_path, captions)
+        await thinking_msg.edit_text(f"✅ <b>Posted!</b>\n\n{result}", parse_mode="HTML")
+    except Exception as exc:
+        await thinking_msg.edit_text(
+            f"🚨 <b>Post failed:</b>\n<code>{exc}</code>", parse_mode="HTML"
+        )
+
+
+async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Discard the pending reel."""
+    if not is_authorized(update.effective_chat.id):
+        return
+    chat_id = update.effective_chat.id
+    if _pending_reels.pop(chat_id, None) is not None:
+        await update.message.reply_text("🗑 Reel discarded.")
+    else:
+        await update.message.reply_text("No reel pending.")
+
+
+# ── /metrics ──────────────────────────────────────────────────────────────────
+
+async def cmd_metrics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show tier usage distribution and recent misroutes from memory logs."""
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    memory_dir = Path(__file__).parent.parent / "memory"
+    lines_out  = ["📊 <b>System Metrics</b>\n"]
+
+    # Tier distribution from tier-usage.jsonl
+    tier_counts: dict[str, int] = {}
+    tier_file = memory_dir / "tier-usage.jsonl"
+    if tier_file.exists():
+        for raw in tier_file.read_text(encoding="utf-8").splitlines()[-200:]:
+            try:
+                entry = __import__("json").loads(raw)
+                t = entry.get("tier", "?")
+                tier_counts[t] = tier_counts.get(t, 0) + 1
+            except Exception:
+                pass
+
+    if tier_counts:
+        total = sum(tier_counts.values())
+        lines_out.append("<b>Tier distribution (last 200 requests):</b>")
+        for tier, count in sorted(tier_counts.items()):
+            pct = count / total * 100
+            lines_out.append(f"  {tier}: {count} ({pct:.0f}%)")
+        lines_out.append("")
+
+    # Recent soft-failures
+    fail_file = memory_dir / "soft-failures.jsonl"
+    if fail_file.exists():
+        fails = fail_file.read_text(encoding="utf-8").splitlines()[-10:]
+        if fails:
+            lines_out.append("<b>Recent misroutes / inefficiencies:</b>")
+            for raw in fails:
+                try:
+                    e = __import__("json").loads(raw)
+                    lines_out.append(f"  {e.get('ts','')[:16]}  {e.get('reason','?')}  (tier={e.get('tier','?')})")
+                except Exception:
+                    pass
+        else:
+            lines_out.append("No soft-failures logged yet.")
+    else:
+        lines_out.append("No soft-failures logged yet.")
+
+    # Tool cache stats
+    from lib.tool_cache import cache_stats
+    cs = cache_stats()
+    lines_out.append(f"\n<b>Tool cache:</b> {cs['entries']} entries, {cs['size_kb']} KB")
+
+    await update.message.reply_text("\n".join(lines_out), parse_mode="HTML")
+
+
 # ── /stop ─────────────────────────────────────────────────────────────────────
 
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -826,7 +984,13 @@ def main() -> None:
     _app.add_handler(CommandHandler("weather",  cmd_weather))
     _app.add_handler(CommandHandler("help",     cmd_help))
     _app.add_handler(CommandHandler("autotrade", cmd_autotrade))
+    _app.add_handler(CommandHandler("approve",   cmd_approve))
+    _app.add_handler(CommandHandler("reject",    cmd_reject))
+    _app.add_handler(CommandHandler("metrics",   cmd_metrics))
     _app.add_handler(CommandHandler("stop",      cmd_stop))
+
+    # Video uploads → content pipeline (non-blocking via task queue)
+    _app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
 
     # Free-text conversation (must be last — catches all non-command text)
     _app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

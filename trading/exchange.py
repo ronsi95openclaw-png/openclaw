@@ -13,6 +13,8 @@ import time
 
 import requests
 
+from lib.tool_cache import cached
+
 logger = logging.getLogger("clawbot.trading.exchange")
 
 _PUBLIC  = "https://api.crypto.com/exchange/v1/public"
@@ -57,8 +59,7 @@ def _sign(method: str, params: dict, api_key: str, secret: str) -> dict:
 
 # ── Public endpoints ──────────────────────────────────────────────────────────
 
-def fetch_closes(instrument: str, timeframe: str = "4h", count: int = 100) -> list[float]:
-    """Closing prices from Crypto.com public candlestick API, oldest first."""
+def _fetch_closes_raw(instrument: str, timeframe: str, count: int) -> list[float]:
     tf  = _TIMEFRAME_MAP.get(timeframe, timeframe)
     url = f"{_PUBLIC}/get-candlestick"
     r   = requests.get(url, params={"instrument_name": instrument, "timeframe": tf, "count": count}, timeout=10)
@@ -77,6 +78,23 @@ def fetch_closes(instrument: str, timeframe: str = "4h", count: int = 100) -> li
     return closes
 
 
+# TTL per timeframe: candle data only changes when a new bar closes
+_CANDLE_TTL = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+               "1h": 3600, "4h": 14400, "6h": 21600, "12h": 43200,
+               "1d": 86400, "1w": 604800}
+
+
+def fetch_closes(instrument: str, timeframe: str = "4h", count: int = 100) -> list[float]:
+    """Closing prices from Crypto.com, cached for the duration of the timeframe."""
+    ttl = _CANDLE_TTL.get(timeframe, 3600)
+    return cached(
+        f"candles:{instrument}:{timeframe}:{count}",
+        ttl,
+        _fetch_closes_raw,
+        instrument, timeframe, count,
+    )
+
+
 def fetch_all_closes(coins: list[str], timeframe: str = "4h", count: int = 100) -> dict:
     """Fetch closes for multiple coins. Skips any that fail."""
     result: dict = {}
@@ -88,11 +106,15 @@ def fetch_all_closes(coins: list[str], timeframe: str = "4h", count: int = 100) 
     return result
 
 
-def fetch_ticker_price(instrument: str) -> float:
-    """Latest ask price for an instrument."""
+def _fetch_ticker_raw(instrument: str) -> float:
     r = requests.get(f"{_PUBLIC}/get-ticker", params={"instrument_name": instrument}, timeout=8)
     r.raise_for_status()
     return float(r.json()["result"]["data"][0]["a"])
+
+
+def fetch_ticker_price(instrument: str) -> float:
+    """Latest ask price for an instrument, cached for 30 seconds."""
+    return cached(f"ticker:{instrument}", 30, _fetch_ticker_raw, instrument)
 
 
 # ── Private endpoints ─────────────────────────────────────────────────────────
