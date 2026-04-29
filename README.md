@@ -1,19 +1,20 @@
-# OpenClaw (ClawBot) v0.1
+# OpenClaw (ClawBot)
 
-Personal trading bot system powered by a local Ollama LLM.
+Personal trading bot and content pipeline powered by a hybrid AI brain (Ollama + Claude Haiku).
 
 ## Requirements
 
 - Python 3.10+
 - [Ollama](https://ollama.com) installed and running locally
 - Ollama model pulled: `ollama pull qwen2.5:14b`
+- `ffmpeg` on PATH (content pipeline only)
 
 ## Setup
 
 1. **Clone the repo**
    ```bash
    git clone <repo-url>
-   cd Claude-openclaw
+   cd openclaw
    ```
 
 2. **Install dependencies**
@@ -32,46 +33,100 @@ Personal trading bot system powered by a local Ollama LLM.
    ollama serve
    ```
 
-5. **Test the LLM brain**
-   ```bash
-   python test_brain.py
-   ```
-
-## Usage
+## Running
 
 ```bash
-python main.py dca      # Run one DCA cycle (Crypto.com)
-python main.py futures  # Run one futures cycle (Blofin)
+# Telegram bot (main entry point)
+python -m content.receiver
+
+# Local dashboard (run alongside the bot)
+python dashboard/app.py
+
+# Content pipeline — GDrive watcher mode
+python -m content.pipeline
+
+# Content pipeline — single file
+python -m content.pipeline --once path/to/video.mp4
 ```
 
 ## Project Structure
 
 ```
-├── bots/
-│   ├── dca/         - DCA bot for Crypto.com
-│   └── futures/     - Futures trading bot for Blofin
 ├── core/
-│   ├── brain.py     - LLM interface (Ollama)
-│   └── logger.py    - Trade logging
-├── config/
-│   └── settings.py  - Env-based configuration
-├── data/logs/       - Trade decision logs
-├── .env.example     - Environment variable template
-└── main.py          - CLI entry point
+│   ├── brain.py          - Hybrid AI router (Ollama → Claude Haiku)
+│   ├── conversation.py   - Per-chat conversation history (JSON, 10 turns)
+│   ├── market.py         - CoinGecko prices + LLM analysis
+│   ├── scheduler.py      - APScheduler: reminders + daily auto-trade job
+│   └── startup.py        - Data directory initialisation
+├── trading/
+│   ├── strategy.py       - RSI + MACD signal engine
+│   ├── executor.py       - Trade execution (Crypto.com)
+│   └── exchange.py       - Crypto.com public + private API connector
+├── content/
+│   ├── receiver.py       - Telegram bot (main entry point)
+│   ├── pipeline.py       - Content pipeline orchestrator
+│   ├── watcher.py        - Google Drive folder watcher (watchdog)
+│   ├── editor.py         - FFmpeg + Whisper video editor
+│   ├── caption_generator.py  - Ollama-powered caption writer
+│   ├── uploader.py       - Telegram approval sender
+│   ├── poster.py         - TikTok + Instagram publisher
+│   └── music/            - Background music tracks
+├── security/
+│   └── whitelist.py      - Telegram chat ID allowlist
+├── dashboard/
+│   └── app.py            - Flask dashboard (localhost:8080)
+├── data/                 - Runtime data (gitignored)
+│   ├── logs/trades.log
+│   ├── response_cache.json
+│   ├── usage_stats.json
+│   ├── tasks.json
+│   ├── autotrade.json
+│   └── conversation_history.json
+└── .env.example
 ```
+
+## Telegram Commands
+
+| Command | Description |
+|---------|-------------|
+| `[any message]` | Chat with AI brain |
+| `/plan [idea]` | Structured business plan |
+| `/research [topic]` | Deep research breakdown |
+| `/market` | BTC/ETH/SOL live prices + analysis |
+| `/scan [1h\|4h\|1d]` | RSI+MACD live signal scan |
+| `/remind HH:MM text` | Set a daily reminder (UTC) |
+| `/tasks` | List pending reminders |
+| `/cancel <id>` | Cancel a reminder |
+| `/autotrade on` | Enable daily auto-trade at 08:00 UTC |
+| `/autotrade off` | Disable auto-trade |
+| `/status` | Bot + Ollama health check |
+| `/brain` | AI usage stats |
+| `/clear` | Reset conversation memory |
 
 ## Environment Variables
 
-| Variable            | Description                        | Default        |
-|---------------------|------------------------------------|----------------|
-| `OLLAMA_MODEL`      | Ollama model to use                | `qwen2.5:14b`  |
-| `CRYPTOCOM_API_KEY` | Crypto.com API key                 | —              |
-| `CRYPTOCOM_SECRET`  | Crypto.com API secret              | —              |
-| `BLOFIN_API_KEY`    | Blofin API key                     | —              |
-| `BLOFIN_SECRET`     | Blofin API secret                  | —              |
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OLLAMA_MODEL` | Ollama model to use | `qwen2.5:14b` |
+| `ANTHROPIC_API_KEY` | Claude API key (optional) | — |
+| `USE_CLAUDE_API` | Enable Claude for complex tasks | `true` |
+| `MAX_TOKENS_PER_RESPONSE` | Max tokens per Claude response | `500` |
+| `COMPLEXITY_THRESHOLD` | Word count for Claude routing | `50` |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token | — |
+| `TELEGRAM_CHAT_ID` | Telegram chat ID for notifications | — |
+| `ALLOWED_CHAT_ID` | Comma-separated authorized chat IDs | — |
+| `CRYPTOCOM_API_KEY` | Crypto.com API key | — |
+| `CRYPTOCOM_SECRET` | Crypto.com API secret | — |
+| `GDRIVE_WATCH_FOLDER` | Local GDrive folder to watch | — |
+| `MUSIC_FOLDER` | Background music for reels | `content/music` |
+| `WHISPER_MODEL` | Whisper model size | `base` |
+| `TIKTOK_ACCESS_TOKEN` | TikTok Content Posting API token | — |
+| `INSTAGRAM_ACCESS_TOKEN` | Meta Graph API token | — |
+| `INSTAGRAM_USER_ID` | Instagram Business/Creator account ID | — |
 
 ## Notes
 
-- All trade decisions are confirmed by the LLM before execution.
-- Never commit your `.env` file — it's gitignored.
+- Never commit your `.env` file — it is gitignored.
+- `ALLOWED_CHAT_ID` must be set or the bot silently ignores all messages.
 - Logs are written to `data/logs/`.
+- The dashboard reads data files but never writes — safe to run concurrently with the bot.

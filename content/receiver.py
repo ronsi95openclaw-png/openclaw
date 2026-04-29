@@ -64,7 +64,10 @@ from telegram.ext import (
 from core.brain import CLAWBOT_SYSTEM, ask_hybrid, classify_complexity, get_usage_today
 from core.conversation import add_message, clear_history, get_history
 from core import scheduler as sched
+from core.startup import ensure_data_dirs
 from security.whitelist import is_authorized
+
+ensure_data_dirs()
 
 logger = logging.getLogger("openclaw.receiver")
 

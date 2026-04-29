@@ -108,8 +108,9 @@ def process_video(
         caption_filter = _build_subtitle_filter(segments)
 
     # --- Step 4: Branding watermark ---
+    # Emoji in FFmpeg drawtext requires emoji-capable fonts; use ASCII only
     branding_filter = (
-        "drawtext=text='🦾 OpenClaw'"
+        "drawtext=text='OpenClaw'"
         ":fontsize=38:fontcolor=white:borderw=2:bordercolor=black"
         ":x=20:y=20"
     )
