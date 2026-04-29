@@ -48,10 +48,41 @@ Telegram → receiver.py
 
 `core/startup.ensure_data_dirs()` creates `data/` and `data/logs/` at startup.
 
+## Middleware Pipeline (runs on every `ask_hybrid` call)
+
+```
+optimize_input()       lib/input_optimizer.py   — collapse whitespace, cap 2000 chars
+classify_intent()      lib/intent_classifier.py — T1 chat | T2 cheap_reasoning | T3 precision
+cache check            core/brain.py            — 1-hour TTL, MD5 keyed
+LLM dispatch           core/brain.py            — T1/T2 → Ollama, T3 → Claude Haiku
+compress_output()      lib/output_compressor.py — strip filler openers, collapse blank lines
+self-audit             core/brain.py            — log overkill tier / overlong output
+route_memory()         lib/memory_router.py     — long_term | working | discard
+log_tier_usage()       lib/memory_router.py     — appends to memory/tier-usage.jsonl
+cache write            core/brain.py            — store for future hits
+```
+
+## Memory Files (runtime, gitignored JSONL)
+
+| File | Written by | Contains |
+|------|-----------|----------|
+| `memory/long_term.jsonl` | `lib/memory_router.py` | Durable insights, decisions, strategies |
+| `memory/working.jsonl` | `lib/memory_router.py` | Session-relevant context |
+| `memory/tier-usage.jsonl` | `lib/memory_router.py` | Per-request tier + token stats |
+| `memory/soft-failures.jsonl` | `core/brain.py` | Misroutes and over-long outputs |
+
+## Three-Tier Routing
+
+| Tier | Trigger | Model |
+|------|---------|-------|
+| T1 chat | < 8 words, no keywords | Ollama |
+| T2 cheap_reasoning | analytical keywords, or ≥ 50 words | Ollama |
+| T3 precision | design / architect / strategy / evaluate / audit | Claude Haiku |
+
 ## Models
 
 - Ollama: `qwen2.5:14b` (default, set via `OLLAMA_MODEL`)
-- Claude: `claude-haiku-4-5-20251001` (hardcoded in `core/brain.py`)
+- Claude: `claude-haiku-4-5-20251001` (set in `core/brain.py:CLAUDE_MODEL`)
 
 ## Known Limitations
 

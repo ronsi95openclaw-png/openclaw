@@ -1,4 +1,4 @@
-"""Ensure all runtime data directories exist before any module writes to them.
+"""Ensure all runtime directories exist before any module writes to them.
 
 Call ensure_data_dirs() once at the top of receiver.py and any other entry point.
 """
@@ -11,6 +11,7 @@ _ROOT = Path(__file__).parent.parent
 _REQUIRED_DIRS = [
     _ROOT / "data",
     _ROOT / "data" / "logs",
+    _ROOT / "memory",
 ]
 
 

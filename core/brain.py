@@ -1,19 +1,18 @@
 """Hybrid AI brain for OpenClaw / ClawBot.
 
-Routes requests automatically between:
-  - Local Ollama (free, fast) for simple tasks
-  - Claude Haiku API (smart) for complex tasks
-  - Falls back to Ollama if Claude API is unavailable or key is missing
+Middleware pipeline (applied on every ask_hybrid call):
+  1. Input Optimizer    — normalize & cap raw prompt
+  2. Intent Classifier  — 3-tier: chat | cheap_reasoning | precision
+  3. Cache check        — 1-hour TTL, MD5-keyed
+  4. LLM dispatch       — T1/T2 → Ollama, T3 → Claude Haiku (fallback: Ollama)
+  5. Output Compressor  — strip filler openers, collapse blank lines
+  6. Memory Router      — append insights to memory/ JSONL stores
+  7. Cache write        — store result for future hits
 
-Complexity detection:
-  SIMPLE  — short prompts, casual chat, captions, quick questions
-  COMPLEX — keywords: plan, analyse, strategy, research, breakdown,
-             compare, explain, detailed, full, step by step
-
-Extras:
-  - Response cache (data/response_cache.json) — 1-hour TTL
-  - Prompt compression — strips filler, caps Claude responses at MAX_TOKENS
-  - Usage tracking (data/usage_stats.json) — token counts per session
+Tiers:
+  T1 chat            < 8 words, casual            → Ollama
+  T2 cheap_reasoning analytical, < 50 words       → Ollama
+  T3 precision       high-stakes / architectural   → Claude Haiku
 """
 from __future__ import annotations
 
@@ -29,6 +28,11 @@ from typing import List, Optional
 import anthropic
 from ollama import chat as ollama_chat
 
+from lib.input_optimizer import optimize_input
+from lib.intent_classifier import classify_intent, tier_to_complexity
+from lib.output_compressor import compress_output
+from lib.memory_router import route_memory, write_memory, log_tier_usage, log_soft_failure
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -36,49 +40,29 @@ from ollama import chat as ollama_chat
 DEFAULT_OLLAMA_MODEL = "qwen2.5:14b"
 CLAUDE_MODEL         = "claude-haiku-4-5-20251001"
 MAX_TOKENS           = int(os.getenv("MAX_TOKENS_PER_RESPONSE", "500"))
-COMPLEXITY_THRESHOLD = int(os.getenv("COMPLEXITY_THRESHOLD", "50"))   # word count
-CACHE_TTL_SECONDS    = 3600   # 1 hour
+COMPLEXITY_THRESHOLD = int(os.getenv("COMPLEXITY_THRESHOLD", "50"))
+CACHE_TTL_SECONDS    = 3600
 
-_DATA_DIR   = Path(__file__).parent.parent / "data"
+_ROOT       = Path(__file__).parent.parent
+_DATA_DIR   = _ROOT / "data"
 _CACHE_FILE = _DATA_DIR / "response_cache.json"
 _USAGE_FILE = _DATA_DIR / "usage_stats.json"
+_PROMPT_FILE = Path(__file__).parent / "system-prompt.md"
 
-_COMPLEX_KEYWORDS = {
-    "plan", "analyse", "analyze", "strategy", "research", "breakdown",
-    "compare", "comparison", "explain", "detailed", "detail", "full",
-    "step by step", "pros and cons", "pros cons", "overview", "summary",
-    "investigate", "deep dive", "report", "forecast", "prediction",
-    "recommendation", "suggest", "evaluate", "assessment",
-}
+# Load unified system prompt from file; fall back to inline default
+def _load_system_prompt() -> str:
+    try:
+        return _PROMPT_FILE.read_text(encoding="utf-8").strip()
+    except Exception:
+        return (
+            "You are ClawBot — a sharp, decisive AI assistant for Ronnie (OpenClaw brand). "
+            "Be direct, concise, and action-oriented. No waffle."
+        )
 
-CLAWBOT_SYSTEM = """\
-You are ClawBot — a sharp, decisive AI assistant for Ronnie (OpenClaw brand).
-
-You help with:
-- Business planning and side hustles
-- Crypto trading analysis and DCA strategy
-- Content creation for the OpenClaw brand
-- Market research and deep dives
-- Daily tasks and productivity
-
-Your personality:
-- Direct and concise — no waffle, no fluff
-- Like a smart business partner, not a yes-man
-- Flag risks clearly and push back on bad ideas
-- Confident and action-oriented
-- Use OpenClaw motivational tone
-
-Rules:
-- Always give actionable advice
-- Always confirm before executing any task
-- Format responses for Telegram: short paragraphs, bullet points
-- Max 3-4 sentences per point
-- Think like a business partner, not a chatbot
-"""
-
+CLAWBOT_SYSTEM: str = _load_system_prompt()
 
 # ---------------------------------------------------------------------------
-# Cache helpers
+# Cache
 # ---------------------------------------------------------------------------
 
 def _load_cache() -> dict:
@@ -112,7 +96,6 @@ def _get_cached(prompt: str) -> Optional[str]:
 def _set_cached(prompt: str, response: str) -> None:
     cache = _load_cache()
     cache[_cache_key(prompt)] = {"response": response, "ts": time.time()}
-    # Keep cache small — drop oldest entries beyond 200
     if len(cache) > 200:
         oldest = sorted(cache.items(), key=lambda x: x[1]["ts"])
         for k, _ in oldest[:50]:
@@ -160,7 +143,6 @@ def _track_usage(
 
 
 def get_usage_today() -> dict:
-    """Return today's usage stats dict."""
     if not _USAGE_FILE.exists():
         return {}
     try:
@@ -172,30 +154,29 @@ def get_usage_today() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Complexity classifier
+# Complexity classifier (legacy — kept for backwards compat)
 # ---------------------------------------------------------------------------
 
+_COMPLEX_KEYWORDS = {
+    "plan", "analyse", "analyze", "strategy", "research", "breakdown",
+    "compare", "comparison", "explain", "detailed", "detail", "full",
+    "step by step", "pros and cons", "pros cons", "overview", "summary",
+    "investigate", "deep dive", "report", "forecast", "prediction",
+    "recommendation", "suggest", "evaluate", "assessment",
+}
+
+
 def classify_complexity(prompt: str) -> str:
-    """Return 'simple' or 'complex' based on prompt content."""
+    """Return 'simple' or 'complex'. Delegates to 3-tier classifier internally."""
     if not os.getenv("USE_CLAUDE_API", "true").lower() == "true":
         return "simple"
     if not os.getenv("ANTHROPIC_API_KEY", "").strip():
         return "simple"
-
-    words = prompt.lower().split()
-    # Long prompts are complex
-    if len(words) >= COMPLEXITY_THRESHOLD:
-        return "complex"
-    # Keyword match
-    text = prompt.lower()
-    for kw in _COMPLEX_KEYWORDS:
-        if kw in text:
-            return "complex"
-    return "simple"
+    return tier_to_complexity(classify_intent(prompt))
 
 
 # ---------------------------------------------------------------------------
-# Prompt compression
+# Prompt compression (input side)
 # ---------------------------------------------------------------------------
 
 _FILLER = re.compile(
@@ -207,19 +188,17 @@ _FILLER = re.compile(
 
 
 def _compress(prompt: str) -> str:
-    """Strip filler words and collapse whitespace."""
     compressed = _FILLER.sub("", prompt)
     compressed = re.sub(r" {2,}", " ", compressed).strip()
     return compressed if compressed else prompt
 
 
 def _compress_history(history: List[dict], max_turns: int = 6) -> List[dict]:
-    """Keep only the last max_turns messages to limit token usage."""
     return history[-max_turns:] if len(history) > max_turns else history
 
 
 # ---------------------------------------------------------------------------
-# Ollama (simple tasks / fallback)
+# Ollama (T1 + T2 / fallback)
 # ---------------------------------------------------------------------------
 
 def ask_llm(
@@ -228,11 +207,9 @@ def ask_llm(
     system: Optional[str] = None,
     history: Optional[List[dict]] = None,
 ) -> str:
-    """Ask local Ollama. Used for simple tasks and as fallback."""
     model = model or os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": system})
+    sys_prompt = system or CLAWBOT_SYSTEM
+    messages: List[dict] = [{"role": "system", "content": sys_prompt}]
     if history:
         messages.extend(_compress_history(history))
     messages.append({"role": "user", "content": prompt})
@@ -247,7 +224,7 @@ def ask_llm(
 
 
 # ---------------------------------------------------------------------------
-# Claude Haiku (complex tasks)
+# Claude Haiku (T3 precision tasks)
 # ---------------------------------------------------------------------------
 
 def ask_claude(
@@ -255,13 +232,12 @@ def ask_claude(
     system: Optional[str] = None,
     history: Optional[List[dict]] = None,
 ) -> str:
-    """Ask Claude Haiku for complex tasks. Falls back to Ollama on error."""
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
         return ask_llm(prompt, system=system, history=history)
 
     client = anthropic.Anthropic(api_key=api_key)
-    messages = []
+    messages: List[dict] = []
     if history:
         messages.extend(_compress_history(history))
     messages.append({"role": "user", "content": _compress(prompt)})
@@ -285,7 +261,6 @@ def ask_claude(
     except anthropic.AuthenticationError:
         return ask_llm(prompt, system=system, history=history)
     except Exception as exc:
-        # Fallback to Ollama on any Claude API error
         try:
             return ask_llm(prompt, system=system, history=history)
         except Exception:
@@ -293,33 +268,73 @@ def ask_claude(
 
 
 # ---------------------------------------------------------------------------
-# Hybrid router (main public interface)
+# Hybrid router — full middleware pipeline
 # ---------------------------------------------------------------------------
 
 def ask_hybrid(
     prompt: str,
     system: Optional[str] = None,
     history: Optional[List[dict]] = None,
-    force: Optional[str] = None,   # "simple" | "complex" | None
+    force: Optional[str] = None,
 ) -> tuple[str, str]:
-    """Route prompt to Ollama or Claude based on complexity.
+    """Route prompt through the full middleware pipeline.
+
+    Pipeline:
+        optimize → classify → cache? → dispatch → compress → memory → cache write
+
+    Args:
+        prompt: Raw user text.
+        system: Override system prompt.
+        history: Conversation history.
+        force: "simple" | "complex" bypasses the classifier.
 
     Returns:
-        (response_text, brain_used)  where brain_used is "ollama" or "claude"
+        (response_text, brain_used)  brain_used ∈ {"ollama", "claude", "cache"}
     """
-    # Check cache first
+    # 1. Input optimization
+    prompt = optimize_input(prompt)
+
+    # 2. Cache hit
     cached = _get_cached(prompt)
     if cached:
         return cached, "cache"
 
-    complexity = force or classify_complexity(prompt)
+    # 3. Intent classification → tier
+    if force == "complex":
+        tier = "precision"
+    elif force == "simple":
+        tier = "chat"
+    else:
+        use_claude = (
+            os.getenv("USE_CLAUDE_API", "true").lower() == "true"
+            and bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
+        )
+        tier = classify_intent(prompt) if use_claude else "chat"
 
+    complexity = tier_to_complexity(tier)
+
+    # 4. Dispatch
     if complexity == "complex":
-        result = ask_claude(prompt, system=system, history=history)
+        raw = ask_claude(prompt, system=system, history=history)
         brain = "claude"
     else:
-        result = ask_llm(prompt, system=system, history=history)
+        raw = ask_llm(prompt, system=system, history=history)
         brain = "ollama"
 
+    # 5. Output compression
+    result = compress_output(raw)
+
+    # 6. Self-audit: log inefficiencies
+    if len(result) > MAX_TOKENS * 6 and tier != "precision":
+        log_soft_failure("output_too_long", tier, len(prompt))
+    if complexity == "complex" and len(prompt.split()) < 10:
+        log_soft_failure("overkill_tier", tier, len(prompt))
+
+    # 7. Memory routing
+    dest = route_memory(result, prompt)
+    write_memory(dest, prompt, result, tier)
+    log_tier_usage(tier, len(prompt))
+
+    # 8. Cache write
     _set_cached(prompt, result)
     return result, brain
