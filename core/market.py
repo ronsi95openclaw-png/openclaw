@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import requests
 
-from core.brain import ask_hybrid
+from lib.brain import brain
 
 COINGECKO_URL = (
     "https://api.coingecko.com/api/v3/simple/price"
@@ -67,7 +67,9 @@ def get_market_summary() -> str:
     price_block = _format_price_block(data)
 
     prompt = _ANALYSIS_PROMPT.format(price_block=price_block)
-    analysis, brain = ask_hybrid(prompt, force="simple")   # use Ollama — quick task
+    result = brain(prompt, purpose="market_summary")
+    analysis = result["text"]
+    brain_used = result["brain"]
 
     lines = [
         "📊 <b>Market Update</b>",
@@ -75,7 +77,7 @@ def get_market_summary() -> str:
         "<b>Live Prices:</b>",
         price_block,
         "",
-        f"<b>ClawBot Analysis</b> <i>(via {brain})</i>:",
+        f"<b>ClawBot Analysis</b> <i>(via {brain_used})</i>:",
         analysis,
     ]
     return "\n".join(lines)

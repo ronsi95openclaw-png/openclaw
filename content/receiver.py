@@ -61,10 +61,12 @@ from telegram.ext import (
     filters,
 )
 
-from core.brain import CLAWBOT_SYSTEM, ask_hybrid, classify_complexity, get_usage_today
+from core.brain import CLAWBOT_SYSTEM, classify_complexity, get_usage_today
 from core.conversation import add_message, clear_history, get_history
 from core import scheduler as sched
 from core.startup import ensure_data_dirs
+from core.event_bus import register as bus_register, emit as bus_emit
+from lib.brain import brain
 from security.whitelist import is_authorized
 
 ensure_data_dirs()
@@ -147,10 +149,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     add_message(chat_id, "user", text)
 
     try:
-        response, brain = ask_hybrid(text, system=CLAWBOT_SYSTEM, history=history)
+        result   = brain(text, purpose="chat", history=history)
+        response = result["text"]
         add_message(chat_id, "assistant", response)
         await thinking_msg.edit_text(
-            f"🦾 <b>ClawBot</b> <i>({brain})</i>\n\n{response}",
+            f"🦾 <b>ClawBot</b> <i>({result['brain']})</i>\n\n{response}",
             parse_mode="HTML",
         )
     except Exception as exc:
@@ -178,10 +181,11 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     add_message(chat_id, "user", prompt)
 
     try:
-        response, brain = ask_hybrid(prompt, system=CLAWBOT_SYSTEM, history=history)
+        result   = brain(prompt, purpose="chat", history=history)
+        response = result["text"]
         add_message(chat_id, "assistant", response)
         await thinking_msg.edit_text(
-            f"🦾 <b>ClawBot</b> <i>({brain})</i>\n\n{response}",
+            f"🦾 <b>ClawBot</b> <i>({result['brain']})</i>\n\n{response}",
             parse_mode="HTML",
         )
     except Exception as exc:
@@ -219,7 +223,8 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     add_message(chat_id, "user", f"/plan {idea}")
 
     try:
-        response, brain = ask_hybrid(prompt, system=CLAWBOT_SYSTEM, history=history, force="complex")
+        result   = brain(prompt, purpose="high_stakes", history=history)
+        response = result["text"]
         add_message(chat_id, "assistant", response)
         await thinking_msg.edit_text(
             f"📋 <b>Plan: {idea[:40]}</b>\n\n{response}", parse_mode="HTML"
@@ -257,7 +262,8 @@ async def cmd_research(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     add_message(chat_id, "user", f"/research {topic}")
 
     try:
-        response, brain = ask_hybrid(prompt, system=CLAWBOT_SYSTEM, history=history, force="complex")
+        result   = brain(prompt, purpose="analysis", history=history)
+        response = result["text"]
         add_message(chat_id, "assistant", response)
         await thinking_msg.edit_text(
             f"🔬 <b>Research: {topic[:40]}</b>\n\n{response}", parse_mode="HTML"
@@ -377,7 +383,8 @@ async def cmd_dca(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
     try:
-        response, brain = ask_hybrid(prompt, system=CLAWBOT_SYSTEM, force="complex")
+        result   = brain(prompt, purpose="high_stakes")
+        response = result["text"]
         await thinking_msg.edit_text(
             f"📈 <b>DCA: {asset}</b>\n\n{price_context}{response}", parse_mode="HTML"
         )
@@ -758,12 +765,41 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+async def _bus_handle_message(payload: dict) -> str:
+    """Event bus handler for 'user.message' — routes through brain()."""
+    result = brain(
+        prompt=payload.get("text", ""),
+        purpose="chat",
+        history=payload.get("history"),
+    )
+    return result["text"]
+
+
+async def _bus_handle_market(payload: dict) -> str:
+    """Event bus handler for 'market.update' — runs market summary."""
+    from core.market import get_market_summary
+    return get_market_summary()
+
+
+async def _bus_handle_signal(payload: dict) -> dict:
+    """Event bus handler for 'signal.generated' — LLM signal enrichment."""
+    from trading.analyzer import enrich_signals
+    signals = payload.get("signals", [])
+    portfolio_usd = payload.get("portfolio_usd", 0.0)
+    return enrich_signals(signals, portfolio_usd)
+
+
 def main() -> None:
     global _app
 
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN is not set in .env")
+
+    # Wire event bus handlers
+    bus_register("user.message",    _bus_handle_message)
+    bus_register("market.update",   _bus_handle_market)
+    bus_register("signal.generated", _bus_handle_signal)
 
     sched.set_send_fn(_scheduler_send)
     sched.start_scheduler()
