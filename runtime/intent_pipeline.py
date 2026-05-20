@@ -145,7 +145,7 @@ class IntentPipeline:
             return False, f"sl_pct {intent.sl_pct} out of (0, {self.MAX_SL_PCT}]"
         if intent.tp_pct <= 0:
             return False, f"tp_pct {intent.tp_pct} must be positive"
-        if not intent.symbol or "-" not in intent.symbol:
+        if not intent.symbol or ("-" not in intent.symbol and "_" not in intent.symbol):
             return False, f"Invalid symbol '{intent.symbol}'"
         return True, ""
 

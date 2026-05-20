@@ -1,5 +1,9 @@
 # Core numerics / research
 numpy>=1.26
+
+# Google Sheets reporting
+gspread>=6.0
+google-auth>=2.0
 scipy>=1.12
 optuna>=3.6
 

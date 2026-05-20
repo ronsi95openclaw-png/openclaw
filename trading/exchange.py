@@ -77,6 +77,75 @@ def fetch_closes(instrument: str, timeframe: str = "4h", count: int = 100) -> li
     return closes
 
 
+def fetch_candles(instrument: str, timeframe: str = "15m", count: int = 100) -> list[dict]:
+    """Full OHLCV candles from Crypto.com, oldest first.
+
+    Returns list of dicts compatible with strategy and regime classifier:
+      {"ts": int, "open": float, "high": float, "low": float,
+       "close": float, "volume": float}
+    """
+    tf  = _TIMEFRAME_MAP.get(timeframe, timeframe)
+    url = f"{_PUBLIC}/get-candlestick"
+    r   = requests.get(url, params={"instrument_name": instrument, "timeframe": tf, "count": count}, timeout=10)
+    r.raise_for_status()
+    payload = r.json()
+
+    if payload.get("code", 0) != 0:
+        raise ValueError(f"Crypto.com candles error: {payload.get('message', payload)}")
+
+    raw = payload.get("result", {}).get("data", [])
+    if not raw:
+        raise ValueError(f"No candle data for {instrument}/{timeframe}")
+
+    # API returns newest-first — reverse to oldest-first
+    raw = list(reversed(raw))
+    candles = [
+        {
+            "ts":     int(c.get("t", 0)),
+            "open":   float(c.get("o", 0) or c.get("open",  0)),
+            "high":   float(c.get("h", 0) or c.get("high",  0)),
+            "low":    float(c.get("l", 0) or c.get("low",   0)),
+            "close":  float(c.get("c", 0) or c.get("close", 0)),
+            "volume": float(c.get("v", 0) or c.get("volume",0)),
+        }
+        for c in raw
+    ]
+    logger.debug("Fetched %d %s candles for %s", len(candles), timeframe, instrument)
+    return candles
+
+
+def fetch_ticker(instrument: str) -> dict:
+    """Latest bid/ask/last for an instrument (full dict, matches BloFin format)."""
+    r = requests.get(f"{_PUBLIC}/get-ticker", params={"instrument_name": instrument}, timeout=8)
+    r.raise_for_status()
+    raw = r.json()["result"]["data"][0]
+    return {
+        "last":       float(raw.get("a", raw.get("last", 0))),
+        "bid":        float(raw.get("b", 0)),
+        "ask":        float(raw.get("a", 0)),
+        "volume_24h": float(raw.get("v", 0)),
+        "change_24h": float(raw.get("c", 0) or 0),
+    }
+
+
+def fetch_funding_rate(instrument: str) -> float:
+    """Funding rate for a perpetual. Returns 0.0 for spot instruments."""
+    # Crypto.com perpetuals are e.g. BTCUSD-PERP
+    if "PERP" not in instrument.upper():
+        return 0.0
+    try:
+        url = f"{_PUBLIC}/get-valuations"
+        r   = requests.get(url, params={"instrument_name": instrument,
+                                        "valuation_type": "funding_rate"}, timeout=8)
+        r.raise_for_status()
+        data = r.json().get("result", {}).get("data", [])
+        if data:
+            return float(data[0].get("v", 0) or 0)
+    except Exception:
+        pass
+    return 0.0
+
+
 def fetch_all_closes(coins: list[str], timeframe: str = "4h", count: int = 100) -> dict:
     """Fetch closes for multiple coins. Skips any that fail."""
     result: dict = {}

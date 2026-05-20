@@ -49,6 +49,8 @@ _SYSTEMS: List[Tuple[str, str, str, str, str]] = [
     ("Control Center Dashboard",     "operational",   "none",     "dashboard.control_center",       "create_app"),
     ("Ruflo MCP Bridge",             "advisory",      "none",     "runtime.ruflo_bridge",           "RufloBridge"),
     ("Ruflo Advisory Agent",         "advisory",      "none",     "runtime.ruflo_agent",            "RufloAdvisor"),
+    ("Crypto.com Bot",               "operational",   "high",     "trading.cryptocom_bot",          "CryptoComBot"),
+    ("Google Sheets Reporter",       "operational",   "low",      "reporting.google_sheets",        "SheetReporter"),
 ]
 
 
