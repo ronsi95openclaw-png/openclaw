@@ -183,6 +183,7 @@ class CryptoComBot:
         from trading.blofin_strategies import (
             ema_cross_strategy, rsi_mean_revert_strategy,
             breakout_strategy, funding_arb_strategy,
+            _rsi,
         )
 
         self.state.last_scan  = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
@@ -190,6 +191,7 @@ class CryptoComBot:
         self._reset_daily_counter_if_needed()
 
         balance = self._refresh_balance()
+        mode    = "DEMO" if self.state.demo_mode else "LIVE"
         fired   = 0
 
         for symbol in SYMBOLS:
@@ -204,6 +206,15 @@ class CryptoComBot:
             if candles is None:
                 continue
 
+            closes = [c["close"] for c in candles]
+            price  = closes[-1]
+
+            # RSI — used in Sheets logging for analysis
+            try:
+                current_rsi = _rsi(closes, 14)
+            except Exception:
+                current_rsi = 50.0
+
             # Regime classification (advisory)
             regime_label = "UNKNOWN"
             if self._orchestrator is not None:
@@ -214,7 +225,8 @@ class CryptoComBot:
                         symbol, c_objs
                     ) or "UNKNOWN"
                     if regime_label != "UNKNOWN" and self._reporter:
-                        self._reporter.log_regime(symbol, regime_label)
+                        self._reporter.log_regime(symbol, regime_label,
+                                                  rsi=current_rsi)
                 except Exception:
                     pass
 
@@ -228,31 +240,27 @@ class CryptoComBot:
             for sig in signals:
                 eff_conf = self.weights.effective_confidence(sig.strategy, sig.confidence)
 
-                # Log every non-hold signal to Sheets (including blocked ones)
-                if sig.action != "hold" and self._reporter:
-                    self._reporter.log_signal(
-                        symbol=symbol, strategy=sig.strategy,
-                        action=sig.action, confidence=sig.confidence,
-                        effective_conf=eff_conf, regime=regime_label,
-                        blocked=False, block_reason="",
-                    )
-
                 if sig.action == "hold":
                     continue
+
+                # Log every non-hold signal (including blocked) to Sheets Signals tab
+                if self._reporter:
+                    self._reporter.log_signal(
+                        symbol=symbol, price=price, rsi=current_rsi,
+                        signal_found=sig.reason[:60], action=sig.action,
+                        strategy=sig.strategy, confidence=sig.confidence,
+                        effective_conf=eff_conf, regime=regime_label,
+                        blocked=eff_conf < CONF_THRESHOLD,
+                        block_reason=f"eff_conf {eff_conf:.2f} < {CONF_THRESHOLD}"
+                                     if eff_conf < CONF_THRESHOLD else "",
+                    )
+
                 if eff_conf < CONF_THRESHOLD:
-                    if self._reporter:
-                        self._reporter.log_signal(
-                            symbol=symbol, strategy=sig.strategy,
-                            action=sig.action, confidence=sig.confidence,
-                            effective_conf=eff_conf, regime=regime_label,
-                            blocked=True, block_reason=f"eff_conf {eff_conf:.2f} < {CONF_THRESHOLD}",
-                        )
                     continue
                 if len(self.state.open_positions) >= MAX_POSITIONS:
                     break
 
-                price = candles[-1]["close"]
-                size  = self._calc_size(balance, price, sig.sl_pct)
+                size = self._calc_size(balance, price, sig.sl_pct)
                 if size <= 0:
                     continue
 
@@ -271,13 +279,13 @@ class CryptoComBot:
                                     symbol, sig.strategy, verdict.reason)
                         if self._reporter:
                             self._reporter.log_signal(
-                                symbol=symbol, strategy=sig.strategy,
-                                action=sig.action, confidence=sig.confidence,
+                                symbol=symbol, price=price, rsi=current_rsi,
+                                signal_found=sig.reason[:60], action="BLOCKED",
+                                strategy=sig.strategy, confidence=sig.confidence,
                                 effective_conf=eff_conf, regime=regime_label,
                                 blocked=True, block_reason=verdict.reason,
                             )
                         continue
-                    # Correctly apply risk-adjusted size
                     adjusted_risk = verdict.adjusted_size_pct
                     if adjusted_risk > 0:
                         risk_usd = balance * (adjusted_risk / 100.0)
@@ -288,7 +296,8 @@ class CryptoComBot:
                     if size <= 0:
                         continue
 
-                self._open_position(sig, price, size, regime_label=regime_label)
+                self._open_position(sig, price, size, regime_label=regime_label,
+                                   rsi=current_rsi, balance=balance, mode=mode)
                 fired += 1
 
         self._check_positions()
@@ -336,7 +345,9 @@ class CryptoComBot:
         return max(0.001, round(risk_usd / sl_usd, 6))
 
     def _open_position(self, sig, price: float, size: float,
-                       regime_label: str = "UNKNOWN") -> None:
+                       regime_label: str = "UNKNOWN",
+                       rsi: float = 50.0, balance: float = 0.0,
+                       mode: str = "DEMO") -> None:
         sl = price * (1 - sig.sl_pct / 100) if sig.action == "long" else price * (1 + sig.sl_pct / 100)
         tp = price * (1 + sig.tp_pct / 100) if sig.action == "long" else price * (1 - sig.tp_pct / 100)
         trade_id = f"CX{sig.strategy[:3]}{int(time.time())}"
@@ -386,9 +397,11 @@ class CryptoComBot:
         if self._reporter:
             self._reporter.log_trade_open(
                 symbol=sig.symbol, strategy=sig.strategy, side=sig.action,
-                entry_price=price, size=size, regime=regime_label,
+                entry_price=price, size=size,
+                balance=balance or self.state.balance,
+                regime=regime_label,
                 confidence=self.weights.effective_confidence(sig.strategy, sig.confidence),
-                leverage=LEVERAGE,
+                rsi=rsi, mode=mode,
             )
 
     def _check_positions(self) -> None:
@@ -434,16 +447,21 @@ class CryptoComBot:
         self._append_log({"event": "close", "id": pos["id"], "outcome": outcome,
                           "pnl": round(pnl, 4), "exit_price": exit_price})
 
-        # Sheets: log close with full context
+        # Sheets: log close — include balance, mode, win rate note
         if self._reporter:
-            win_rate = self.weights.stats[pos["strategy"]].win_rate
+            win_rate    = self.weights.stats[pos["strategy"]].win_rate
+            bal_after   = max(100.0, 1000.0 + self.state.total_pnl) \
+                          if self.state.demo_mode else self.state.balance
             self._reporter.log_trade_close(
                 symbol=pos["symbol"], strategy=pos["strategy"],
                 side=pos["side"], entry_price=pos["entry_price"],
                 exit_price=exit_price, size=pos["size"],
                 pnl=round(pnl, 4), outcome=outcome,
+                balance=round(bal_after, 2),
                 regime=pos.get("regime_label", "UNKNOWN"),
-                notes=f"WR={win_rate:.0%} after this trade",
+                confidence=pos.get("confidence", 0) / 100.0,
+                mode="DEMO" if self.state.demo_mode else "LIVE",
+                notes=f"WR={win_rate:.0%}",
             )
 
         # Capital engine update
