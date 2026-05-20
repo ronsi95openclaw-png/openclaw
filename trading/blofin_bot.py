@@ -52,6 +52,9 @@ class BloFinBot:
         self._thread:  Optional[threading.Thread] = None
         self._load_state()
 
+        # Wire the runtime orchestrator — all signals pass through this
+        self._orchestrator = self._init_orchestrator()
+
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _load_state(self) -> None:
@@ -89,6 +92,17 @@ class BloFinBot:
                 f.write(line)
         except Exception:
             pass
+
+    # ── Orchestrator wiring ───────────────────────────────────────────────────
+
+    def _init_orchestrator(self):
+        """Build RuntimeOrchestrator with all available subsystems."""
+        try:
+            from runtime.orchestrator import build_orchestrator
+            return build_orchestrator(with_governance=False)
+        except Exception as exc:
+            logger.warning("RuntimeOrchestrator unavailable — signals bypass validation: %s", exc)
+            return None
 
     # ── Control ───────────────────────────────────────────────────────────────
 
@@ -162,6 +176,16 @@ class BloFinBot:
                 funding_arb_strategy(symbol, candles, funding),
             ]
 
+            # Classify regime once per symbol (advisory — used for intent validation)
+            regime_label = "UNKNOWN"
+            if self._orchestrator is not None:
+                try:
+                    from research.types import Candle
+                    c_objs = [Candle(**c) for c in candles]
+                    regime_label = self._orchestrator.classify_regime(symbol, c_objs) or "UNKNOWN"
+                except Exception:
+                    pass
+
             for sig in signals:
                 if sig.action == "hold":
                     continue
@@ -175,6 +199,33 @@ class BloFinBot:
                 size  = self._calc_size(balance, price, sig.sl_pct)
                 if size <= 0:
                     continue
+
+                # ── Intent pipeline gate (all signals must pass) ──────────────
+                if self._orchestrator is not None:
+                    verdict = self._orchestrator.process_signal(
+                        symbol=symbol,
+                        strategy=sig.strategy,
+                        action=sig.action,
+                        confidence=eff_conf,
+                        leverage_requested=float(LEVERAGE),
+                        size_pct=self.state.risk_pct,
+                        sl_pct=sig.sl_pct,
+                        tp_pct=sig.tp_pct,
+                        regime_label=regime_label,
+                        source="scan_loop",
+                    )
+                    if not verdict.approved:
+                        logger.info(
+                            "Signal BLOCKED by orchestrator [%s/%s]: %s",
+                            symbol, sig.strategy, verdict.reason,
+                        )
+                        continue
+                    # Use risk-adjusted size from verdict
+                    adjusted_risk = verdict.adjusted_size_pct
+                    size = self._calc_size(balance * (adjusted_risk / 100.0),
+                                           price, sig.sl_pct) if adjusted_risk > 0 else 0.0
+                    if size <= 0:
+                        continue
 
                 self._open_position(sig, price, size)
                 fired += 1
@@ -310,6 +361,13 @@ class BloFinBot:
         logger.info(f"CLOSE {pos['symbol']} [{outcome}]  PnL={pnl:+.4f}")
         self._append_log({"event": "close", "id": pos["id"], "outcome": outcome,
                           "pnl": round(pnl, 4), "exit_price": exit_price})
+
+        # Feed capital preservation engine after each closed trade
+        if self._orchestrator is not None:
+            self._orchestrator.update_capital_state(
+                equity=self.state.balance + self.state.total_pnl,
+                trade_pnl=pnl,
+            )
 
     def _current_price(self, pos: dict) -> float:
         if self.state.demo_mode:
