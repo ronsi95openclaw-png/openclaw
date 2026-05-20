@@ -17,11 +17,12 @@ STRATEGY_REGIME_COMPATIBILITY: Dict[str, Dict[str, List[str]]] = {
     },
     "BREAKOUT": {
         "supported": ["VOL_EXPANSION", "TRENDING_BULL", "TRENDING_BEAR", "NEWS_SPIKE"],
-        "forbidden": ["RANGING", "VOL_COMPRESSION", "PANIC"],
+        "forbidden": ["RANGING", "VOL_COMPRESSION", "PANIC", "LIQUIDITY_DROUGHT"],
     },
     "FUNDING_ARB": {
         "supported": ["FUNDING_RATE_EXTREME", "RANGING", "MEAN_REVERTING"],
-        "forbidden": ["PANIC", "LIQUIDATION_CASCADE", "NEWS_SPIKE"],
+        # Requires liquid markets; thin/illiquid conditions cause adverse slippage
+        "forbidden": ["PANIC", "LIQUIDATION_CASCADE", "NEWS_SPIKE", "LIQUIDITY_DROUGHT"],
     },
 }
 

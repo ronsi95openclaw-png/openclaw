@@ -36,6 +36,7 @@ class BotState:
     balance:        float = 1000.0
     total_pnl:      float = 0.0
     trades_today:   int   = 0
+    trades_date:    str   = ""   # ISO date of last reset, e.g. "2026-05-20"
     last_scan:      str   = ""
     status_msg:     str   = "Idle"
     open_positions: list  = field(default_factory=list)
@@ -66,6 +67,7 @@ class BloFinBot:
             s.demo_mode    = raw.get("demo_mode",    True)
             s.risk_pct     = raw.get("risk_pct",     1.5)
             s.total_pnl    = raw.get("total_pnl",    0.0)
+            s.trades_date  = raw.get("trades_date",  "")
             s.trades_today = raw.get("trades_today", 0)
             s.trade_log    = raw.get("trade_log",    [])
         except Exception as e:
@@ -78,10 +80,17 @@ class BloFinBot:
                 "demo_mode":    self.state.demo_mode,
                 "risk_pct":     self.state.risk_pct,
                 "total_pnl":    self.state.total_pnl,
+                "trades_date":  self.state.trades_date,
                 "trades_today": self.state.trades_today,
                 "trade_log":    self.state.trade_log[-50:],
             }
         _STATE_FILE.write_text(json.dumps(raw, indent=2))
+
+    def _reset_daily_counter_if_needed(self) -> None:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if self.state.trades_date != today:
+            self.state.trades_today = 0
+            self.state.trades_date  = today
 
     def _append_log(self, record: dict) -> None:
         _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -151,6 +160,7 @@ class BloFinBot:
 
         self.state.last_scan  = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
         self.state.status_msg = "Scanning…"
+        self._reset_daily_counter_if_needed()
 
         balance     = self._refresh_balance()
         fired       = 0
@@ -220,10 +230,16 @@ class BloFinBot:
                             symbol, sig.strategy, verdict.reason,
                         )
                         continue
-                    # Use risk-adjusted size from verdict
+                    # Use risk-adjusted size from verdict.
+                    # verdict.adjusted_size_pct is already a % of capital (e.g. 1.5).
+                    # Compute directly: risk_usd = balance * pct/100 ÷ (sl as fraction)
                     adjusted_risk = verdict.adjusted_size_pct
-                    size = self._calc_size(balance * (adjusted_risk / 100.0),
-                                           price, sig.sl_pct) if adjusted_risk > 0 else 0.0
+                    if adjusted_risk > 0:
+                        risk_usd = balance * (adjusted_risk / 100.0)
+                        sl_usd   = price   * (sig.sl_pct / 100.0)
+                        size     = max(0.001, round(risk_usd / sl_usd, 4)) if sl_usd > 0 else 0.0
+                    else:
+                        size = 0.0
                     if size <= 0:
                         continue
 
@@ -398,17 +414,20 @@ class BloFinBot:
     # ── Demo candle generator ─────────────────────────────────────────────────
 
     def _fake_candles(self, symbol: str) -> list[dict]:
-        base = {"BTC-USDT": 105000, "ETH-USDT": 3500, "SOL-USDT": 180}.get(symbol, 1000)
-        price  = base * random.uniform(0.93, 1.07)
+        base  = {"BTC-USDT": 105000, "ETH-USDT": 3500, "SOL-USDT": 180}.get(symbol, 1000)
+        price = base * random.uniform(0.93, 1.07)
+        now   = int(time.time())
         result = []
-        for _ in range(100):
+        for i in range(100):
             chg    = random.gauss(0, 0.009)
             open_p = price
             close  = price * (1 + chg)
             high   = max(open_p, close) * random.uniform(1.000, 1.006)
             low    = min(open_p, close) * random.uniform(0.994, 1.000)
             vol    = random.uniform(50, 3000)
-            result.append({"open": open_p, "high": high, "low": low,
+            # ts required by Candle dataclass for regime classification
+            result.append({"ts": now - (100 - i) * 900,
+                            "open": open_p, "high": high, "low": low,
                             "close": close, "volume": vol})
             price  = close
         return result

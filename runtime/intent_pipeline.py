@@ -59,8 +59,9 @@ class IntentVerdict:
 class IntentPipeline:
     """Validates and gates TradingIntents through all safety checks.
 
-    Instantiate once per runtime session. Stateless per-call except for
-    the seen_intent_ids dedup set (bounded to last 1000 IDs).
+    Instantiate once per runtime session. Thread-safe dedup uses a
+    (symbol, strategy, action) key with per-intent TTL expiry, so the
+    same setup cannot fire twice within its expiry window.
     """
 
     MAX_LEVERAGE   = 5.0
@@ -71,11 +72,11 @@ class IntentPipeline:
     def __init__(self,
                  capital_engine=None,    # CapitalPreservationEngine | None
                  regime_compat=None,     # module with is_strategy_compatible() | None
-                 max_dedup_window: int = 1000):
+                 max_dedup_window: int = 1000):  # kept for API compat, unused
         self._capital  = capital_engine
         self._compat   = regime_compat
-        self._seen_ids: List[str] = []
-        self._max_dedup = max_dedup_window
+        # key=(symbol,strategy,action) → expiry datetime; evicted lazily
+        self._dedup: Dict[Tuple[str, str, str], datetime] = {}
 
     def validate(self, intent: TradingIntent) -> IntentVerdict:
         """Run all gates. Returns IntentVerdict with approved=True/False."""
@@ -92,10 +93,13 @@ class IntentPipeline:
             logger.warning("INTENT REJECTED [stale] %s", intent.intent_id)
             return IntentVerdict(intent.intent_id, False, reason, 0.0, 0.0)
 
-        # Gate 3: Deduplication
-        if intent.intent_id in self._seen_ids:
-            reason = "Duplicate intent_id"
-            logger.warning("INTENT REJECTED [duplicate] %s", intent.intent_id)
+        # Gate 3: Deduplication — same (symbol, strategy, action) within TTL window
+        dedup_key = (intent.symbol, intent.strategy, intent.action)
+        now = datetime.now(timezone.utc)
+        if dedup_key in self._dedup and self._dedup[dedup_key] > now:
+            reason = (f"Duplicate signal {intent.symbol}/{intent.strategy}/{intent.action} "
+                      f"already approved within TTL")
+            logger.info("INTENT REJECTED [duplicate] %s: %s", intent.intent_id, reason)
             return IntentVerdict(intent.intent_id, False, reason, 0.0, 0.0)
 
         # Gate 4: Regime compatibility
@@ -116,7 +120,7 @@ class IntentPipeline:
 
         # All gates passed
         adjusted_size = min(intent.size_pct * risk_scalar, self.MAX_SIZE_PCT)
-        self._record_seen(intent.intent_id)
+        self._record_seen(intent)
 
         logger.info(
             "INTENT APPROVED %s  %s %s  size=%.2f%%  scalar=%.2f",
@@ -159,7 +163,11 @@ class IntentPipeline:
             logger.warning("Regime compat check failed: %s — allowing intent", exc)
         return True, ""
 
-    def _record_seen(self, intent_id: str) -> None:
-        self._seen_ids.append(intent_id)
-        if len(self._seen_ids) > self._max_dedup:
-            self._seen_ids = self._seen_ids[-self._max_dedup:]
+    def _record_seen(self, intent: TradingIntent) -> None:
+        key = (intent.symbol, intent.strategy, intent.action)
+        self._dedup[key] = intent.expires_at
+        # Evict expired entries to keep the dict bounded
+        now = datetime.now(timezone.utc)
+        expired = [k for k, exp in self._dedup.items() if exp <= now]
+        for k in expired:
+            del self._dedup[k]
