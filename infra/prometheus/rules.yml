@@ -1,0 +1,163 @@
+groups:
+  - name: openclaw_bot
+    interval: 30s
+    rules:
+
+      # ── Bot availability ───────────────────────────────────────────────────
+
+      - alert: BotDown
+        expr: up{job="openclaw-bot"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "OpenClaw bot is unreachable"
+          description: >-
+            The openclaw-bot metrics endpoint has not been scraped for 2 minutes.
+            Pod may be crashed or the metrics server is down.
+
+      # ── Drawdown guards ────────────────────────────────────────────────────
+
+      - alert: HighDrawdown
+        expr: openclaw_drawdown_pct > 15
+        for: 1m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "Drawdown exceeds 15%"
+          description: >-
+            Current drawdown is {{ $value | printf "%.1f" }}%.
+            Review open positions and consider reducing exposure.
+
+      - alert: CriticalDrawdown
+        expr: openclaw_drawdown_pct > 25
+        for: 0m
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "CRITICAL: Drawdown exceeds 25%"
+          description: >-
+            Drawdown is {{ $value | printf "%.1f" }}%.
+            Immediate action required — consider kill switch.
+
+      # ── Kill switch ────────────────────────────────────────────────────────
+
+      - alert: KillSwitchActive
+        expr: openclaw_kill_switch_active == 1
+        for: 0m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "Kill switch is active — all trading halted"
+          description: >-
+            The kill switch was engaged. No new orders will be submitted
+            until the switch is cleared by an operator.
+
+      # ── Circuit breaker ────────────────────────────────────────────────────
+
+      - alert: CircuitBreakerOpen
+        expr: openclaw_circuit_breaker_open == 1
+        for: 0m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "Circuit breaker is open"
+          description: >-
+            A circuit breaker has triggered. Trading for the affected
+            symbol/strategy is paused pending cool-down.
+
+      # ── Execution quality ──────────────────────────────────────────────────
+
+      - alert: HighSlippage
+        expr: openclaw_avg_slippage_bps > 20
+        for: 5m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "Average slippage exceeds 20 bps"
+          description: >-
+            Rolling average slippage is {{ $value | printf "%.1f" }} bps.
+            Liquidity may be impaired. Consider pausing high-frequency strategies.
+
+      # ── Data freshness ─────────────────────────────────────────────────────
+
+      - alert: WebSocketStale
+        expr: time() - openclaw_last_candle_ts > 300
+        for: 1m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "No candle received in last 5 minutes"
+          description: >-
+            Last candle timestamp is {{ $value | printf "%.0f" }} seconds ago.
+            WebSocket feed may be disconnected. Check exchange connectivity.
+
+      # ── Queue health ───────────────────────────────────────────────────────
+
+      - alert: QueueBacklog
+        expr: openclaw_queue_depth > 100
+        for: 2m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Signal queue depth exceeds 100"
+          description: >-
+            Queue depth is {{ $value }}.
+            The bot may not be processing signals fast enough.
+
+      # ── Database / persistence errors ──────────────────────────────────────
+
+      - alert: DatabaseError
+        expr: increase(openclaw_db_errors_total[5m]) > 3
+        for: 1m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Repeated database/persistence errors"
+          description: >-
+            {{ $value | printf "%.0f" }} persistence errors in the last 5 minutes.
+            Check data directory permissions and disk space.
+
+  # ── Infrastructure alerts ──────────────────────────────────────────────────
+  - name: openclaw_infra
+    interval: 60s
+    rules:
+
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "CPU usage above 90%"
+          description: "Instance {{ $labels.instance }} CPU is at {{ $value | printf \"%.1f\" }}%"
+
+      - alert: LowDiskSpace
+        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes) * 100 < 10
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Disk space below 10%"
+          description: "{{ $labels.instance }} filesystem {{ $labels.mountpoint }} has {{ $value | printf \"%.1f\" }}% free"
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Memory usage above 90%"
+          description: "Instance {{ $labels.instance }} memory is at {{ $value | printf \"%.1f\" }}%"

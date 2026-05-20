@@ -1,0 +1,133 @@
+# Alertmanager configuration for OpenClaw
+# Routes alerts to Telegram webhook and email.
+# Configure secrets via environment variables in production.
+
+global:
+  # SMTP settings for email alerts
+  smtp_smarthost: '${SMTP_HOST:-smtp.gmail.com}:587'
+  smtp_from: '${ALERT_EMAIL_FROM:-openclaw-alerts@example.com}'
+  smtp_auth_username: '${SMTP_USERNAME}'
+  smtp_auth_password: '${SMTP_PASSWORD}'
+  smtp_require_tls: true
+
+  # Resolve timeout: how long after last alert before marking as resolved
+  resolve_timeout: 5m
+
+# ── Templates ─────────────────────────────────────────────────────────────────
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# ── Route tree ────────────────────────────────────────────────────────────────
+route:
+  # Default receiver for unmatched alerts
+  receiver: 'telegram-default'
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+    # Critical trading alerts → immediate Telegram notification
+    - match:
+        severity: critical
+      receiver: 'telegram-critical'
+      group_wait: 0s
+      repeat_interval: 1h
+      continue: true
+
+    # Critical alerts also go to email
+    - match:
+        severity: critical
+      receiver: 'email-critical'
+      group_wait: 10s
+      repeat_interval: 2h
+
+    # Kill switch and circuit breaker → immediate
+    - match_re:
+        alertname: 'KillSwitchActive|CircuitBreakerOpen'
+      receiver: 'telegram-critical'
+      group_wait: 0s
+      repeat_interval: 30m
+
+    # Infrastructure alerts → ops channel only
+    - match:
+        team: ops
+      receiver: 'telegram-ops'
+      group_wait: 1m
+      repeat_interval: 6h
+
+# ── Receivers ─────────────────────────────────────────────────────────────────
+receivers:
+  - name: 'telegram-default'
+    webhook_configs:
+      - url: 'http://openclaw-bot:9090/webhooks/alerts'
+        send_resolved: true
+        http_config:
+          bearer_token: '${WEBHOOK_SECRET}'
+        title: '[{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Details:* {{ .Annotations.description }}
+          *Labels:* {{ range .Labels.SortedPairs }}{{ .Name }}={{ .Value }} {{ end }}
+          {{ end }}
+
+  - name: 'telegram-critical'
+    webhook_configs:
+      - url: 'http://openclaw-bot:9090/webhooks/alerts/critical'
+        send_resolved: true
+        http_config:
+          bearer_token: '${WEBHOOK_SECRET}'
+        title: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          {{ end }}
+
+  - name: 'telegram-ops'
+    webhook_configs:
+      - url: 'http://openclaw-bot:9090/webhooks/alerts/ops'
+        send_resolved: true
+        http_config:
+          bearer_token: '${WEBHOOK_SECRET}'
+
+  - name: 'email-critical'
+    email_configs:
+      - to: '${ALERT_EMAIL_TO:-ops@example.com}'
+        send_resolved: true
+        headers:
+          Subject: '[OpenClaw CRITICAL] {{ .GroupLabels.alertname }}'
+        html: |
+          <h2>Alert: {{ .GroupLabels.alertname }}</h2>
+          {{ range .Alerts }}
+          <p><strong>Summary:</strong> {{ .Annotations.summary }}</p>
+          <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+          <p><strong>Labels:</strong>
+          {{ range .Labels.SortedPairs }}{{ .Name }}={{ .Value }}&nbsp;{{ end }}</p>
+          {{ end }}
+
+# ── Inhibition rules ──────────────────────────────────────────────────────────
+# Silence lower-severity alerts when a higher-severity alert is already firing
+# for the same alertname.
+inhibit_rules:
+  # Critical inhibits warning for the same alert
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname']
+
+  # BotDown inhibits all other trading alerts (bot is down — no point reporting)
+  - source_match:
+      alertname: 'BotDown'
+    target_match:
+      team: 'trading'
+    equal: []
+
+  # KillSwitch inhibits HighDrawdown and HighSlippage (intended shutdown)
+  - source_match:
+      alertname: 'KillSwitchActive'
+    target_match_re:
+      alertname: 'HighDrawdown|HighSlippage|CircuitBreakerOpen'
+    equal: []
