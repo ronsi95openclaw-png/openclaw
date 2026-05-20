@@ -449,17 +449,22 @@ class CapitalPreservationEngine:
             )
             return
 
-        # Auto-recovery: DEFENSIVE → SAFE when equity recovers above the peak
-        # that triggered the DEFENSIVE transition.
-        if self._state == CapitalState.DEFENSIVE:
+        # Auto-recovery: DEFENSIVE → SAFE is the only auto-recovery path.
+        # Conditions for recovery:
+        #   1. Current state is exactly DEFENSIVE (not CRITICAL/HALT — those require
+        #      manual intervention).
+        #   2. target_state (derived from live thresholds) is SAFE — meaning ALL
+        #      triggering conditions (drawdown AND streak) have cleared.
+        #   3. Equity has recovered to within the daily_dd_limit of the all-time peak.
+        if self._state == CapitalState.DEFENSIVE and target_state == CapitalState.SAFE:
             peak = self._drawdown_tracker.alltime_peak()
-            # Equity must recover to within 1% of all-time peak to auto-recover.
-            if peak > 0 and current_equity >= peak * (1.0 - th["daily_dd_limit"] * 0.5):
+            # Equity must recover to within the daily_dd_limit of all-time peak.
+            if peak > 0 and current_equity >= peak * (1.0 - th["daily_dd_limit"]):
                 self._state = CapitalState.SAFE
                 logger.info(
                     "CapitalState auto-recovery: DEFENSIVE → SAFE "
-                    "(equity=%.2f, peak=%.2f)",
-                    current_equity, peak,
+                    "(equity=%.2f, peak=%.2f, daily_dd=%.4f)",
+                    current_equity, peak, daily_dd,
                 )
 
     @staticmethod

@@ -3,10 +3,16 @@
 Classes:
   RegimeClassifier — classify(candles) → RegimeState
                      classify_series(candles) → List[RegimeState]
+
+Additional regime labels (beyond base 10):
+  FUNDING_RATE_EXTREME  — anomalous funding rate (>0.1% or <-0.05% per 8h)
+  LIQUIDATION_CASCADE   — rapid drop + volume spike + OI unwinding
+  NEWS_SPIKE            — sudden >3σ candle with volume >5× avg, ADX not yet elevated
 """
 from __future__ import annotations
 
-from typing import List
+import statistics
+from typing import List, Optional
 
 from research.types import Candle, RegimeState
 from research.regimes.volatility import (
@@ -275,3 +281,183 @@ class RegimeClassifier:
             bb_width_pct=0.0,
             rsi=50.0,
         )
+
+    # ── New regime detectors ──────────────────────────────────────────────────
+
+    @staticmethod
+    def detect_funding_rate_extreme(funding_rate_8h: float) -> bool:
+        """Return True when funding is anomalously high or deeply negative.
+
+        Thresholds:
+          positive extreme : funding_rate_8h > +0.001  (> +0.1% per 8h)
+          negative extreme : funding_rate_8h < -0.0005 (< -0.05% per 8h)
+        """
+        return funding_rate_8h > 0.001 or funding_rate_8h < -0.0005
+
+    @staticmethod
+    def detect_liquidation_cascade(
+        candles: List[Candle],
+        open_interest: Optional[List[float]] = None,
+        price_drop_sigma: float = 2.0,
+        volume_spike_multiplier: float = 3.0,
+        lookback: int = 20,
+    ) -> bool:
+        """Return True when a liquidation cascade is underway.
+
+        Conditions (all three must hold for the most recent bar):
+        1. Price drop on the last bar exceeds ``price_drop_sigma`` standard
+           deviations of recent bar returns (negative return only).
+        2. Last bar volume exceeds ``volume_spike_multiplier`` × mean volume
+           over the lookback window.
+        3. Open interest is unwinding — last OI value is lower than the mean
+           of the lookback window (if OI data provided).  When OI is not
+           available conditions 1 + 2 are sufficient.
+        """
+        if len(candles) < lookback + 1:
+            return False
+
+        recent = candles[-(lookback + 1):]
+        last = recent[-1]
+
+        # 1. Price return on last bar
+        prev_close = recent[-2].close
+        if prev_close <= 0:
+            return False
+        bar_return = (last.close - prev_close) / prev_close
+        if bar_return >= 0:
+            # No price drop — not a cascade
+            return False
+
+        # Compute σ of returns over lookback
+        returns = [
+            (recent[i].close - recent[i - 1].close) / recent[i - 1].close
+            for i in range(1, len(recent) - 1)  # exclude the last bar
+            if recent[i - 1].close > 0
+        ]
+        if len(returns) < 3:
+            return False
+        try:
+            ret_std = statistics.stdev(returns)
+        except statistics.StatisticsError:
+            return False
+        if ret_std <= 0:
+            return False
+        drop_sigmas = abs(bar_return) / ret_std
+        if drop_sigmas < price_drop_sigma:
+            return False
+
+        # 2. Volume spike
+        avg_vol = statistics.mean(c.volume for c in recent[:-1])
+        if avg_vol <= 0 or last.volume < volume_spike_multiplier * avg_vol:
+            return False
+
+        # 3. OI unwinding (optional)
+        if open_interest is not None and len(open_interest) >= lookback + 1:
+            oi_window = open_interest[-(lookback + 1):]
+            avg_oi = statistics.mean(oi_window[:-1])
+            if oi_window[-1] >= avg_oi:
+                return False
+
+        return True
+
+    @staticmethod
+    def detect_news_spike(
+        candles: List[Candle],
+        sigma_threshold: float = 3.0,
+        volume_multiplier: float = 5.0,
+        adx_ceiling: float = 25.0,
+        lookback: int = 20,
+    ) -> bool:
+        """Return True when the most recent bar looks like a news-spike bar.
+
+        Conditions:
+        1. The bar's price move (|close - open| / open) exceeds
+           ``sigma_threshold`` standard deviations of recent bar moves.
+        2. The bar's volume exceeds ``volume_multiplier`` × mean recent volume.
+        3. ADX is not yet elevated (< ``adx_ceiling``) — first bar of move.
+        """
+        if len(candles) < lookback + 1:
+            return False
+
+        recent = candles[-(lookback + 1):]
+        last = recent[-1]
+
+        # Bar move magnitude
+        if last.open <= 0:
+            return False
+        last_move = abs(last.close - last.open) / last.open
+
+        prior_moves = [
+            abs(c.close - c.open) / c.open
+            for c in recent[:-1]
+            if c.open > 0
+        ]
+        if len(prior_moves) < 3:
+            return False
+
+        try:
+            move_mean = statistics.mean(prior_moves)
+            move_std = statistics.stdev(prior_moves)
+        except statistics.StatisticsError:
+            return False
+        if move_std <= 0:
+            return False
+
+        sigmas = (last_move - move_mean) / move_std
+        if sigmas < sigma_threshold:
+            return False
+
+        # Volume check
+        avg_vol = statistics.mean(c.volume for c in recent[:-1])
+        if avg_vol <= 0 or last.volume < volume_multiplier * avg_vol:
+            return False
+
+        # ADX check — must not yet be elevated
+        try:
+            adx_val = adx(candles, period=14)
+        except Exception:
+            adx_val = 0.0
+        if adx_val >= adx_ceiling:
+            return False
+
+        return True
+
+    def classify_extended(
+        self,
+        candles: List[Candle],
+        funding_rate_8h: float = 0.0,
+        open_interest: Optional[List[float]] = None,
+    ) -> RegimeState:
+        """Full classify with funding, liquidation, and news-spike detection.
+
+        Returns a plain ``RegimeState`` with the label overridden to one of
+        the three new labels when conditions are met.  The new flags are
+        surfaced through the label only so the base dataclass is unchanged;
+        callers that need the boolean flags should use
+        ``ExtendedRegimeState`` via the extended_state module.
+
+        Priority additions (inserted before PANIC in the priority chain):
+          FUNDING_RATE_EXTREME > LIQUIDATION_CASCADE > NEWS_SPIKE
+        then falls through to the standard label logic.
+        """
+        base = self.classify(candles)
+
+        # Funding extreme overrides at highest priority (after panic)
+        if not base.panic_conditions:
+            if self.detect_funding_rate_extreme(funding_rate_8h):
+                base.label = "FUNDING_RATE_EXTREME"
+                return base
+
+        # Liquidation cascade
+        if not base.panic_conditions and base.label not in ("FUNDING_RATE_EXTREME",):
+            if self.detect_liquidation_cascade(candles, open_interest):
+                base.label = "LIQUIDATION_CASCADE"
+                return base
+
+        # News spike
+        if base.label not in ("PANIC", "FUNDING_RATE_EXTREME", "LIQUIDATION_CASCADE"):
+            if self.detect_news_spike(candles):
+                base.label = "NEWS_SPIKE"
+                return base
+
+        return base
