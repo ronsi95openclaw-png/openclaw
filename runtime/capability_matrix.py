@@ -47,6 +47,8 @@ _SYSTEMS: List[Tuple[str, str, str, str, str]] = [
     ("Security Firewall",            "operational",   "medium",   "security.api_firewall",          "APIFirewall"),
     ("Secrets Manager",              "operational",   "medium",   "security.secrets",               "SecretsManager"),
     ("Control Center Dashboard",     "operational",   "none",     "dashboard.control_center",       "create_app"),
+    ("Ruflo MCP Bridge",             "advisory",      "none",     "runtime.ruflo_bridge",           "RufloBridge"),
+    ("Ruflo Advisory Agent",         "advisory",      "none",     "runtime.ruflo_agent",            "RufloAdvisor"),
 ]
 
 

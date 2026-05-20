@@ -227,7 +227,7 @@ class BloFinBot:
                     if size <= 0:
                         continue
 
-                self._open_position(sig, price, size)
+                self._open_position(sig, price, size, regime_label=regime_label)
                 fired += 1
 
         self._check_positions()
@@ -273,7 +273,7 @@ class BloFinBot:
         size     = risk_usd / sl_usd
         return max(0.001, round(size, 4))
 
-    def _open_position(self, sig, price: float, size: float) -> None:
+    def _open_position(self, sig, price: float, size: float, regime_label: str = "UNKNOWN") -> None:
         sl = price * (1 - sig.sl_pct / 100) if sig.action == "long" else price * (1 + sig.sl_pct / 100)
         tp = price * (1 + sig.tp_pct / 100) if sig.action == "long" else price * (1 - sig.tp_pct / 100)
 
@@ -304,6 +304,7 @@ class BloFinBot:
             "demo":            self.state.demo_mode,
             "confidence":      round(self.weights.effective_confidence(sig.strategy, sig.confidence) * 100),
             "reason":          sig.reason,
+            "regime_label":    regime_label,
         }
 
         with self._lock:
@@ -367,6 +368,15 @@ class BloFinBot:
             self._orchestrator.update_capital_state(
                 equity=self.state.balance + self.state.total_pnl,
                 trade_pnl=pnl,
+            )
+            # Record outcome in Ruflo memory for future advisory lookups (advisory only)
+            self._orchestrator.record_trade_outcome(
+                symbol=pos.get("symbol", "UNKNOWN"),
+                strategy=pos.get("strategy", "UNKNOWN"),
+                pnl=round(pnl, 4),
+                regime=pos.get("regime_label", "UNKNOWN"),
+                action=pos.get("side", "UNKNOWN").upper(),
+                win=(outcome == "win"),
             )
 
     def _current_price(self, pos: dict) -> float:

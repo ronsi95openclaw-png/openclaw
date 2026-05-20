@@ -62,10 +62,12 @@ class RuntimeOrchestrator:
                  journal: Optional[ReplayJournal] = None,
                  capital_engine=None,
                  governance_controls=None,
+                 ruflo_advisor=None,
                  intent_ttl_seconds: int = 90):
         self._journal   = journal or ReplayJournal()
         self._capital   = capital_engine
         self._governance = governance_controls
+        self._ruflo     = ruflo_advisor   # ADVISORY ONLY — never execution-authoritative
         self._ttl       = intent_ttl_seconds
         self._lock      = threading.Lock()
         self._active    = False
@@ -80,10 +82,12 @@ class RuntimeOrchestrator:
         )
 
         logger.info(
-            "RuntimeOrchestrator initialized — capital=%s  governance=%s  regime_compat=%s",
+            "RuntimeOrchestrator initialized — capital=%s  governance=%s  "
+            "regime_compat=%s  ruflo=%s",
             "wired" if self._capital else "NOT WIRED",
             "wired" if self._governance else "NOT WIRED",
             "wired" if self._regime_compat else "NOT WIRED",
+            "wired" if self._ruflo and self._ruflo.is_available() else "NOT WIRED",
         )
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -159,6 +163,30 @@ class RuntimeOrchestrator:
         # Record signal in journal
         self._journal.record_signal(tid, symbol, strategy, action, confidence)
 
+        # Ruflo advisory lookup (never blocks execution, purely informational)
+        ruflo_conf_adj = 0.0
+        if self._ruflo and self._ruflo.is_available():
+            try:
+                advice = self._ruflo.pre_trade_advice(
+                    symbol=symbol, strategy=strategy, action=action,
+                    confidence=confidence, regime=regime_label,
+                )
+                ruflo_conf_adj = advice.confidence_adj
+                self._journal.record("ruflo_advice", tid, {
+                    "symbol": symbol, "strategy": strategy, "action": action,
+                    "similar_wins": advice.similar_wins,
+                    "similar_losses": advice.similar_losses,
+                    "win_rate": advice.win_rate,
+                    "avg_pnl": advice.avg_pnl,
+                    "confidence_adj": advice.confidence_adj,
+                    "swarm_summary": advice.swarm_summary[:200] if advice.swarm_summary else "",
+                    "latency_ms": advice.latency_ms,
+                })
+                if advice.swarm_summary:
+                    logger.debug("Ruflo swarm: %s | %s", symbol, advice.swarm_summary[:120])
+            except Exception as exc:
+                logger.debug("Ruflo advisory error (non-fatal): %s", exc)
+
         # Build intent
         now = datetime.now(timezone.utc)
         intent = TradingIntent(
@@ -208,6 +236,26 @@ class RuntimeOrchestrator:
             logger.warning(
                 "Capital state transition: %s → %s  equity=%.2f",
                 old_state, new_state, equity,
+            )
+
+    def record_trade_outcome(
+        self,
+        symbol:   str,
+        strategy: str,
+        pnl:      float,
+        regime:   str = "UNKNOWN",
+        action:   str = "UNKNOWN",
+        win:      bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Persist trade outcome in Ruflo memory for future advisory lookups.
+
+        Call this from blofin_bot._close_position() after each trade settles.
+        """
+        if self._ruflo and self._ruflo.is_available():
+            self._ruflo.record_outcome(
+                symbol=symbol, strategy=strategy, pnl=pnl,
+                regime=regime, action=action, win=win, metadata=metadata,
             )
 
     def classify_regime(self, symbol: str, candles: list) -> Optional[str]:
@@ -273,12 +321,17 @@ class RuntimeOrchestrator:
 
     def _get_wiring_report(self) -> Dict[str, Any]:
         """Reports which subsystems are actually wired vs. missing."""
+        ruflo_status = {}
+        if self._ruflo:
+            ruflo_status = self._ruflo.get_status()
         return {
             "capital_preservation": self._capital is not None,
             "governance":           self._governance is not None,
             "regime_compat":        self._regime_compat is not None,
             "journal":              True,   # always wired
             "intent_pipeline":      True,   # always wired
+            "ruflo_advisory":       bool(self._ruflo and self._ruflo.is_available()),
+            "ruflo_status":         ruflo_status,
         }
 
 
@@ -313,10 +366,20 @@ def build_orchestrator(
         except Exception as exc:
             logger.warning("EmergencyControls unavailable: %s", exc)
 
+    # Ruflo advisory (optional — degrades gracefully when Node.js unavailable)
+    ruflo_advisor = None
+    try:
+        from runtime.ruflo_agent import RufloAdvisor
+        ruflo_advisor = RufloAdvisor()
+        ruflo_advisor.start()   # non-blocking; logs warning if Ruflo not installed
+    except Exception as exc:
+        logger.debug("RufloAdvisor unavailable (non-fatal): %s", exc)
+
     orch = RuntimeOrchestrator(
         journal=journal,
         capital_engine=capital_engine,
         governance_controls=governance,
+        ruflo_advisor=ruflo_advisor,
     )
     orch.start()
     return orch
