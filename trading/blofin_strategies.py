@@ -249,68 +249,75 @@ def breakout_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
 
 
 def bollinger_band_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
-    """Bollinger Band mean-reversion for quiet/ranging markets.
+    """Bollinger Band Squeeze Breakout — enter on expansion, not at band-touch.
 
-    Buys when price closes below lower BB in a low-volatility range,
-    sells when it closes above upper BB. RSI extreme confirms the signal.
-    Bandwidth filter (<4%) ensures we only trade tight consolidations.
+    Previous approach (enter at band-touch) failed because in trending conditions
+    price keeps moving past the SL before the mean-reversion TP is reached.
+
+    New approach (squeeze breakout):
+    1. Detect a squeeze: bandwidth contracted to <1.2% over the last 5 candles.
+    2. Wait for expansion: current bandwidth > previous squeeze minimum × 1.5.
+    3. Enter in the direction of the breakout (not counter-trend).
+    4. Confirm with RSI momentum (long: RSI>50, short: RSI<50).
+
+    This trades WITH momentum when volatility expands from a tight squeeze —
+    the opposite of a mean-reversion entry.
     """
     closes = [c["close"] for c in candles]
-    _hold  = lambda r, sl=1.2, tp=2.4: StrategySignal("BOLLINGER_BAND", symbol, "hold", 0.0, r, sl, tp)
+    _hold  = lambda r, sl=1.2, tp=3.0: StrategySignal("BOLLINGER_BAND", symbol, "hold", 0.0, r, sl, tp)
 
-    if len(closes) < 22:
+    if len(closes) < 25:
         return _hold("Insufficient data")
 
-    upper, mid, lower = _bollinger_bands(closes, 20, 2.0)
-    price     = closes[-1]
-    bandwidth = (upper - lower) / mid * 100 if mid > 0 else 999.0
-
-    # Require some minimum range so TP is realistically achievable
-    if bandwidth > 4.0:
-        return _hold(f"BB too wide ({bandwidth:.2f}%) — volatile, skip", 1.2, 2.4)
-    if bandwidth < 0.30:
-        return _hold(f"BB too tight ({bandwidth:.2f}%) — SL/TP too small", 1.2, 2.4)
-
-    rsi   = _rsi(closes, 14)
+    price = closes[-1]
     atr   = _atr(candles[-20:], 14)
+    sl    = max(1.0, (atr / price * 100) * 1.5) if price > 0 else 1.2
+    tp    = sl * 2.5   # 2.5:1 R:R momentum trade
 
+    upper, mid, lower = _bollinger_bands(closes, 20, 2.0)
+    bandwidth_now     = (upper - lower) / mid * 100 if mid > 0 else 999.0
+
+    # Find the minimum bandwidth over the previous 5 candles (= squeeze level)
+    bw_history = []
+    for i in range(-6, -1):
+        if abs(i) <= len(closes):
+            w = closes[i - 5 : i]
+            if len(w) >= 5:
+                u, m, lo = _bollinger_bands(w, min(20, len(w)), 2.0)
+                bw_history.append((u - lo) / m * 100 if m > 0 else 999.0)
+
+    if not bw_history:
+        return _hold("Insufficient BB history", sl, tp)
+
+    bw_min = min(bw_history)
+
+    # Must have squeezed tight recently
+    if bw_min > 1.5:
+        return _hold(f"No recent squeeze (min BW {bw_min:.2f}%)", sl, tp)
+
+    # Current bandwidth must be expanding from the squeeze
+    if bandwidth_now < bw_min * 1.5:
+        return _hold(f"No expansion yet (now {bandwidth_now:.2f}% vs min {bw_min:.2f}%)", sl, tp)
+
+    rsi    = _rsi(closes, 14)
     # %B: 0=lower band, 1=upper band
-    pct_b = (price - lower) / (upper - lower) if (upper - lower) > 0 else 0.5
+    pct_b  = (price - lower) / (upper - lower) if (upper - lower) > 0 else 0.5
 
-    # Use band geometry for R:R instead of ATR-minimum.
-    # For LONG at lower band: TP = distance to upper band, SL = 1/2 that distance beyond lower.
-    # This gives ~2:1 R:R aligned with how BB ranges actually work.
-    half_bw_pct = (mid - lower) / price * 100 if price > 0 else 1.0
-    atr_pct     = (atr / price * 100) if price > 0 else 0.5
-
-    # EMA slope filter: don't mean-revert into a strong trend.
-    # If EMA20 is steeply negative, don't go long; if steeply positive, don't go short.
-    ema20_arr   = _ema(closes, 20)
-    slope_pct   = (ema20_arr[-1] - ema20_arr[-3]) / ema20_arr[-3] * 100 if len(ema20_arr) >= 3 else 0.0
-
-    if price < lower and rsi < 40:
-        if slope_pct < -0.20:
-            return _hold(f"BB long skipped — EMA falling {slope_pct:.2f}%/candle", 1.2, 2.4)
-        sl     = max(half_bw_pct * 0.8, atr_pct * 1.2, 0.5)
-        tp     = (upper - price) / price * 100   # target upper band
-        tp     = max(tp, sl * 1.5)               # at least 1.5:1
-        conf   = 0.85 if rsi < 30 else 0.72
-        reason = (f"Below lower BB ({lower:.4f}) | %B {pct_b:.2f} | "
-                  f"RSI {rsi:.1f} | BW {bandwidth:.2f}% | slope {slope_pct:.2f}%")
+    # Breakout long: price closed above middle + upper half, RSI bullish
+    if pct_b > 0.65 and rsi > 52:
+        conf   = 0.80 if rsi > 58 else 0.72
+        reason = (f"BB squeeze breakout UP | %B {pct_b:.2f} | BW {bandwidth_now:.2f}% "
+                  f"(was {bw_min:.2f}%) | RSI {rsi:.1f}")
         return StrategySignal("BOLLINGER_BAND", symbol, "long",  conf, reason, sl, tp)
 
-    if price > upper and rsi > 60:
-        if slope_pct > 0.20:
-            return _hold(f"BB short skipped — EMA rising {slope_pct:.2f}%/candle", 1.2, 2.4)
-        sl     = max(half_bw_pct * 0.8, atr_pct * 1.2, 0.5)
-        tp     = (price - lower) / price * 100   # target lower band
-        tp     = max(tp, sl * 1.5)               # at least 1.5:1
-        conf   = 0.85 if rsi > 70 else 0.72
-        reason = (f"Above upper BB ({upper:.4f}) | %B {pct_b:.2f} | "
-                  f"RSI {rsi:.1f} | BW {bandwidth:.2f}% | slope {slope_pct:.2f}%")
+    # Breakout short: price closed below middle + lower half, RSI bearish
+    if pct_b < 0.35 and rsi < 48:
+        conf   = 0.80 if rsi < 42 else 0.72
+        reason = (f"BB squeeze breakout DOWN | %B {pct_b:.2f} | BW {bandwidth_now:.2f}% "
+                  f"(was {bw_min:.2f}%) | RSI {rsi:.1f}")
         return StrategySignal("BOLLINGER_BAND", symbol, "short", conf, reason, sl, tp)
 
-    return _hold(f"%B {pct_b:.2f} | RSI {rsi:.1f} | BW {bandwidth:.2f}%", 1.2, 2.4)
+    return _hold(f"Squeeze detected but no clear direction | %B {pct_b:.2f} | RSI {rsi:.1f}", sl, tp)
 
 
 def trend_follow_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
