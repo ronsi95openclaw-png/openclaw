@@ -573,13 +573,13 @@ def api_system() -> Response:
 
 @app.route("/api/portfolio")
 def api_portfolio() -> Response:
-    data = _read_json("blofin_state.json", {})
+    data = _read_json("sim_state.json", {})
     return _ok(data)
 
 
 @app.route("/api/strategies")
 def api_strategies() -> Response:
-    data = _read_json("blofin_weights.json", {})
+    data = _read_json("strategy_weights.json", {})
     return _ok(data)
 
 

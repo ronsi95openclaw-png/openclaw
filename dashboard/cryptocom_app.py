@@ -1,10 +1,10 @@
-"""BloFin Adaptive Trading Bot Dashboard — http://localhost:8081
+"""Crypto.com Trading Bot Dashboard — http://localhost:8081
 
 Live monitoring for all four strategies, open positions, trade log,
 and self-learning weight progression. Polls /api/status every 4 seconds.
 
 Usage:
-    python dashboard/blofin_app.py
+    python dashboard/cryptocom_app.py
 """
 from __future__ import annotations
 

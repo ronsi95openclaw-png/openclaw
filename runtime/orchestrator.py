@@ -40,7 +40,7 @@ class RuntimeOrchestrator:
     trading bot generates a strategy signal.  Returns an IntentVerdict
     that tells the caller whether to proceed with execution.
 
-    Example usage in blofin_bot._scan():
+    Example usage in cryptocom_bot._scan():
 
         verdict = self._orchestrator.process_signal(
             symbol="BTC-USDT",
@@ -250,7 +250,7 @@ class RuntimeOrchestrator:
     ) -> None:
         """Persist trade outcome in Ruflo memory for future advisory lookups.
 
-        Call this from blofin_bot._close_position() after each trade settles.
+        Call this from cryptocom_bot._close_position() after each trade settles.
         """
         if self._ruflo and self._ruflo.is_available():
             self._ruflo.record_outcome(

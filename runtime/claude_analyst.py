@@ -31,7 +31,7 @@ logger = logging.getLogger("openclaw.runtime.claude_analyst")
 
 _OUTCOMES_DIR  = Path(__file__).parent.parent / "data" / "logs"
 _ANALYSIS_DIR  = Path(__file__).parent.parent / "data" / "optimization"
-_WEIGHTS_FILE  = Path(__file__).parent.parent / "data" / "blofin_weights.json"
+_WEIGHTS_FILE  = Path(__file__).parent.parent / "data" / "strategy_weights.json"
 _MODEL         = "claude-opus-4-7"
 _MAX_TOKENS    = 4096
 

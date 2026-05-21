@@ -18,8 +18,8 @@ CYCLES        = 96      # 96 × 15 min = 24 h
 STARTING_BAL  = 1000.0  # fresh account
 
 # ── Reset bot state for a clean run ──────────────────────────────────────────
-from trading.blofin_bot import BloFinBot, _STATE_FILE
-from trading.blofin_strategies import _WEIGHTS_FILE
+from trading.sim_engine import BloFinBot, _STATE_FILE
+from trading.strategies import _WEIGHTS_FILE
 import json, pathlib
 
 def reset_state():
@@ -37,12 +37,12 @@ def reset_state():
 reset_state()
 
 # Rotate journal so each sim run gets its own file
-from trading.blofin_bot import _JOURNAL_FILE
+from trading.sim_engine import _JOURNAL_FILE
 _JOURNAL_FILE.parent.mkdir(parents=True, exist_ok=True)
 _run_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 _SIM_JOURNAL = _JOURNAL_FILE.parent / f"signal_journal_{_run_ts}.jsonl"
 # Monkey-patch the module-level path so the bot writes to our dated file
-import trading.blofin_bot as _bot_mod
+import trading.sim_engine as _bot_mod
 _bot_mod._JOURNAL_FILE = _SIM_JOURNAL
 
 bot = BloFinBot()

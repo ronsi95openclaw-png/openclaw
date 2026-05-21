@@ -71,7 +71,7 @@ class CryptoComBot:
     """Drop-in replacement for BloFinBot, using Crypto.com exchange."""
 
     def __init__(self) -> None:
-        from trading.blofin_strategies import StrategyWeightEngine
+        from trading.strategies import StrategyWeightEngine
         self.weights      = StrategyWeightEngine()
         self.state        = BotState()
         self._lock        = threading.Lock()
@@ -192,9 +192,9 @@ class CryptoComBot:
             self._stop.wait(self.state.scan_interval)
 
     def _scan(self) -> None:
-        from trading.blofin_strategies import (
+        from trading.strategies import (
             ema_cross_strategy, rsi_mean_revert_strategy,
-            breakout_strategy, funding_arb_strategy,
+            breakout_strategy, trend_follow_strategy,
             _rsi,
         )
 
@@ -246,7 +246,7 @@ class CryptoComBot:
                 ema_cross_strategy(symbol, candles),
                 rsi_mean_revert_strategy(symbol, candles),
                 breakout_strategy(symbol, candles),
-                funding_arb_strategy(symbol, candles, funding),
+                trend_follow_strategy(symbol, candles),
             ]
 
             for sig in signals:

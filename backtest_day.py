@@ -149,9 +149,9 @@ for sym, fname in SYMBOLS_MAP.items():
 
 # ── Patch BloFinBot for backtest ──────────────────────────────────────────────
 
-from trading.blofin_bot import BloFinBot, _STATE_FILE, _OUTCOMES_FILE, LEVERAGE
-from trading.blofin_strategies import _WEIGHTS_FILE, STRATEGIES
-import trading.blofin_bot as _bot_mod
+from trading.sim_engine import BloFinBot, _STATE_FILE, _OUTCOMES_FILE, LEVERAGE
+from trading.strategies import _WEIGHTS_FILE, STRATEGIES
+import trading.sim_engine as _bot_mod
 
 _JOURNAL_TS   = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 _SIM_JOURNAL  = _bot_mod._JOURNAL_FILE.parent / f"signal_journal_bt_{_JOURNAL_TS}.jsonl"
