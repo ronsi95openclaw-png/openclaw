@@ -180,7 +180,13 @@ def breakout_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
 
 def funding_arb_strategy(symbol: str, candles: list[dict],
                           funding_rate: float = 0.0) -> StrategySignal:
-    """Trend-following biased by funding rate reset logic."""
+    """Trend-following gated by a meaningful funding rate signal.
+
+    Only fires when funding is skewed enough to indicate overleverage (fr_bias != 0),
+    the EMA20/EMA50 spread confirms a real trend (≥0.20%), and RSI agrees with
+    the direction. This avoids the neutral-funding false entries that caused
+    repeated losses when used as a plain EMA trend-follow.
+    """
     closes = [c["close"] for c in candles]
     _hold  = lambda r: StrategySignal("FUNDING_ARB", symbol, "hold", 0.0, r, 1.5, 3.0)
 
@@ -193,20 +199,38 @@ def funding_arb_strategy(symbol: str, candles: list[dict],
     fast, slow = ema20[-1], ema50[-1]
 
     fr_pct = funding_rate * 100
-    # Positive funding → longs paying → slight short bias on extreme
+    # Positive funding → longs overloaded → short bias; negative → long bias
     fr_bias = -1 if fr_pct > 0.05 else (1 if fr_pct < -0.05 else 0)
 
-    if fast > slow and price > fast and fr_bias >= 0:
-        conf   = 0.82 if fr_bias > 0 else 0.66
-        reason = f"Uptrend EMA20>{fast:.0f}>EMA50{slow:.0f}, funding {fr_pct:.4f}%"
-        return StrategySignal("FUNDING_ARB", symbol, "long",  conf, reason, 1.5, 3.0)
+    # Require a real funding signal — neutral market has no funding edge
+    if fr_bias == 0:
+        return _hold(f"Funding neutral ({fr_pct:.4f}%) — no edge")
 
-    if fast < slow and price < fast and fr_bias <= 0:
-        conf   = 0.82 if fr_bias < 0 else 0.66
-        reason = f"Downtrend EMA20<{fast:.0f}<EMA50{slow:.0f}, funding {fr_pct:.4f}%"
-        return StrategySignal("FUNDING_ARB", symbol, "short", conf, reason, 1.5, 3.0)
+    # Require minimum EMA spread to confirm genuine trend, not noise
+    ema_gap_pct = abs(fast - slow) / slow * 100
+    if ema_gap_pct < 0.20:
+        return _hold(f"EMA gap too narrow ({ema_gap_pct:.2f}%) — wait for trend")
 
-    return _hold(f"No clear trend. Funding {fr_pct:.4f}%")
+    # RSI momentum filter: longs need RSI > 50, shorts need RSI < 50
+    rsi = _rsi(closes, 14)
+    atr = _atr(candles[-15:], 14)
+    sl  = max(1.0, (atr / price * 100) * 2.0) if price > 0 else 1.5
+    tp  = sl * 2.0
+
+    if fast > slow and price > fast and fr_bias > 0 and rsi > 50:
+        conf   = 0.78 if rsi > 55 else 0.68
+        reason = (f"Uptrend gap {ema_gap_pct:.2f}%, RSI {rsi:.1f}, "
+                  f"funding {fr_pct:.4f}% (long-biased)")
+        return StrategySignal("FUNDING_ARB", symbol, "long",  conf, reason, sl, tp)
+
+    if fast < slow and price < fast and fr_bias < 0 and rsi < 50:
+        conf   = 0.78 if rsi < 45 else 0.68
+        reason = (f"Downtrend gap {ema_gap_pct:.2f}%, RSI {rsi:.1f}, "
+                  f"funding {fr_pct:.4f}% (short-biased)")
+        return StrategySignal("FUNDING_ARB", symbol, "short", conf, reason, sl, tp)
+
+    return _hold(f"Conditions unmet — EMA gap {ema_gap_pct:.2f}%, RSI {rsi:.1f}, "
+                 f"fr_bias {fr_bias}")
 
 
 # ── Self-learning weight engine ───────────────────────────────────────────────
