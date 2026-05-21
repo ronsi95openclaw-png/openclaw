@@ -379,13 +379,21 @@ class BloFinBot:
         sl = price * (1 - sig.sl_pct / 100) if sig.action == "long" else price * (1 + sig.sl_pct / 100)
         tp = price * (1 + sig.tp_pct / 100) if sig.action == "long" else price * (1 - sig.tp_pct / 100)
 
+        # DCA split-entry: open 60% now, hold 40% for a DCA add
+        # DCA triggers at 50% of SL distance from entry (averaging in if price dips)
+        dca_size     = round(size * 0.4, 4)
+        initial_size = round(size * 0.6, 4)
+        dca_dist_pct = sig.sl_pct * 0.5
+        dca_trigger  = (price * (1 - dca_dist_pct / 100) if sig.action == "long"
+                        else price * (1 + dca_dist_pct / 100))
+
         trade_id = f"{sig.strategy[:3]}{int(time.time())}"
 
         if not self.state.demo_mode:
             try:
                 from trading.blofin_exchange import place_order
                 place_order(sig.symbol, "buy" if sig.action == "long" else "sell",
-                            size, sl, tp, LEVERAGE)
+                            initial_size, sl, tp, LEVERAGE)
             except Exception as e:
                 logger.error(f"Order failed [{sig.symbol}]: {e}")
                 self.state.status_msg = f"Order failed: {str(e)[:80]}"
@@ -396,9 +404,9 @@ class BloFinBot:
             "symbol":          sig.symbol,
             "strategy":        sig.strategy,
             "side":            sig.action,
-            "entry_price":     price,
+            "entry_price":     price,       # updated to avg entry after DCA
             "current_price":   price,
-            "size":            size,
+            "size":            initial_size,
             "sl_price":        round(sl, 6),
             "tp_price":        round(tp, 6),
             "unrealized_pnl":  0.0,
@@ -407,6 +415,11 @@ class BloFinBot:
             "confidence":      round(self.weights.effective_confidence(sig.strategy, sig.confidence) * 100),
             "reason":          sig.reason,
             "regime_label":    regime_label,
+            # DCA fields
+            "dca_size":        dca_size,
+            "dca_trigger":     round(dca_trigger, 6),
+            "dca_count":       0,
+            "original_entry":  price,
         }
 
         with self._lock:
@@ -414,10 +427,12 @@ class BloFinBot:
             self.state.trades_today += 1
 
         logger.info(f"OPEN {sig.action.upper()} {sig.symbol} @ {price:.4f}  "
-                    f"SL={sl:.4f}  TP={tp:.4f}  [{sig.strategy}]")
+                    f"SL={sl:.4f}  TP={tp:.4f}  [{sig.strategy}]  "
+                    f"DCA trigger={dca_trigger:.4f} (+{dca_size:.4f})")
         self._append_log({"event": "open", "id": trade_id, "symbol": sig.symbol,
                           "strategy": sig.strategy, "side": sig.action,
-                          "price": price, "size": size, "demo": self.state.demo_mode})
+                          "price": price, "size": initial_size, "dca_size": dca_size,
+                          "demo": self.state.demo_mode})
 
     def _generate_why_narrative(self, pos: dict, outcome: str, exit_price: float, pnl: float) -> str:
         """Build a human-readable explanation of why a trade won or lost."""
@@ -439,10 +454,15 @@ class BloFinBot:
 
         regime_up = regime.upper()
 
+        dca_note = ""
+        if pos.get("dca_count", 0) > 0:
+            orig = pos.get("original_entry", entry)
+            dca_note = f" [DCA avg'd from {orig:.4f} → {entry:.4f}]"
+
         if outcome == "win":
             parts = [
                 f"TP HIT: {strategy} {side.upper()} {pos['symbol']} "
-                f"@ {entry:.4f} → {exit_price:.4f} ({favorable_move_pct:+.2f}%)",
+                f"@ {entry:.4f}{dca_note} → {exit_price:.4f} ({favorable_move_pct:+.2f}%)",
                 f"Regime: {regime} | R:R={rr}:1 | Conf: {conf}%",
                 f"Entry trigger: {reason}",
             ]
@@ -464,7 +484,7 @@ class BloFinBot:
         else:
             parts = [
                 f"SL HIT: {strategy} {side.upper()} {pos['symbol']} "
-                f"@ {entry:.4f} → {exit_price:.4f} ({favorable_move_pct:+.2f}%)",
+                f"@ {entry:.4f}{dca_note} → {exit_price:.4f} ({favorable_move_pct:+.2f}%)",
                 f"Regime: {regime} | R:R was {rr}:1 | Conf: {conf}%",
                 f"Entry trigger: {reason}",
             ]
@@ -515,6 +535,28 @@ class BloFinBot:
         for pos in list(self.state.open_positions):
             price = self._current_price(pos)
             pos["current_price"] = price
+
+            # DCA add-on: if price hit the DCA trigger and we haven't added yet
+            if pos.get("dca_count", 1) == 0 and pos.get("dca_size", 0) > 0:
+                dca_trig = pos["dca_trigger"]
+                hit_dca  = (price <= dca_trig) if pos["side"] == "long" else (price >= dca_trig)
+                if hit_dca:
+                    size1      = pos["size"]
+                    size2      = pos["dca_size"]
+                    entry1     = pos["entry_price"]
+                    avg_entry  = (entry1 * size1 + price * size2) / (size1 + size2)
+                    pos["entry_price"] = round(avg_entry, 6)
+                    pos["size"]        = round(size1 + size2, 4)
+                    pos["dca_count"]   = 1
+                    pos["dca_size"]    = 0.0
+                    self._journal("dca_add",
+                                  symbol=pos["symbol"], strategy=pos["strategy"],
+                                  side=pos["side"], dca_price=round(price, 4),
+                                  original_entry=round(entry1, 4),
+                                  avg_entry=round(avg_entry, 6),
+                                  new_size=pos["size"])
+                    logger.info("DCA ADD %s %s dca@%.4f  avg_entry=%.4f  size=%.4f",
+                                pos["side"].upper(), pos["symbol"], price, avg_entry, pos["size"])
 
             mult      = 1 if pos["side"] == "long" else -1
             pnl_pct   = mult * (price - pos["entry_price"]) / pos["entry_price"]
