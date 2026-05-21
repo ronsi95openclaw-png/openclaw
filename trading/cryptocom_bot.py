@@ -380,15 +380,24 @@ class CryptoComBot:
         tp = price * (1 + sig.tp_pct / 100) if sig.action == "long" else price * (1 - sig.tp_pct / 100)
         trade_id = f"CX{sig.strategy[:3]}{int(time.time())}"
 
+        # DCA split-entry: open 60% now, reserve 40% for a DCA add
+        # DCA triggers at 50% of SL distance from entry
+        dca_size     = round(size * 0.4, 6)
+        initial_size = round(size * 0.6, 6)
+        dca_dist_pct = sig.sl_pct * 0.5
+        dca_trigger  = (price * (1 - dca_dist_pct / 100) if sig.action == "long"
+                        else price * (1 + dca_dist_pct / 100))
+
         if not self.state.demo_mode:
             try:
                 from trading.executor import open_position
+                notional_60pct = balance * (self.state.risk_pct / 100.0) * 0.6
                 open_position(
                     symbol=sig.symbol,
-                    side=sig.action.upper(),   # "LONG" or "SHORT"
+                    side=sig.action.upper(),
                     sl_price=round(sl, 6),
                     tp_price=round(tp, 6),
-                    notional_usd=balance * (self.state.risk_pct / 100.0),
+                    notional_usd=notional_60pct,
                     leverage=LEVERAGE,
                 )
             except Exception as e:
@@ -403,7 +412,7 @@ class CryptoComBot:
             "side":           sig.action,
             "entry_price":    price,
             "current_price":  price,
-            "size":           size,
+            "size":           initial_size,
             "sl_price":       round(sl, 6),
             "tp_price":       round(tp, 6),
             "unrealized_pnl": 0.0,
@@ -413,22 +422,28 @@ class CryptoComBot:
                                   sig.strategy, sig.confidence) * 100),
             "reason":         sig.reason,
             "regime_label":   regime_label,
+            # DCA fields
+            "dca_size":       dca_size,
+            "dca_trigger":    round(dca_trigger, 6),
+            "dca_count":      0,
+            "original_entry": price,
         }
 
         with self._lock:
             self.state.open_positions.append(pos)
             self.state.trades_today += 1
 
-        logger.info("OPEN %s %s @ %.4f  SL=%.4f  TP=%.4f  [%s]",
-                    sig.action.upper(), sig.symbol, price, sl, tp, sig.strategy)
+        logger.info("OPEN %s %s @ %.4f  SL=%.4f  TP=%.4f  [%s]  DCA@%.4f",
+                    sig.action.upper(), sig.symbol, price, sl, tp, sig.strategy, dca_trigger)
         self._append_log({"event": "open", "id": trade_id, "symbol": sig.symbol,
                           "strategy": sig.strategy, "side": sig.action,
-                          "price": price, "size": size, "regime": regime_label})
+                          "price": price, "size": initial_size,
+                          "dca_size": dca_size, "regime": regime_label})
 
         if self._reporter:
             self._reporter.log_trade_open(
                 symbol=sig.symbol, strategy=sig.strategy, side=sig.action,
-                entry_price=price, size=size,
+                entry_price=price, size=initial_size,
                 balance=balance or self.state.balance,
                 regime=regime_label,
                 confidence=self.weights.effective_confidence(sig.strategy, sig.confidence),
@@ -440,6 +455,51 @@ class CryptoComBot:
         for pos in list(self.state.open_positions):
             price = self._current_price(pos)
             pos["current_price"] = price
+
+            # DCA add-on: if price hit the DCA trigger and we haven't added yet
+            if pos.get("dca_count", 1) == 0 and pos.get("dca_size", 0) > 0:
+                dca_trig = pos["dca_trigger"]
+                hit_dca  = (price <= dca_trig) if pos["side"] == "long" else (price >= dca_trig)
+                if hit_dca:
+                    size1     = pos["size"]
+                    size2     = pos["dca_size"]
+                    entry1    = pos["entry_price"]
+                    avg_entry = (entry1 * size1 + price * size2) / (size1 + size2)
+
+                    if not self.state.demo_mode:
+                        try:
+                            # Cancel old SL/TP (sized for initial 60%), place fresh ones
+                            # for the full combined size at the same absolute price levels
+                            from trading.exchange import (
+                                cancel_all_orders, place_perp_order, to_perp_instrument,
+                            )
+                            instr = to_perp_instrument(pos["symbol"])
+                            cancel_all_orders(instr)
+                            exit_side = "SELL" if pos["side"] == "long" else "BUY"
+                            total_qty = round(size1 + size2, 6)
+                            # Add DCA market order
+                            place_perp_order(instr,
+                                             "BUY" if pos["side"] == "long" else "SELL",
+                                             "MARKET", size2)
+                            # Re-place SL/TP for full size
+                            place_perp_order(instr, exit_side, "STOP_LOSS",  total_qty,
+                                             ref_price=pos["sl_price"])
+                            place_perp_order(instr, exit_side, "TAKE_PROFIT", total_qty,
+                                             ref_price=pos["tp_price"])
+                        except Exception as exc:
+                            logger.warning("DCA live order failed [%s]: %s", pos["symbol"], exc)
+
+                    pos["entry_price"] = round(avg_entry, 6)
+                    pos["size"]        = round(size1 + size2, 6)
+                    pos["dca_count"]   = 1
+                    pos["dca_size"]    = 0.0
+                    logger.info("DCA ADD %s %s dca@%.4f  avg_entry=%.4f  size=%.6f",
+                                pos["side"].upper(), pos["symbol"],
+                                price, avg_entry, pos["size"])
+                    self._append_log({"event": "dca_add", "id": pos["id"],
+                                      "symbol": pos["symbol"], "dca_price": round(price, 4),
+                                      "avg_entry": round(avg_entry, 6), "new_size": pos["size"]})
+
             mult    = 1 if pos["side"] == "long" else -1
             pnl_pct = mult * (price - pos["entry_price"]) / pos["entry_price"]
             pos["unrealized_pnl"] = round(pnl_pct * pos["entry_price"] * pos["size"] * LEVERAGE, 4)
