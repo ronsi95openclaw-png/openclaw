@@ -44,11 +44,11 @@ logger = logging.getLogger("openclaw.trading.cryptocom_bot")
 _STATE_FILE = Path(__file__).parent.parent / "data" / "cryptocom_state.json"
 _LOG_FILE   = Path(__file__).parent.parent / "data" / "logs" / "cryptocom_trades.log"
 
-# Crypto.com spot symbols
+# Symbols (internal names — mapped to BTCUSD-PERP etc. at execution time)
 SYMBOLS        = ["BTC_USDT", "ETH_USDT", "SOL_USDT"]
 MAX_POSITIONS  = 3
 CONF_THRESHOLD = 0.60
-LEVERAGE       = 1   # spot trading = no leverage (adjust for derivatives)
+LEVERAGE       = 3   # perpetual futures leverage
 
 
 @dataclass
@@ -345,11 +345,20 @@ class CryptoComBot:
         if self.state.demo_mode:
             return max(100.0, 1000.0 + self.state.total_pnl)
         try:
-            from trading.exchange import get_account_balance, get_portfolio_value_usd
+            from trading.exchange import get_derivatives_balance
+            bal = get_derivatives_balance()
+            if bal:
+                self.state.balance = bal.get("available", self.state.balance)
+                return self.state.balance
+        except Exception:
+            pass
+        try:
+            from trading.exchange import get_account_balance
             balances = get_account_balance()
             usdt     = balances.get("USDT", {}).get("available", 0.0)
-            self.state.balance = usdt
-            return usdt
+            if usdt > 0:
+                self.state.balance = usdt
+                return usdt
         except Exception as e:
             logger.warning("Balance fetch failed: %s", e)
         return self.state.balance
@@ -373,11 +382,14 @@ class CryptoComBot:
 
         if not self.state.demo_mode:
             try:
-                from trading.executor import _place_order
-                _place_order(
-                    sig.symbol,
-                    "BUY" if sig.action == "long" else "SELL",
-                    price * size,   # notional USD
+                from trading.executor import open_position
+                open_position(
+                    symbol=sig.symbol,
+                    side=sig.action.upper(),   # "LONG" or "SHORT"
+                    sl_price=round(sl, 6),
+                    tp_price=round(tp, 6),
+                    notional_usd=balance * (self.state.risk_pct / 100.0),
+                    leverage=LEVERAGE,
                 )
             except Exception as e:
                 logger.error("Order failed [%s]: %s", sig.symbol, e)
@@ -460,6 +472,14 @@ class CryptoComBot:
             }
             self.state.trade_log.insert(0, record)
             self.state.trade_log = self.state.trade_log[:50]
+
+        if not self.state.demo_mode:
+            try:
+                from trading.executor import close_position
+                close_position(pos["symbol"], pos["side"].upper(), pos["size"])
+            except Exception as e:
+                # Position may already be closed by exchange SL/TP — non-fatal
+                logger.warning("Exchange close order skipped (may already be closed): %s", e)
 
         self.weights.record_result(pos["strategy"], outcome == "win")
         logger.info("CLOSE %s [%s]  PnL=%+.4f", pos["symbol"], outcome, pnl)

@@ -1,153 +1,146 @@
-"""
-ClawBot — Trade Executor
-Executes BUY/SELL orders on Crypto.com via private API.
-Only fires on HIGH confidence RSI+MACD signals.
-Logs every action to data/logs/trades.log.
+"""ClawBot — Perpetual Futures Executor
+
+Executes LONG/SHORT positions on Crypto.com perpetual futures (BTCUSD-PERP etc.)
+with native SL/TP orders placed on the exchange at open time.
+
+Flow (live):
+  open_position()  →  set_leverage  →  market entry  →  STOP_LOSS order
+                                                       →  TAKE_PROFIT order
+  close_position() →  cancel_all_orders  →  market close
+
+Demo mode is handled entirely in cryptocom_bot.py; this module is live-only.
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
-
-logger = logging.getLogger("clawbot.trading.executor")
+logger = logging.getLogger("openclaw.trading.executor")
 
 _LOG_DIR  = Path(__file__).parent.parent / "data" / "logs"
 _LOG_FILE = _LOG_DIR / "trades.log"
-_PRIVATE  = "https://api.crypto.com/exchange/v1/private"
-
-# Minimum order sizes (USDT) per coin — Crypto.com minimums
-_MIN_ORDER_USD = {
-    "BTC_USDT": 10.0,
-    "ETH_USDT": 10.0,
-    "SOL_USDT": 5.0,
-    "XRP_USDT": 5.0,
-}
 
 
 def _log_trade(entry: dict) -> None:
-    """Append trade result to trades.log."""
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    ts   = datetime.now(timezone.utc).isoformat()
-    line = f"TRADE_DECISION | {ts} | {json.dumps(entry)}\n"
+    ts = datetime.now(timezone.utc).isoformat()
     with open(_LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(line)
-    logger.info(f"Trade logged: {entry}")
+        f.write(f"TRADE | {ts} | {json.dumps(entry)}\n")
+    logger.info("Trade logged: %s", entry)
 
+
+def open_position(
+    symbol: str,
+    side: str,           # "LONG" or "SHORT"
+    sl_price: float,
+    tp_price: float,
+    notional_usd: float, # USDT amount (pre-leverage)
+    leverage: int = 3,
+) -> dict:
+    """Open a perpetual futures position with native SL/TP orders.
+
+    Returns dict with entry order ID, SL/TP order IDs, and quantity.
+    """
+    from trading.exchange import (
+        set_leverage, place_perp_order, fetch_ticker_price,
+        to_perp_instrument, _MIN_QTY_PERP,
+    )
+
+    instrument = to_perp_instrument(symbol)
+
+    set_leverage(instrument, leverage)
+
+    try:
+        price = fetch_ticker_price(instrument)
+    except Exception as exc:
+        raise RuntimeError(f"Price fetch failed for {instrument}: {exc}") from exc
+
+    # Quantity in base currency: notional × leverage ÷ price
+    # e.g. $300 USDT × 3 leverage @ $77,000 BTC ≈ 0.0117 BTC
+    qty = round((notional_usd * leverage) / price, 8)
+    qty = max(qty, _MIN_QTY_PERP.get(instrument, 0.001))
+
+    entry_side = "BUY"  if side == "LONG"  else "SELL"
+    exit_side  = "SELL" if side == "LONG"  else "BUY"
+
+    entry_result = place_perp_order(instrument, entry_side, "MARKET", qty)
+    entry_order_id = entry_result.get("order_id", "")
+
+    sl_order_id = tp_order_id = ""
+
+    try:
+        sl = place_perp_order(instrument, exit_side, "STOP_LOSS", qty,
+                              ref_price=sl_price)
+        sl_order_id = sl.get("order_id", "")
+    except Exception as exc:
+        logger.warning("SL order placement failed [%s]: %s", symbol, exc)
+
+    try:
+        tp = place_perp_order(instrument, exit_side, "TAKE_PROFIT", qty,
+                              ref_price=tp_price)
+        tp_order_id = tp.get("order_id", "")
+    except Exception as exc:
+        logger.warning("TP order placement failed [%s]: %s", symbol, exc)
+
+    result = {
+        "symbol":          symbol,
+        "instrument":      instrument,
+        "side":            side,
+        "qty":             qty,
+        "entry_order_id":  entry_order_id,
+        "sl_order_id":     sl_order_id,
+        "tp_order_id":     tp_order_id,
+        "sl_price":        sl_price,
+        "tp_price":        tp_price,
+        "leverage":        leverage,
+        "status":          "opened",
+    }
+    _log_trade({"event": "open", **result})
+    return result
+
+
+def close_position(symbol: str, side: str, quantity: float) -> dict:
+    """Close a perpetual position (cancels pending SL/TP orders first).
+
+    side: "LONG" or "SHORT" — the existing position direction.
+    """
+    from trading.exchange import (
+        place_perp_order, cancel_all_orders, to_perp_instrument,
+    )
+
+    instrument = to_perp_instrument(symbol)
+    cancel_all_orders(instrument)
+
+    close_side = "SELL" if side == "LONG" else "BUY"
+    result = place_perp_order(instrument, close_side, "MARKET", quantity)
+    order_id = result.get("order_id", "")
+
+    _log_trade({"event": "close", "symbol": symbol, "instrument": instrument,
+                "side": side, "qty": quantity, "order_id": order_id})
+    return {"status": "closed", "order_id": order_id}
+
+
+# ── Legacy spot shim (backwards compatibility) ────────────────────────────────
 
 def _place_order(instrument: str, side: str, notional_usd: float) -> dict:
-    """
-    Place a market order on Crypto.com.
-
-    Args:
-        instrument:   e.g. "BTC_USDT"
-        side:         "BUY" or "SELL"
-        notional_usd: USD value to trade (for BUY) or full position (for SELL)
-
-    Returns:
-        API response dict with order details.
-    """
+    """Legacy spot market order — kept for any callers not yet migrated."""
+    import requests
     from trading.exchange import _get_keys, _sign
 
     api_key, secret = _get_keys()
-
-    # Market orders use notional (USDT amount) for BUY, quantity for SELL
     params = {
         "instrument_name": instrument,
         "side":            side,
         "type":            "MARKET",
         "notional":        str(round(notional_usd, 2)),
     }
-
     body = _sign("private/create-order", params, api_key, secret)
-    r    = requests.post(f"{_PRIVATE}/create-order", json=body, timeout=15)
+    r    = requests.post("https://api.crypto.com/exchange/v1/private/create-order",
+                         json=body, timeout=15)
     r.raise_for_status()
     payload = r.json()
-
     if payload.get("code", 0) != 0:
         raise ValueError(f"Order rejected: {payload.get('message', payload)}")
-
     return payload.get("result", {})
-
-
-def execute_signal(signal, portfolio_usd: float) -> dict:
-    """
-    Execute a BUY or SELL signal from RSIMACDStrategy.
-
-    Args:
-        signal:        Signal object with .coin, .action, .confidence
-        portfolio_usd: Total portfolio value in USD (for position sizing)
-
-    Returns:
-        Result dict with status, order_id, amount, etc.
-    """
-    from trading.strategy import calculate_position_size
-
-    coin   = signal.coin
-    action = signal.action
-
-    # Only execute HIGH confidence — protect capital
-    if signal.confidence != "HIGH":
-        msg = f"Skipped {action} {coin} — confidence {signal.confidence} (need HIGH)"
-        logger.info(msg)
-        _log_trade({"action": "SKIP", "coin": coin, "reason": msg, "confidence": signal.confidence})
-        return {"status": "skipped", "reason": msg}
-
-    # Position sizing: 1.5% of portfolio per trade
-    from trading.exchange import fetch_ticker_price
-    try:
-        price = fetch_ticker_price(coin)
-    except Exception as e:
-        msg = f"Price fetch failed for {coin}: {e}"
-        _log_trade({"action": "ERROR", "coin": coin, "reason": msg})
-        return {"status": "error", "reason": msg}
-
-    sizing     = calculate_position_size(portfolio_usd, price, risk_pct=1.5)
-    usd_amount = sizing["usd_amount"]
-    min_order  = _MIN_ORDER_USD.get(coin, 5.0)
-
-    if usd_amount < min_order:
-        msg = f"Order too small: ${usd_amount} < min ${min_order} for {coin}"
-        _log_trade({"action": "SKIP", "coin": coin, "reason": msg})
-        return {"status": "skipped", "reason": msg}
-
-    try:
-        result = _place_order(coin, action, usd_amount)
-        entry  = {
-            "action":     action,
-            "coin":       coin,
-            "usd_amount": usd_amount,
-            "price":      price,
-            "rsi":        round(signal.rsi, 2),
-            "confidence": signal.confidence,
-            "order_id":   result.get("order_id", "unknown"),
-            "status":     "executed",
-        }
-        _log_trade(entry)
-        logger.info(f"Order executed: {action} {coin} ${usd_amount}")
-        return entry
-
-    except Exception as exc:
-        entry = {
-            "action":  action,
-            "coin":    coin,
-            "status":  "error",
-            "reason":  str(exc),
-        }
-        _log_trade(entry)
-        logger.error(f"Order failed: {exc}")
-        return entry
-
-
-def execute_signals(signals: list, portfolio_usd: float) -> list[dict]:
-    """Execute a list of signals. Returns results for all attempted."""
-    results = []
-    for signal in signals:
-        if signal.action in ("BUY", "SELL"):
-            result = execute_signal(signal, portfolio_usd)
-            results.append(result)
-    return results
