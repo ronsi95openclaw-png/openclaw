@@ -22,10 +22,10 @@ _STATE_FILE   = Path(__file__).parent.parent / "data" / "blofin_state.json"
 _LOG_FILE     = Path(__file__).parent.parent / "data" / "logs" / "blofin_trades.log"
 _JOURNAL_FILE = Path(__file__).parent.parent / "data" / "logs" / "signal_journal.jsonl"
 
-SYMBOLS       = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
-LEVERAGE      = 3
-MAX_POSITIONS = 3     # across all symbols
-CONF_THRESHOLD = 0.60  # minimum effective confidence to trade
+SYMBOLS        = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+LEVERAGE       = 3
+MAX_POSITIONS  = 4      # allow up to 4 concurrent positions (5 strategies × 3 symbols)
+CONF_THRESHOLD = 0.60   # minimum effective confidence to trade
 
 
 @dataclass
@@ -119,7 +119,18 @@ class BloFinBot:
         """Build RuntimeOrchestrator with all available subsystems."""
         try:
             from runtime.orchestrator import build_orchestrator
-            return build_orchestrator(with_governance=False)
+            # Aggressive-growth thresholds for the $100→$20k compounding account.
+            # Standard defaults (5/10/20%) are designed for institutional risk
+            # budgets — too tight for a small account absorbing early drawdowns
+            # while compounding toward a 200× target.
+            capital_cfg = {"thresholds": {
+                "daily_dd_limit":        0.12,  # 12% daily → DEFENSIVE
+                "weekly_dd_limit":       0.25,  # 25% weekly → CRITICAL
+                "monthly_dd_limit":      0.40,  # 40% monthly → EMERGENCY_HALT
+                "loss_streak_defensive": 6,     # 6 consecutive losses → DEFENSIVE
+                "loss_streak_critical":  12,    # 12 consecutive losses → CRITICAL
+            }} if self.state.demo_mode else {}
+            return build_orchestrator(with_governance=False, capital_config=capital_cfg)
         except Exception as exc:
             logger.warning("RuntimeOrchestrator unavailable — signals bypass validation: %s", exc)
             return None
@@ -166,7 +177,8 @@ class BloFinBot:
     def _scan(self) -> None:
         from trading.blofin_strategies import (
             ema_cross_strategy, rsi_mean_revert_strategy,
-            breakout_strategy,  funding_arb_strategy,
+            breakout_strategy,  bollinger_band_strategy,
+            trend_follow_strategy,
         )
 
         self.state.last_scan  = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
@@ -194,7 +206,8 @@ class BloFinBot:
                 ema_cross_strategy(symbol, candles),
                 rsi_mean_revert_strategy(symbol, candles),
                 breakout_strategy(symbol, candles),
-                funding_arb_strategy(symbol, candles, funding),
+                bollinger_band_strategy(symbol, candles),
+                trend_follow_strategy(symbol, candles),
             ]
 
             # Classify regime once per symbol (advisory — used for intent validation)
@@ -209,17 +222,22 @@ class BloFinBot:
 
             for sig in signals:
                 price    = candles[-1]["close"]
-                eff_conf = self.weights.effective_confidence(sig.strategy, sig.confidence)
+                raw_conf = sig.confidence
+                # Weight scales position SIZE, not confidence threshold.
+                # A struggling strategy (weight 0.2) still trades — just 20% size.
+                # A winning strategy (weight 2.0) trades double size.
+                from trading.blofin_strategies import StrategyStats as _SS
+                weight = self.weights.stats.get(sig.strategy, _SS()).weight
 
                 if sig.action == "hold":
                     self._journal("hold", symbol=symbol, strategy=sig.strategy,
                                   reason=sig.reason, regime=regime_label)
                     continue
 
-                if eff_conf < CONF_THRESHOLD:
+                if raw_conf < CONF_THRESHOLD:
                     self._journal("low_conf", symbol=symbol, strategy=sig.strategy,
-                                  action=sig.action, raw_conf=round(sig.confidence, 3),
-                                  eff_conf=round(eff_conf, 3), threshold=CONF_THRESHOLD,
+                                  action=sig.action, raw_conf=round(raw_conf, 3),
+                                  weight=round(weight, 3), threshold=CONF_THRESHOLD,
                                   reason=sig.reason, regime=regime_label)
                     continue
 
@@ -228,7 +246,9 @@ class BloFinBot:
                                   action=sig.action, open=MAX_POSITIONS)
                     break
 
-                size  = self._calc_size(balance, price, sig.sl_pct)
+                # Base size scaled by strategy weight (0.2×–2.0× of risk_pct)
+                size = self._calc_size(balance, price, sig.sl_pct)
+                size = max(0.001, round(size * weight, 4))
                 if size <= 0:
                     continue
 
@@ -238,7 +258,7 @@ class BloFinBot:
                         symbol=symbol,
                         strategy=sig.strategy,
                         action=sig.action,
-                        confidence=eff_conf,
+                        confidence=raw_conf,
                         leverage_requested=float(LEVERAGE),
                         size_pct=self.state.risk_pct,
                         sl_pct=sig.sl_pct,
@@ -252,18 +272,15 @@ class BloFinBot:
                             symbol, sig.strategy, verdict.reason,
                         )
                         self._journal("blocked", symbol=symbol, strategy=sig.strategy,
-                                      action=sig.action, eff_conf=round(eff_conf, 3),
+                                      action=sig.action, raw_conf=round(raw_conf, 3),
                                       regime=regime_label, reason=verdict.reason,
                                       signal_reason=sig.reason)
                         continue
-                    # Use risk-adjusted size from verdict.
-                    # verdict.adjusted_size_pct is already a % of capital (e.g. 1.5).
-                    # Compute directly: risk_usd = balance * pct/100 ÷ (sl as fraction)
                     adjusted_risk = verdict.adjusted_size_pct
                     if adjusted_risk > 0:
                         risk_usd = balance * (adjusted_risk / 100.0)
                         sl_usd   = price   * (sig.sl_pct / 100.0)
-                        size     = max(0.001, round(risk_usd / sl_usd, 4)) if sl_usd > 0 else 0.0
+                        size     = max(0.001, round((risk_usd / sl_usd) * weight, 4)) if sl_usd > 0 else 0.0
                     else:
                         size = 0.0
                     if size <= 0:
@@ -271,8 +288,8 @@ class BloFinBot:
 
                 self._journal("open", symbol=symbol, strategy=sig.strategy,
                               action=sig.action, price=round(price, 4),
-                              eff_conf=round(eff_conf, 3), size=size,
-                              sl_pct=sig.sl_pct, tp_pct=sig.tp_pct,
+                              raw_conf=round(raw_conf, 3), weight=round(weight, 3),
+                              size=size, sl_pct=sig.sl_pct, tp_pct=sig.tp_pct,
                               regime=regime_label, signal_reason=sig.reason)
                 self._open_position(sig, price, size, regime_label=regime_label)
                 fired += 1
@@ -311,11 +328,24 @@ class BloFinBot:
 
     # ── Position management ───────────────────────────────────────────────────
 
+    def _graduated_risk_pct(self, balance: float) -> float:
+        """Scale risk% with account size so compounding accelerates as equity grows."""
+        base = self.state.risk_pct   # user-configured floor (default 1.5)
+        if balance < 300:
+            return base              # conservative while small
+        elif balance < 1_000:
+            return min(3.0, base + 0.5)   # 2.0% at mid-tier
+        elif balance < 5_000:
+            return min(3.0, base + 1.0)   # 2.5% once past $1k
+        else:
+            return 3.0               # cap at 3% for large accounts
+
     def _calc_size(self, balance: float, price: float, sl_pct: float) -> float:
-        """Kelly-inspired sizing: risk_usd / (price × sl_pct)."""
+        """Risk-based sizing: graduated risk% / SL distance."""
         if price <= 0 or sl_pct <= 0:
             return 0.0
-        risk_usd = balance * (self.state.risk_pct / 100.0)
+        risk_pct = self._graduated_risk_pct(balance)
+        risk_usd = balance * (risk_pct / 100.0)
         sl_usd   = price   * (sl_pct / 100.0)
         size     = risk_usd / sl_usd
         return max(0.001, round(size, 4))

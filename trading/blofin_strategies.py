@@ -1,18 +1,20 @@
-"""BloFin multi-strategy engine with self-learning weight adjustment.
+"""BloFin multi-strategy engine — v2 full overhaul.
 
-Four strategies run in parallel on each scan:
-  EMA_CROSS      — EMA 9/21 crossover on 15m candles
-  RSI_MEAN_REVERT — fade RSI extremes (<28 / >72)
-  BREAKOUT       — 20-period high/low with volume confirmation
-  FUNDING_ARB    — trend-following biased by funding rate
+Five strategies, each targeting a distinct market condition:
 
-After each strategy closes ≥3 trades the engine adjusts its weight
-(0.2× → 2.0×) based on win rate — winners get more capital allocation.
+  EMA_CROSS      — EMA 9/21 crossover with volume + RSI gate
+  RSI_MEAN_REVERT — Fade RSI extremes in ranging markets
+  BREAKOUT       — 20-period high/low breakout, ATR-sized SL
+  BOLLINGER_BAND — BB touch + RSI in low-volatility ranges (NEW)
+  TREND_FOLLOW   — Triple EMA alignment with momentum gate (replaces FUNDING_ARB)
+
+Self-learning weight engine (0.2× → 2.0×) adjusts allocation after 3+ trades.
 """
 from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,7 +22,7 @@ logger = logging.getLogger("clawbot.trading.blofin_strategies")
 
 _WEIGHTS_FILE = Path(__file__).parent.parent / "data" / "blofin_weights.json"
 
-STRATEGIES = ["EMA_CROSS", "RSI_MEAN_REVERT", "BREAKOUT", "FUNDING_ARB"]
+STRATEGIES = ["EMA_CROSS", "RSI_MEAN_REVERT", "BREAKOUT", "BOLLINGER_BAND", "TREND_FOLLOW"]
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
@@ -32,8 +34,8 @@ class StrategySignal:
     action:     str     # "long" | "short" | "hold"
     confidence: float   # 0.0–1.0
     reason:     str
-    sl_pct:     float   # stop-loss % distance from entry
-    tp_pct:     float   # take-profit % distance from entry
+    sl_pct:     float
+    tp_pct:     float
 
 
 @dataclass
@@ -50,8 +52,8 @@ class StrategyStats:
     def update_weight(self) -> None:
         if self.trades < 3:
             return
-        wr     = self.win_rate
-        new_w  = 0.2 + (wr ** 1.5) * 1.8   # 0.2 at 0% WR → 2.0 at 100% WR
+        wr        = self.win_rate
+        new_w     = 0.2 + (wr ** 1.5) * 1.8   # 0.2 at 0% WR → 2.0 at 100%
         self.weight = round(max(0.2, min(2.0, new_w)), 3)
 
 
@@ -96,14 +98,41 @@ def _atr(candles: list[dict], period: int = 14) -> float:
     return atr
 
 
+def _bollinger_bands(closes: list[float], period: int = 20,
+                     num_std: float = 2.0) -> tuple[float, float, float]:
+    """Returns (upper, middle, lower) Bollinger Bands."""
+    if len(closes) < period:
+        mid = closes[-1]
+        return mid, mid, mid
+    window = closes[-period:]
+    mid    = sum(window) / period
+    var    = sum((x - mid) ** 2 for x in window) / period
+    std    = math.sqrt(var)
+    return mid + num_std * std, mid, mid - num_std * std
+
+
+def _macd(closes: list[float],
+          fast: int = 12, slow: int = 26, signal: int = 9
+          ) -> tuple[float, float, float]:
+    """Returns (macd_line, signal_line, histogram)."""
+    if len(closes) < slow + signal:
+        return 0.0, 0.0, 0.0
+    ema_fast = _ema(closes, fast)
+    ema_slow = _ema(closes, slow)
+    # Align lengths
+    min_len  = min(len(ema_fast), len(ema_slow))
+    macd_arr = [ema_fast[-(min_len-i)] - ema_slow[-(min_len-i)] for i in range(min_len)]
+    if len(macd_arr) < signal:
+        return macd_arr[-1], macd_arr[-1], 0.0
+    sig_arr  = _ema(macd_arr, signal)
+    hist     = macd_arr[-1] - sig_arr[-1]
+    return macd_arr[-1], sig_arr[-1], hist
+
+
 # ── Strategy implementations ──────────────────────────────────────────────────
 
 def ema_cross_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
-    """EMA 9/21 crossover with RSI momentum gate and ATR-based SL.
-
-    Only fires on a fresh cross where the EMAs have separated by ≥0.05%
-    (avoids whipsaw on flat markets) and RSI confirms the direction.
-    """
+    """EMA 9/21 crossover — ATR SL, RSI + volume gate, 2.5:1 R:R."""
     closes = [c["close"] for c in candles]
     _hold  = lambda r, sl=1.2, tp=3.0: StrategySignal("EMA_CROSS", symbol, "hold", 0.0, r, sl, tp)
 
@@ -112,89 +141,79 @@ def ema_cross_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
 
     ema9  = _ema(closes, 9)
     ema21 = _ema(closes, 21)
-
     curr9, prev9   = ema9[-1],  ema9[-2]
     curr21, prev21 = ema21[-1], ema21[-2]
 
-    price = closes[-1]
-    atr   = _atr(candles[-15:], 14)
-    sl    = max(1.2, (atr / price * 100) * 2.0) if price > 0 else 1.2
-    tp    = sl * 2.5   # 2.5:1 R:R
+    price    = closes[-1]
+    atr      = _atr(candles[-20:], 14)
+    sl       = max(1.0, (atr / price * 100) * 1.5) if price > 0 else 1.2
+    tp       = sl * 2.5
+    gap_pct  = abs(curr9 - curr21) / curr21 * 100
+    rsi      = _rsi(closes, 14)
+    avg_vol  = sum(c["volume"] for c in candles[-20:]) / 20
+    vol_ok   = candles[-1]["volume"] >= avg_vol * 0.7   # not dead volume
 
-    gap_pct = abs(curr9 - curr21) / curr21 * 100
-    if gap_pct < 0.05:
-        return _hold(f"EMA gap too flat ({gap_pct:.3f}%) — skipping whipsaw", sl, tp)
+    if gap_pct < 0.04:
+        return _hold(f"EMA gap flat ({gap_pct:.3f}%)", sl, tp)
 
-    rsi = _rsi(closes, 14)
-
-    if prev9 <= prev21 and curr9 > curr21 and rsi > 45:
+    # Require price to be on the right side of EMA9 — confirms momentum behind the cross
+    if prev9 <= prev21 and curr9 > curr21 and rsi > 45 and vol_ok and price > curr9:
         conf   = 0.82 if rsi > 55 else 0.72
-        reason = f"EMA9 crossed above EMA21 (gap {gap_pct:.2f}%), RSI {rsi:.1f}"
+        reason = f"EMA9 crossed above EMA21 | gap {gap_pct:.2f}% | RSI {rsi:.1f}"
         return StrategySignal("EMA_CROSS", symbol, "long",  conf, reason, sl, tp)
 
-    if prev9 >= prev21 and curr9 < curr21 and rsi < 55:
+    if prev9 >= prev21 and curr9 < curr21 and rsi < 55 and vol_ok and price < curr9:
         conf   = 0.82 if rsi < 45 else 0.72
-        reason = f"EMA9 crossed below EMA21 (gap {gap_pct:.2f}%), RSI {rsi:.1f}"
+        reason = f"EMA9 crossed below EMA21 | gap {gap_pct:.2f}% | RSI {rsi:.1f}"
         return StrategySignal("EMA_CROSS", symbol, "short", conf, reason, sl, tp)
 
-    return _hold(f"No valid cross — gap {gap_pct:.2f}%, RSI {rsi:.1f}", sl, tp)
+    return _hold(f"No valid cross | gap {gap_pct:.2f}% | RSI {rsi:.1f}", sl, tp)
 
 
 def rsi_mean_revert_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
-    """RSI mean-reversion with trend guard, tighter thresholds, and 2.5:1 R:R.
+    """RSI mean-reversion in ranging markets — 2.5:1 R:R.
 
-    Only fires in ranging conditions (EMA20/EMA50 spread < 0.25%).
-    Thresholds raised to RSI < 25 / > 75 — rarer but higher quality signals.
-    SL floor raised to 1.2% (2× ATR min) to survive normal noise.
+    Fires at RSI <27 / >73 when EMA20/50 spread shows a range (< 0.30%).
+    Slope guard removed — EMA spread alone is sufficient to identify ranges.
     """
     closes = [c["close"] for c in candles]
-    _hold  = lambda r, sl=1.5, tp=3.75: StrategySignal("RSI_MEAN_REVERT", symbol, "hold", 0.0, r, sl, tp)
+    _hold  = lambda r, sl=1.3, tp=3.25: StrategySignal("RSI_MEAN_REVERT", symbol, "hold", 0.0, r, sl, tp)
 
     if len(closes) < 25:
         return _hold("Insufficient data")
 
     rsi   = _rsi(closes, 14)
     price = closes[-1]
-    atr   = _atr(candles[-15:], 14)
-    sl    = max(1.2, (atr / price * 100) * 2.0) if price > 0 else 1.5
-    tp    = sl * 2.5   # 2.5:1 R:R
+    atr   = _atr(candles[-20:], 14)
+    sl    = max(1.0, (atr / price * 100) * 1.5) if price > 0 else 1.3
+    tp    = sl * 2.5
 
-    # Trend guard: don't mean-revert into a strong trend or a mean-reverting regime
     ema20  = _ema(closes, 20)
-    ema50  = _ema(closes, 50) if len(closes) >= 50 else _ema(closes, len(closes) // 2)
+    ema50  = _ema(closes, 50) if len(closes) >= 50 else _ema(closes, max(10, len(closes)//2))
     spread = abs(ema20[-1] - ema50[-1]) / ema50[-1] * 100
-    if spread > 0.25:
-        return _hold(f"Trending market (EMA spread {spread:.2f}%) — no mean-revert", sl, tp)
 
-    # Additional slope guard: if EMA20 is moving strongly in one direction,
-    # fading it is fighting momentum. Require EMA20 slope (last 3 bars) < 0.05%.
-    ema20_slope = abs(ema20[-1] - ema20[-4]) / ema20[-4] * 100 if len(ema20) >= 4 else 0.0
-    if ema20_slope > 0.05:
-        return _hold(f"EMA20 slope too steep ({ema20_slope:.3f}%) — momentum risk", sl, tp)
+    if spread > 0.30:
+        return _hold(f"Trend active (spread {spread:.2f}%) — skip mean-revert", sl, tp)
 
-    if rsi < 25:
-        conf = 0.90 if rsi < 20 else 0.75
+    # Require current candle body in recovery direction — prevents entering waterfalls
+    bullish_body = closes[-1] >= candles[-1]["open"]   # green candle = bounce starting
+    bearish_body = closes[-1] <= candles[-1]["open"]   # red candle = reversal starting
+
+    if rsi < 27 and bullish_body:
+        conf = 0.88 if rsi < 22 else 0.74
         return StrategySignal("RSI_MEAN_REVERT", symbol, "long", conf,
-                              f"RSI deep oversold {rsi:.1f}, ranging (spread {spread:.2f}%)", sl, tp)
-    if rsi > 75:
-        conf = 0.90 if rsi > 80 else 0.75
+                              f"RSI oversold {rsi:.1f} + bullish candle | spread {spread:.2f}%", sl, tp)
+    if rsi > 73 and bearish_body:
+        conf = 0.88 if rsi > 78 else 0.74
         return StrategySignal("RSI_MEAN_REVERT", symbol, "short", conf,
-                              f"RSI deep overbought {rsi:.1f}, ranging (spread {spread:.2f}%)", sl, tp)
+                              f"RSI overbought {rsi:.1f} + bearish candle | spread {spread:.2f}%", sl, tp)
 
-    return _hold(f"RSI neutral {rsi:.1f} (spread {spread:.2f}%)", sl, tp)
+    return _hold(f"RSI neutral {rsi:.1f} | spread {spread:.2f}%", sl, tp)
 
 
 def breakout_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
-    """20-period high/low breakout — ATR-based SL, body confirmation, strict volume.
-
-    Improvements over v1:
-    - ATR-based SL (2× ATR, min 1.5%) replaces the fixed 1% that was too tight.
-    - TP = 3× SL giving a 3:1 R:R.
-    - Close must exceed the breakout level by ≥0.10% (filters wick fakeouts).
-    - Volume must be ≥1.5× the 20-period average for full confidence.
-    - RSI gate: longs require RSI < 70, shorts require RSI > 30 (avoids chasing).
-    """
-    _hold = lambda r, sl=1.5, tp=4.5: StrategySignal("BREAKOUT", symbol, "hold", 0.0, r, sl, tp)
+    """20-period high/low breakout — ATR SL, 0.08% margin, 1.1× volume min, 2.5:1 R:R."""
+    _hold = lambda r, sl=1.3, tp=3.25: StrategySignal("BREAKOUT", symbol, "hold", 0.0, r, sl, tp)
 
     if len(candles) < 22:
         return _hold("Insufficient data")
@@ -202,10 +221,9 @@ def breakout_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
     lookback  = candles[-21:-1]
     curr      = candles[-1]
     price     = curr["close"]
-    atr       = _atr(candles[-15:], 14)
-
-    sl  = max(1.5, (atr / price * 100) * 2.0) if price > 0 else 1.5
-    tp  = sl * 3.0   # 3:1 R:R
+    atr       = _atr(candles[-20:], 14)
+    sl        = max(1.2, (atr / price * 100) * 1.5) if price > 0 else 1.3
+    tp        = sl * 2.5
 
     ph        = max(c["high"]   for c in lookback)
     pl        = min(c["low"]    for c in lookback)
@@ -213,83 +231,138 @@ def breakout_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
     vol_ratio = curr["volume"] / avg_vol if avg_vol > 0 else 1.0
     rsi       = _rsi([c["close"] for c in candles], 14)
 
-    # Require a meaningful close beyond the level (not a wick poke)
-    margin_up  = (price - ph) / ph * 100  if ph > 0 else 0.0
-    margin_dn  = (pl - price) / pl * 100  if pl > 0 else 0.0
+    margin_up = (price - ph) / ph * 100 if ph > 0 else 0.0
+    margin_dn = (pl - price) / pl * 100 if pl > 0 else 0.0
 
-    if price > ph and margin_up >= 0.10:
-        if vol_ratio < 1.2 or rsi >= 70:
-            return _hold(f"Long breakout weak: vol×{vol_ratio:.1f} RSI {rsi:.1f}")
-        conf   = 0.88 if vol_ratio >= 1.5 else 0.72
-        reason = (f"Broke 20p high {ph:.2f} by {margin_up:.2f}%, "
-                  f"vol×{vol_ratio:.1f}, RSI {rsi:.1f}")
+    if price > ph and margin_up >= 0.08 and vol_ratio >= 1.1 and rsi < 75:
+        conf   = 0.88 if vol_ratio >= 1.4 else 0.72
+        reason = f"Broke 20p high {ph:.4f} +{margin_up:.2f}% | vol×{vol_ratio:.1f} | RSI {rsi:.1f}"
         return StrategySignal("BREAKOUT", symbol, "long",  conf, reason, sl, tp)
 
-    if price < pl and margin_dn >= 0.10:
-        if vol_ratio < 1.2 or rsi <= 30:
-            return _hold(f"Short breakout weak: vol×{vol_ratio:.1f} RSI {rsi:.1f}")
-        conf   = 0.88 if vol_ratio >= 1.5 else 0.72
-        reason = (f"Broke 20p low {pl:.2f} by {margin_dn:.2f}%, "
-                  f"vol×{vol_ratio:.1f}, RSI {rsi:.1f}")
+    if price < pl and margin_dn >= 0.08 and vol_ratio >= 1.1 and rsi > 25:
+        conf   = 0.88 if vol_ratio >= 1.4 else 0.72
+        reason = f"Broke 20p low {pl:.4f} -{margin_dn:.2f}% | vol×{vol_ratio:.1f} | RSI {rsi:.1f}"
         return StrategySignal("BREAKOUT", symbol, "short", conf, reason, sl, tp)
 
-    pct_to_high = (ph - price) / ph * 100
-    return _hold(f"Range-bound — {pct_to_high:.1f}% from breakout", sl, tp)
+    pct_away = (ph - price) / ph * 100
+    return _hold(f"Range-bound — {pct_away:.2f}% from breakout | RSI {rsi:.1f}", sl, tp)
 
 
-def funding_arb_strategy(symbol: str, candles: list[dict],
-                          funding_rate: float = 0.0) -> StrategySignal:
-    """Trend-following gated by a meaningful funding rate signal.
+def bollinger_band_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
+    """Bollinger Band mean-reversion for quiet/ranging markets.
 
-    Only fires when funding is skewed enough to indicate overleverage (fr_bias != 0),
-    the EMA20/EMA50 spread confirms a real trend (≥0.20%), and RSI agrees with
-    the direction. This avoids the neutral-funding false entries that caused
-    repeated losses when used as a plain EMA trend-follow.
+    Buys when price closes below lower BB in a low-volatility range,
+    sells when it closes above upper BB. RSI extreme confirms the signal.
+    Bandwidth filter (<4%) ensures we only trade tight consolidations.
     """
     closes = [c["close"] for c in candles]
-    _hold  = lambda r: StrategySignal("FUNDING_ARB", symbol, "hold", 0.0, r, 1.5, 3.0)
+    _hold  = lambda r, sl=1.2, tp=2.4: StrategySignal("BOLLINGER_BAND", symbol, "hold", 0.0, r, sl, tp)
 
-    if len(closes) < 50:
+    if len(closes) < 22:
         return _hold("Insufficient data")
 
-    ema20 = _ema(closes, 20)
+    upper, mid, lower = _bollinger_bands(closes, 20, 2.0)
+    price     = closes[-1]
+    bandwidth = (upper - lower) / mid * 100 if mid > 0 else 999.0
+
+    # Require some minimum range so TP is realistically achievable
+    if bandwidth > 4.0:
+        return _hold(f"BB too wide ({bandwidth:.2f}%) — volatile, skip", 1.2, 2.4)
+    if bandwidth < 0.30:
+        return _hold(f"BB too tight ({bandwidth:.2f}%) — SL/TP too small", 1.2, 2.4)
+
+    rsi   = _rsi(closes, 14)
+    atr   = _atr(candles[-20:], 14)
+
+    # %B: 0=lower band, 1=upper band
+    pct_b = (price - lower) / (upper - lower) if (upper - lower) > 0 else 0.5
+
+    # Use band geometry for R:R instead of ATR-minimum.
+    # For LONG at lower band: TP = distance to upper band, SL = 1/2 that distance beyond lower.
+    # This gives ~2:1 R:R aligned with how BB ranges actually work.
+    half_bw_pct = (mid - lower) / price * 100 if price > 0 else 1.0
+    atr_pct     = (atr / price * 100) if price > 0 else 0.5
+
+    # EMA slope filter: don't mean-revert into a strong trend.
+    # If EMA20 is steeply negative, don't go long; if steeply positive, don't go short.
+    ema20_arr   = _ema(closes, 20)
+    slope_pct   = (ema20_arr[-1] - ema20_arr[-3]) / ema20_arr[-3] * 100 if len(ema20_arr) >= 3 else 0.0
+
+    if price < lower and rsi < 40:
+        if slope_pct < -0.20:
+            return _hold(f"BB long skipped — EMA falling {slope_pct:.2f}%/candle", 1.2, 2.4)
+        sl     = max(half_bw_pct * 0.8, atr_pct * 1.2, 0.5)
+        tp     = (upper - price) / price * 100   # target upper band
+        tp     = max(tp, sl * 1.5)               # at least 1.5:1
+        conf   = 0.85 if rsi < 30 else 0.72
+        reason = (f"Below lower BB ({lower:.4f}) | %B {pct_b:.2f} | "
+                  f"RSI {rsi:.1f} | BW {bandwidth:.2f}% | slope {slope_pct:.2f}%")
+        return StrategySignal("BOLLINGER_BAND", symbol, "long",  conf, reason, sl, tp)
+
+    if price > upper and rsi > 60:
+        if slope_pct > 0.20:
+            return _hold(f"BB short skipped — EMA rising {slope_pct:.2f}%/candle", 1.2, 2.4)
+        sl     = max(half_bw_pct * 0.8, atr_pct * 1.2, 0.5)
+        tp     = (price - lower) / price * 100   # target lower band
+        tp     = max(tp, sl * 1.5)               # at least 1.5:1
+        conf   = 0.85 if rsi > 70 else 0.72
+        reason = (f"Above upper BB ({upper:.4f}) | %B {pct_b:.2f} | "
+                  f"RSI {rsi:.1f} | BW {bandwidth:.2f}% | slope {slope_pct:.2f}%")
+        return StrategySignal("BOLLINGER_BAND", symbol, "short", conf, reason, sl, tp)
+
+    return _hold(f"%B {pct_b:.2f} | RSI {rsi:.1f} | BW {bandwidth:.2f}%", 1.2, 2.4)
+
+
+def trend_follow_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
+    """Triple EMA alignment trend-following with MACD + volume confirmation.
+
+    Requires EMA9 > EMA21 > EMA50 (or inverted for shorts), MACD histogram
+    showing momentum, and volume above average. Fires in clear trending conditions
+    where the other strategies tend to stay flat.
+    3:1 R:R — trend trades run further so we give them room.
+    """
+    closes = [c["close"] for c in candles]
+    _hold  = lambda r, sl=1.5, tp=4.5: StrategySignal("TREND_FOLLOW", symbol, "hold", 0.0, r, sl, tp)
+
+    if len(closes) < 52:
+        return _hold("Insufficient data (need 52 for EMA50+MACD)")
+
+    ema9  = _ema(closes, 9)
+    ema21 = _ema(closes, 21)
     ema50 = _ema(closes, 50)
     price = closes[-1]
-    fast, slow = ema20[-1], ema50[-1]
+    atr   = _atr(candles[-20:], 14)
+    sl    = max(1.3, (atr / price * 100) * 2.0) if price > 0 else 1.5
+    tp    = sl * 3.0   # 3:1 for trend trades
 
-    fr_pct = funding_rate * 100
-    # Positive funding → longs overloaded → short bias; negative → long bias
-    fr_bias = -1 if fr_pct > 0.05 else (1 if fr_pct < -0.05 else 0)
+    e9, e21, e50 = ema9[-1], ema21[-1], ema50[-1]
+    rsi          = _rsi(closes, 14)
+    _, _, hist   = _macd(closes, 12, 26, 9)
 
-    # Require a real funding signal — neutral market has no funding edge
-    if fr_bias == 0:
-        return _hold(f"Funding neutral ({fr_pct:.4f}%) — no edge")
+    avg_vol  = sum(c["volume"] for c in candles[-20:]) / 20
+    vol_ok   = candles[-1]["volume"] >= avg_vol * 1.0   # at least average volume
 
-    # Require minimum EMA spread to confirm genuine trend, not noise
-    ema_gap_pct = abs(fast - slow) / slow * 100
-    if ema_gap_pct < 0.20:
-        return _hold(f"EMA gap too narrow ({ema_gap_pct:.2f}%) — wait for trend")
+    # Bullish: full triple alignment, price above all EMAs, MACD positive, RSI 45-72
+    if e9 > e21 > e50 and price > e9 and hist > 0 and 45 < rsi < 72 and vol_ok:
+        gap_pct = (e9 - e50) / e50 * 100
+        if gap_pct < 0.10:
+            return _hold(f"Trend too early — EMA gap only {gap_pct:.2f}%", sl, tp)
+        conf   = 0.82 if rsi > 55 and hist > 0 else 0.70
+        reason = (f"Triple EMA bull | gap {gap_pct:.2f}% | "
+                  f"MACD hist {hist:.4f} | RSI {rsi:.1f}")
+        return StrategySignal("TREND_FOLLOW", symbol, "long",  conf, reason, sl, tp)
 
-    # RSI momentum filter: longs need RSI > 50, shorts need RSI < 50
-    rsi = _rsi(closes, 14)
-    atr = _atr(candles[-15:], 14)
-    sl  = max(1.0, (atr / price * 100) * 2.0) if price > 0 else 1.5
-    tp  = sl * 2.0
+    # Bearish: full triple alignment down, price below all EMAs, MACD negative, RSI 28-55
+    if e9 < e21 < e50 and price < e9 and hist < 0 and 28 < rsi < 55 and vol_ok:
+        gap_pct = (e50 - e9) / e50 * 100
+        if gap_pct < 0.10:
+            return _hold(f"Trend too early — EMA gap only {gap_pct:.2f}%", sl, tp)
+        conf   = 0.82 if rsi < 45 and hist < 0 else 0.70
+        reason = (f"Triple EMA bear | gap {gap_pct:.2f}% | "
+                  f"MACD hist {hist:.4f} | RSI {rsi:.1f}")
+        return StrategySignal("TREND_FOLLOW", symbol, "short", conf, reason, sl, tp)
 
-    if fast > slow and price > fast and fr_bias > 0 and rsi > 50:
-        conf   = 0.78 if rsi > 55 else 0.68
-        reason = (f"Uptrend gap {ema_gap_pct:.2f}%, RSI {rsi:.1f}, "
-                  f"funding {fr_pct:.4f}% (long-biased)")
-        return StrategySignal("FUNDING_ARB", symbol, "long",  conf, reason, sl, tp)
-
-    if fast < slow and price < fast and fr_bias < 0 and rsi < 50:
-        conf   = 0.78 if rsi < 45 else 0.68
-        reason = (f"Downtrend gap {ema_gap_pct:.2f}%, RSI {rsi:.1f}, "
-                  f"funding {fr_pct:.4f}% (short-biased)")
-        return StrategySignal("FUNDING_ARB", symbol, "short", conf, reason, sl, tp)
-
-    return _hold(f"Conditions unmet — EMA gap {ema_gap_pct:.2f}%, RSI {rsi:.1f}, "
-                 f"fr_bias {fr_bias}")
+    return _hold(f"No triple alignment | RSI {rsi:.1f} | MACD {hist:.4f}", sl, tp)
 
 
 # ── Self-learning weight engine ───────────────────────────────────────────────

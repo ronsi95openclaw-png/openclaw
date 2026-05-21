@@ -107,7 +107,13 @@ class RollingDrawdownTracker:
     # ------------------------------------------------------------------
 
     def _window_drawdown(self, hours: int, as_of: Optional[datetime] = None) -> float:
-        """Compute the drawdown from the peak within the rolling window."""
+        """Compute the maximum path-based drawdown within the rolling window.
+
+        Uses the standard running-peak algorithm: for each point in time, the
+        drawdown is measured from the highest equity that occurred BEFORE that
+        point, not from the global max of the entire window. This prevents
+        false positives where recovered equity causes a spurious high DD reading.
+        """
         if as_of is None:
             as_of = datetime.now(timezone.utc)
 
@@ -120,13 +126,17 @@ class RollingDrawdownTracker:
         if not window:
             return 0.0
 
-        peak = max(eq for _, eq in window)
-        trough = min(eq for _, eq in window)
+        running_peak = window[0][1]
+        max_dd = 0.0
+        for _, eq in window:
+            if eq > running_peak:
+                running_peak = eq
+            if running_peak > 0:
+                dd = (running_peak - eq) / running_peak
+                if dd > max_dd:
+                    max_dd = dd
 
-        if peak <= 0:
-            return 0.0
-
-        return (peak - trough) / peak
+        return max_dd
 
     def _prune(self) -> None:
         """Remove samples older than 31 days to bound memory usage."""

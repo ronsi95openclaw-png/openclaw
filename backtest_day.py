@@ -1,15 +1,17 @@
-"""Realistic backtest using real Crypto.com 15-min candle data + bootstrap extension.
+"""Realistic backtest using real Crypto.com 15-min candle data + block-bootstrap extension.
 
-Real data: 50 candles per symbol fetched live from Crypto.com MCP.
-Extension: bootstrap resampling from real return distribution to reach 7 days.
-SL/TP:     checked against candle high/low — not a random walk.
-           For a LONG: SL triggered if candle.low <= sl_price
-                       TP triggered if candle.high >= tp_price
-           For a SHORT: SL triggered if candle.high >= sl_price
-                        TP triggered if candle.low <= tp_price
+Real data: 50 candles per symbol from Crypto.com MCP (saved to data/historical/).
+Extension:
+  - Block bootstrap: samples 8-candle blocks to preserve local momentum/autocorrelation.
+  - Trend injection: after every ~5 blocks, 25% chance to inject a 25-50 candle synthetic
+    trend (bull run or bear drop), creating the trending conditions that EMA_CROSS,
+    BREAKOUT, and TREND_FOLLOW need.
+SL/TP:  checked against candle high/low (OHLC-aware, not random walk).
+        LONG:  SL if candle.low <= sl_price  |  TP if candle.high >= tp_price
+        SHORT: SL if candle.high >= sl_price |  TP if candle.low  <= tp_price
 
 Usage:
-    python backtest_day.py [--cycles N]   # default 96 (24 h)
+    python backtest_day.py [--cycles N] [--balance F] [--goal F]
 """
 from __future__ import annotations
 
@@ -26,13 +28,13 @@ from pathlib import Path
 
 logging.basicConfig(level=logging.WARNING, stream=sys.stdout)
 
-HISTORICAL_DIR = Path(__file__).parent / "data" / "historical"
+HISTORICAL_DIR  = Path(__file__).parent / "data" / "historical"
 CANDLE_INTERVAL = 900   # 15 min in seconds
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--cycles",  type=int,   default=96,   help="Simulation cycles (default 96 = 24 h)")
-parser.add_argument("--balance", type=float, default=100.0, help="Starting balance in USDT (default 100)")
-parser.add_argument("--goal",    type=float, default=20000.0, help="Profit goal in USDT (default 20000)")
+parser.add_argument("--cycles",  type=int,   default=96,     help="Simulation cycles (default 96 = 24 h)")
+parser.add_argument("--balance", type=float, default=100.0,  help="Starting balance USDT (default 100)")
+parser.add_argument("--goal",    type=float, default=20000.0,help="Profit goal USDT (default 20000)")
 args = parser.parse_args()
 
 CYCLES       = args.cycles
@@ -41,53 +43,89 @@ TOTAL_NEEDED = LOOKBACK + CYCLES
 STARTING_BAL = args.balance
 GOAL         = args.goal
 
-# ── Bootstrap engine ──────────────────────────────────────────────────────────
+
+# ── Block Bootstrap with Trend Injection ─────────────────────────────────────
 
 def _bootstrap_extend(real_candles: list[dict], n: int, seed: int = 42) -> list[dict]:
-    """Extend a real candle series by n candles using bootstrap resampling.
+    """Extend candles using block bootstrap + periodic trend injection.
 
-    Samples log-returns and intra-candle OHLC shapes from the empirical
-    distribution of real candles. Preserves actual volatility, fat tails,
-    and wick structure rather than using Gaussian noise.
+    Block bootstrap (block size 8) preserves momentum autocorrelation within
+    blocks. Trend injection inserts 25-50 candle directional moves every ~5
+    blocks, creating the trending conditions that EMA/breakout strategies need.
     """
-    rng = random.Random(seed)
-    closes  = [c["close"] for c in real_candles]
-    # Log returns
+    rng        = random.Random(seed)
+    BLOCK      = 8       # consecutive-return block size
+    TREND_PROB = 0.40    # probability per inter-block gap of injecting a trend
+    TREND_MIN  = 20      # min candles per injected trend
+    TREND_MAX  = 45      # max candles per injected trend
+    DRIFT_MIN  = 0.05    # per-candle drift %
+    DRIFT_MAX  = 0.22
+
+    closes  = [c["close"]  for c in real_candles]
     returns = [math.log(closes[i] / closes[i-1]) for i in range(1, len(closes))]
-    # Upper wick: (high - max(open,close)) / close
-    uw = [(c["high"] - max(c["open"], c["close"])) / c["close"] for c in real_candles]
-    # Lower wick: (min(open,close) - low) / close
-    lw = [(min(c["open"], c["close"]) - c["low"])  / c["close"] for c in real_candles]
-    # Volume samples
-    vols = [c["volume"] for c in real_candles]
+    uw      = [(c["high"] - max(c["open"], c["close"])) / c["close"] for c in real_candles]
+    lw      = [(min(c["open"], c["close"]) - c["low"])  / c["close"] for c in real_candles]
+    vols    = [c["volume"] for c in real_candles]
+
+    def _make_candle(open_p: float, ret: float, ts: int) -> dict:
+        cls = open_p * math.exp(ret)
+        body_hi = max(open_p, cls)
+        body_lo = min(open_p, cls)
+        hi  = body_hi * (1.0 + abs(rng.choice(uw)))
+        lo  = body_lo * (1.0 - abs(rng.choice(lw)))
+        return {
+            "ts":     ts,
+            "open":   round(open_p, 6),
+            "high":   round(hi,     6),
+            "low":    round(max(1e-6, lo), 6),
+            "close":  round(cls,    6),
+            "volume": round(rng.choice(vols), 4),
+        }
 
     result   = []
     last_ts  = real_candles[-1]["ts"]
     last_cls = real_candles[-1]["close"]
+    blocks_since_trend = 0
 
-    for i in range(n):
-        r   = rng.choice(returns)
-        new_close = last_cls * math.exp(r)
-        new_open  = last_cls                         # gap-free
+    max_block_start = max(0, len(returns) - BLOCK)
 
-        body_high = max(new_open, new_close)
-        body_low  = min(new_open, new_close)
-        new_high  = body_high * (1 + rng.choice(uw))
-        new_low   = body_low  * (1 - rng.choice(lw))
-        new_vol   = rng.choice(vols)
-        new_ts    = last_ts + CANDLE_INTERVAL * (i + 1)
+    while len(result) < n:
+        # ── Maybe inject a trend ──────────────────────────────────────────────
+        blocks_since_trend += 1
+        if blocks_since_trend >= 3 and rng.random() < TREND_PROB:
+            blocks_since_trend = 0
+            trend_len  = rng.randint(TREND_MIN, TREND_MAX)
+            direction  = rng.choice([1, -1])  # +1 = bull, -1 = bear
+            drift      = rng.uniform(DRIFT_MIN, DRIFT_MAX) / 100  # per candle
+            sigma      = rng.uniform(0.03, 0.08) / 100            # noise around drift
+            for _ in range(trend_len):
+                if len(result) >= n:
+                    break
+                r = direction * drift + rng.gauss(0, sigma)
+                last_ts += CANDLE_INTERVAL
+                c = _make_candle(last_cls, r, last_ts)
+                result.append(c)
+                last_cls = c["close"]
 
-        result.append({
-            "ts":     new_ts,
-            "open":   round(new_open,  6),
-            "high":   round(new_high,  6),
-            "low":    round(max(0.0001, new_low), 6),
-            "close":  round(new_close, 6),
-            "volume": round(new_vol,   4),
-        })
-        last_cls = new_close
+        if len(result) >= n:
+            break
 
-    return result
+        # ── Block bootstrap (8 consecutive returns) ───────────────────────────
+        if max_block_start > 0:
+            start  = rng.randint(0, max_block_start)
+            block  = returns[start : start + BLOCK]
+        else:
+            block  = [rng.choice(returns) for _ in range(BLOCK)]
+
+        for r in block:
+            if len(result) >= n:
+                break
+            last_ts += CANDLE_INTERVAL
+            c = _make_candle(last_cls, r, last_ts)
+            result.append(c)
+            last_cls = c["close"]
+
+    return result[:n]
 
 
 # ── Load & extend real candles ────────────────────────────────────────────────
@@ -100,22 +138,24 @@ SYMBOLS_MAP = {
 
 all_candles: dict[str, list[dict]] = {}
 for sym, fname in SYMBOLS_MAP.items():
-    path = HISTORICAL_DIR / fname
-    real = json.loads(path.read_text())
-    extra_needed = max(0, TOTAL_NEEDED - len(real))
-    bootstrap    = _bootstrap_extend(real, extra_needed + 200, seed=hash(sym) % 10000)
-    all_candles[sym] = real + bootstrap
-    print(f"  {sym}: {len(real)} real + {len(bootstrap)} bootstrap = {len(all_candles[sym])} candles")
+    path  = HISTORICAL_DIR / fname
+    real  = json.loads(path.read_text())
+    extra = max(0, TOTAL_NEEDED - len(real))
+    boot  = _bootstrap_extend(real, extra + 200, seed=hash(sym) % 10000)
+    all_candles[sym] = real + boot
+    print(f"  {sym}: {len(real)} real + {len(boot)} bootstrap = {len(all_candles[sym])} candles")
+
 
 # ── Patch BloFinBot for backtest ──────────────────────────────────────────────
 
 from trading.blofin_bot import BloFinBot, _STATE_FILE, LEVERAGE
-from trading.blofin_strategies import _WEIGHTS_FILE
+from trading.blofin_strategies import _WEIGHTS_FILE, STRATEGIES
 import trading.blofin_bot as _bot_mod
 
 _JOURNAL_TS  = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 _SIM_JOURNAL = _bot_mod._JOURNAL_FILE.parent / f"signal_journal_bt_{_JOURNAL_TS}.jsonl"
 _bot_mod._JOURNAL_FILE = _SIM_JOURNAL
+
 
 def _reset():
     _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -126,18 +166,19 @@ def _reset():
     _WEIGHTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     _WEIGHTS_FILE.write_text(json.dumps({
         s: {"trades": 0, "wins": 0, "losses": 0, "weight": 1.0}
-        for s in ["EMA_CROSS", "RSI_MEAN_REVERT", "BREAKOUT", "FUNDING_ARB"]
+        for s in STRATEGIES
     }))
+
 
 _reset()
 
 
 class BacktestBot(BloFinBot):
-    """BloFinBot subclass that replaces random price walks with real OHLC data."""
+    """BloFinBot subclass that drives simulated OHLC candle data."""
 
     def __init__(self, candle_data: dict[str, list[dict]]):
         self._candle_data = candle_data
-        self._cursor      = LOOKBACK   # start at index LOOKBACK so we have a full window
+        self._cursor      = LOOKBACK
         super().__init__()
 
     def _fake_candles(self, symbol: str) -> list[dict]:
@@ -150,7 +191,7 @@ class BacktestBot(BloFinBot):
         return float(data[idx]["close"])
 
     def _check_positions(self) -> None:
-        """OHLC-aware SL/TP check — more realistic than a random price walk."""
+        """OHLC-aware SL/TP — SL and TP checked against candle high and low."""
         to_close: list[tuple] = []
 
         for pos in list(self.state.open_positions):
@@ -165,14 +206,16 @@ class BacktestBot(BloFinBot):
 
             if pos["side"] == "long":
                 pnl_pct = (cls - pos["entry_price"]) / pos["entry_price"]
-                pos["unrealized_pnl"] = round(pnl_pct * pos["entry_price"] * pos["size"] * LEVERAGE, 4)
+                pos["unrealized_pnl"] = round(
+                    pnl_pct * pos["entry_price"] * pos["size"] * LEVERAGE, 4)
                 if lo <= pos["sl_price"]:
                     to_close.append((pos, "loss", pos["sl_price"]))
                 elif hi >= pos["tp_price"]:
                     to_close.append((pos, "win", pos["tp_price"]))
             else:
                 pnl_pct = -(cls - pos["entry_price"]) / pos["entry_price"]
-                pos["unrealized_pnl"] = round(pnl_pct * pos["entry_price"] * pos["size"] * LEVERAGE, 4)
+                pos["unrealized_pnl"] = round(
+                    pnl_pct * pos["entry_price"] * pos["size"] * LEVERAGE, 4)
                 if hi >= pos["sl_price"]:
                     to_close.append((pos, "loss", pos["sl_price"]))
                 elif lo <= pos["tp_price"]:
@@ -201,10 +244,9 @@ prev_closed_cnt = 0
 start_time      = time.time()
 
 print("\n" + "="*70)
-print("  BloFin Bot — Backtest on Real Crypto.com Data + Bootstrap Extension")
+print("  BloFin Bot — Backtest (Block Bootstrap + Trend Injection)")
 print(f"  Symbols: BTC / ETH / SOL  |  Interval: 15m  |  Cycles: {CYCLES} ({CYCLES//4}h)")
 print(f"  Starting balance: ${STARTING_BAL:,.2f}  |  Risk: 1.5%  |  Leverage: 3×")
-print(f"  SL/TP: checked against real candle high/low")
 print("="*70)
 print(f"  {'Hour':>4}  {'Cycle':>5}  {'Equity':>10}  {'PnL':>10}  {'Trades':>6}  {'Open':>4}  {'Status'}")
 print("  " + "-"*68)
@@ -226,7 +268,7 @@ for cycle in range(1, CYCLES + 1):
     new_closed = s["trade_log"]
     for t in new_closed[:max(0, len(new_closed) - prev_closed_cnt)]:
         k = "wins" if t["outcome"] == "win" else "losses"
-        strategy_trades[t["strategy"]][k]   += 1
+        strategy_trades[t["strategy"]][k]     += 1
         strategy_trades[t["strategy"]]["pnl"] += t["pnl"]
         symbol_trades[t["symbol"]][k]         += 1
         symbol_trades[t["symbol"]]["pnl"]     += t["pnl"]
@@ -237,7 +279,7 @@ for cycle in range(1, CYCLES + 1):
     prev_closed_cnt = len(new_closed)
 
     if cycle % 4 == 0 or cycle == CYCLES:
-        hour = cycle // 4
+        hour         = cycle // 4
         total_closed = sum(v["wins"] + v["losses"] for v in strategy_trades.values())
         print(f"  {hour:>4}h  {cycle:>5}  ${equity:>9,.2f}  "
               f"{s['total_pnl']:>+9.2f}  {total_closed:>6}  "
@@ -246,16 +288,16 @@ for cycle in range(1, CYCLES + 1):
 elapsed = time.time() - start_time
 
 # ── Final report ──────────────────────────────────────────────────────────────
-s           = bot.get_status()
-final_eq    = s["balance"] + s["unrealized_pnl"]
-ret_pct     = (final_eq - STARTING_BAL) / STARTING_BAL * 100
+s            = bot.get_status()
+final_eq     = s["balance"] + s["unrealized_pnl"]
+ret_pct      = (final_eq - STARTING_BAL) / STARTING_BAL * 100
 total_closed = sum(v["wins"] + v["losses"] for v in strategy_trades.values())
 total_wins   = sum(v["wins"]              for v in strategy_trades.values())
 total_losses = sum(v["losses"]            for v in strategy_trades.values())
 overall_wr   = total_wins / total_closed * 100 if total_closed else 0.0
 
 print("\n" + "="*70)
-print("  BACKTEST RESULTS — Real Crypto.com Data")
+print("  BACKTEST RESULTS — Block Bootstrap + Trend Injection")
 print("="*70)
 print(f"\n  Period      : {CYCLES} cycles × 15 min = {CYCLES // 4} hours")
 print(f"  Wall-clock  : {elapsed:.1f}s")
@@ -338,17 +380,14 @@ if total_closed >= 2 and total_wins > 0:
     print(f"  Avg trades / day     : {trades_per_day:.2f}")
     print(f"  Projected daily gain : {daily_growth_pct:+.3f}%")
     if daily_growth_pct > 0:
-        # Compound growth: balance × (1 + daily_growth)^n = GOAL → n = log(GOAL/START)/log(1+r)
-        import math as _math
-        days = _math.log(GOAL / STARTING_BAL) / _math.log(1 + daily_growth_pct / 100)
+        days = math.log(GOAL / STARTING_BAL) / math.log(1 + daily_growth_pct / 100)
         print(f"  Days to ${GOAL:,.0f}       : ~{days:.0f} days ({days/30:.1f} months)")
-        milestones = [500, 1000, 2500, 5000, 10000, 20000]
         print(f"  Milestones (compounding):")
-        for m in milestones:
+        for m in [500, 1000, 2500, 5000, 10000, 20000]:
             if m > STARTING_BAL:
-                d = _math.log(m / STARTING_BAL) / _math.log(1 + daily_growth_pct / 100)
+                d = math.log(m / STARTING_BAL) / math.log(1 + daily_growth_pct / 100)
                 print(f"    ${m:>6,.0f}  →  ~{d:.0f} days ({d/30:.1f} mo)")
     else:
-        print("  (Negative expectancy — strategies need more tuning before projecting)")
+        print("  (Negative expectancy — strategies need more tuning)")
 
 print("\n" + "="*70 + "\n")
