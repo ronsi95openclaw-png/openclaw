@@ -35,6 +35,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--cycles",  type=int,   default=96,     help="Simulation cycles (default 96 = 24 h)")
 parser.add_argument("--balance", type=float, default=100.0,  help="Starting balance USDT (default 100)")
 parser.add_argument("--goal",    type=float, default=20000.0,help="Profit goal USDT (default 20000)")
+parser.add_argument("--analyse", action="store_true",        help="Run Claude Opus analysis after backtest")
 args = parser.parse_args()
 
 CYCLES       = args.cycles
@@ -407,3 +408,16 @@ if total_closed >= 2 and total_wins > 0:
         print("  (Negative expectancy — strategies need more tuning)")
 
 print("\n" + "="*70 + "\n")
+
+# ── Claude Opus analysis (--analyse flag or auto when ANTHROPIC_API_KEY set) ──
+_should_analyse = args.analyse or (
+    bool(__import__("os").getenv("ANTHROPIC_API_KEY")) and total_closed >= 5
+)
+if _should_analyse:
+    try:
+        from runtime.claude_analyst import run_analysis
+        run_analysis(outcomes_file=_SIM_OUTCOMES if _SIM_OUTCOMES.exists() else None)
+    except Exception as _ae:
+        print(f"  [Claude Analyst] Skipped — {_ae}")
+elif total_closed >= 5:
+    print("  Tip: run with --analyse (or set ANTHROPIC_API_KEY) to get Claude Opus strategy recommendations\n")

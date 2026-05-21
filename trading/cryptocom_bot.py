@@ -1,19 +1,31 @@
-"""Crypto.com Trading Bot — replaces BloFin, same 4-strategy pipeline.
+"""Crypto.com Trading Bot — primary live trading engine for OpenClaw.
 
-Runs EMA_CROSS, RSI_MEAN_REVERT, BREAKOUT, FUNDING_ARB on Crypto.com
-every 30 seconds. All signals pass through the RuntimeOrchestrator intent
-pipeline before any order is placed.
+Runtime architecture (data flows top → bottom):
+    Claude Opus Analyst   (runtime/claude_analyst.py)  — daily pattern analysis
+        ↓ recommendations
+    Ruflo Multi-Agent     (runtime/ruflo_agent.py)      — HNSW memory + swarm
+        ↓ advisory signals
+    Trade Intent Layer    (runtime/intent_pipeline.py)  — schema + regime gate
+        ↓ approved intents
+    Python Risk Kernel    (risk/capital_preservation.py)— drawdown state machine
+        ↓ sized positions
+    Execution Engine      (trading/executor.py)         — order placement
+        ↓
+    Crypto.com Exchange   (trading/exchange.py REST + MCP tools for market data)
 
-Demo mode runs fully simulated (no real orders). Set DEMO_MODE=false in
-.env when ready to go live.
+Live trading uses:
+  - Market data   : Crypto.com MCP tools (mcp__f177133f__*) when in Claude session,
+                    falling back to trading/exchange.py REST API for autonomous runs
+  - Order execution: Crypto.com wallet/exchange REST API (CRYPTOCOM_API_KEY required)
 
-Logs every trade and signal to Google Sheets for daily review.
+Demo mode: fully simulated — no real orders, no API keys needed.
 
 Requires .env:
     CRYPTOCOM_API_KEY=
     CRYPTOCOM_SECRET=
-    GOOGLE_SHEETS_CREDENTIALS_FILE=/path/to/credentials.json
-    GOOGLE_SHEET_ID=<your-sheet-id>
+    ANTHROPIC_API_KEY=          (for Claude Opus daily analysis)
+    GOOGLE_SHEETS_CREDENTIALS_FILE=/path/to/credentials.json  (optional)
+    GOOGLE_SHEET_ID=<your-sheet-id>  (optional)
 """
 from __future__ import annotations
 
@@ -314,10 +326,17 @@ class CryptoComBot:
         if self.state.demo_mode:
             return self._fake_candles(symbol), random.uniform(-0.0003, 0.0003)
         try:
-            from trading.exchange import fetch_candles, fetch_funding_rate
-            candles = fetch_candles(symbol, "15m", 100)
-            funding = fetch_funding_rate(symbol)
-            return candles, funding
+            # Use MCP bridge — pulls from injected MCP data if available in session,
+            # otherwise falls back to exchange.py REST API automatically
+            from trading.cryptocom_mcp_bridge import get_bridge
+            bridge  = get_bridge()
+            candles = bridge.fetch_candles(symbol, "15m", 100)
+            try:
+                from trading.exchange import fetch_funding_rate
+                funding = fetch_funding_rate(symbol)
+            except Exception:
+                funding = 0.0
+            return (candles if candles else None), funding
         except Exception as e:
             logger.warning("Market data fetch failed [%s]: %s", symbol, e)
             return None, 0.0
@@ -538,10 +557,8 @@ class CryptoComBot:
             "sheets_connected": bool(self._reporter and self._reporter.is_connected()),
         }
 
-    def flush_daily_summary(self, notes: str = "") -> None:
-        """Call once per day (e.g. at midnight) to write a summary row to Sheets."""
-        if not self._reporter:
-            return
+    def flush_daily_summary(self, notes: str = "", run_analysis: bool = True) -> None:
+        """Write daily summary row to Sheets and run Claude Opus analysis."""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         s     = self.get_status()
 
@@ -554,20 +571,49 @@ class CryptoComBot:
             strategy_stats[name]["pnl"]    += t.get("pnl", 0)
             strategy_stats[name]["trades"] += 1
 
-        log = self.state.trade_log
+        log    = self.state.trade_log
         wins   = sum(1 for t in log if t.get("outcome") == "win")
         losses = sum(1 for t in log if t.get("outcome") == "loss")
         regimes = list({p.get("regime_label", "UNKNOWN")
                         for p in self.state.open_positions})
 
-        self._reporter.log_daily_summary(
-            date=today,
-            balance=s["balance"],
-            day_pnl=s["total_pnl"],
-            total_pnl=s["total_pnl"],
-            trades=s["trades_today"],
-            wins=wins, losses=losses,
-            strategy_stats=strategy_stats,
-            regimes_seen=regimes,
-            notes=notes,
-        )
+        if self._reporter:
+            self._reporter.log_daily_summary(
+                date=today,
+                balance=s["balance"],
+                day_pnl=s["total_pnl"],
+                total_pnl=s["total_pnl"],
+                trades=s["trades_today"],
+                wins=wins, losses=losses,
+                strategy_stats=strategy_stats,
+                regimes_seen=regimes,
+                notes=notes,
+            )
+
+        # Claude Opus analysis — runs asynchronously so it doesn't block the bot
+        if run_analysis and (wins + losses) >= 5:
+            import threading
+            def _analyse():
+                try:
+                    from runtime.claude_analyst import run_analysis as _run
+                    report = _run(silent=True)
+                    logger.info(
+                        "Daily Claude analysis: %s  WR=%.0f%%  actions=%d",
+                        report.overall_health, report.win_rate_pct,
+                        len(report.immediate_actions),
+                    )
+                    # Feed Ruflo learning directive into the journal
+                    if report.ruflo_learning_directive and self._orchestrator:
+                        try:
+                            self._orchestrator.record_trade_outcome(
+                                symbol="ALL", strategy="ANALYST",
+                                pnl=0.0, regime="DAILY_REVIEW", action="REVIEW",
+                                win=report.win_rate_pct >= 55,
+                                metadata={"ruflo_directive": report.ruflo_learning_directive,
+                                          "immediate_actions": report.immediate_actions},
+                            )
+                        except Exception:
+                            pass
+                except Exception as exc:
+                    logger.warning("Claude daily analysis failed (non-fatal): %s", exc)
+            threading.Thread(target=_analyse, daemon=True, name="claude-analyst").start()
