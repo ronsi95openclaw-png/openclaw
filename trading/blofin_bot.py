@@ -18,8 +18,9 @@ from typing import Optional
 
 logger = logging.getLogger("clawbot.trading.blofin_bot")
 
-_STATE_FILE = Path(__file__).parent.parent / "data" / "blofin_state.json"
-_LOG_FILE   = Path(__file__).parent.parent / "data" / "logs" / "blofin_trades.log"
+_STATE_FILE   = Path(__file__).parent.parent / "data" / "blofin_state.json"
+_LOG_FILE     = Path(__file__).parent.parent / "data" / "logs" / "blofin_trades.log"
+_JOURNAL_FILE = Path(__file__).parent.parent / "data" / "logs" / "signal_journal.jsonl"
 
 SYMBOLS       = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
 LEVERAGE      = 3
@@ -99,6 +100,16 @@ class BloFinBot:
         try:
             with open(_LOG_FILE, "a") as f:
                 f.write(line)
+        except Exception:
+            pass
+
+    def _journal(self, event: str, **fields) -> None:
+        """Append one JSONL line to the signal journal — every decision, every reason."""
+        _JOURNAL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        record = {"ts": datetime.now(timezone.utc).isoformat(), "event": event, **fields}
+        try:
+            with open(_JOURNAL_FILE, "a") as f:
+                f.write(json.dumps(record) + "\n")
         except Exception:
             pass
 
@@ -197,15 +208,26 @@ class BloFinBot:
                     pass
 
             for sig in signals:
-                if sig.action == "hold":
-                    continue
+                price    = candles[-1]["close"]
                 eff_conf = self.weights.effective_confidence(sig.strategy, sig.confidence)
-                if eff_conf < CONF_THRESHOLD:
+
+                if sig.action == "hold":
+                    self._journal("hold", symbol=symbol, strategy=sig.strategy,
+                                  reason=sig.reason, regime=regime_label)
                     continue
+
+                if eff_conf < CONF_THRESHOLD:
+                    self._journal("low_conf", symbol=symbol, strategy=sig.strategy,
+                                  action=sig.action, raw_conf=round(sig.confidence, 3),
+                                  eff_conf=round(eff_conf, 3), threshold=CONF_THRESHOLD,
+                                  reason=sig.reason, regime=regime_label)
+                    continue
+
                 if len(self.state.open_positions) >= MAX_POSITIONS:
+                    self._journal("max_positions", symbol=symbol, strategy=sig.strategy,
+                                  action=sig.action, open=MAX_POSITIONS)
                     break
 
-                price = candles[-1]["close"]
                 size  = self._calc_size(balance, price, sig.sl_pct)
                 if size <= 0:
                     continue
@@ -229,6 +251,10 @@ class BloFinBot:
                             "Signal BLOCKED by orchestrator [%s/%s]: %s",
                             symbol, sig.strategy, verdict.reason,
                         )
+                        self._journal("blocked", symbol=symbol, strategy=sig.strategy,
+                                      action=sig.action, eff_conf=round(eff_conf, 3),
+                                      regime=regime_label, reason=verdict.reason,
+                                      signal_reason=sig.reason)
                         continue
                     # Use risk-adjusted size from verdict.
                     # verdict.adjusted_size_pct is already a % of capital (e.g. 1.5).
@@ -243,6 +269,11 @@ class BloFinBot:
                     if size <= 0:
                         continue
 
+                self._journal("open", symbol=symbol, strategy=sig.strategy,
+                              action=sig.action, price=round(price, 4),
+                              eff_conf=round(eff_conf, 3), size=size,
+                              sl_pct=sig.sl_pct, tp_pct=sig.tp_pct,
+                              regime=regime_label, signal_reason=sig.reason)
                 self._open_position(sig, price, size, regime_label=regime_label)
                 fired += 1
 
@@ -378,6 +409,11 @@ class BloFinBot:
         logger.info(f"CLOSE {pos['symbol']} [{outcome}]  PnL={pnl:+.4f}")
         self._append_log({"event": "close", "id": pos["id"], "outcome": outcome,
                           "pnl": round(pnl, 4), "exit_price": exit_price})
+        self._journal("close", symbol=pos["symbol"], strategy=pos["strategy"],
+                      side=pos["side"], outcome=outcome, pnl=round(pnl, 4),
+                      entry_price=pos["entry_price"], exit_price=exit_price,
+                      regime=pos.get("regime_label", "UNKNOWN"),
+                      trade_id=pos["id"])
 
         # Feed capital preservation engine after each closed trade
         if self._orchestrator is not None:
