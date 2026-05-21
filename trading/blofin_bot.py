@@ -300,7 +300,7 @@ class BloFinBot:
 
     def _refresh_balance(self) -> float:
         if self.state.demo_mode:
-            return max(100.0, 1000.0 + self.state.total_pnl)
+            return max(1.0, self.state.balance + self.state.total_pnl)
         try:
             from trading.blofin_exchange import get_balance
             bal = get_balance()
@@ -476,7 +476,7 @@ class BloFinBot:
             trade_log = list(self.state.trade_log[:20])
 
         unreal   = sum(p.get("unrealized_pnl", 0) for p in positions)
-        balance  = max(100.0, 1000.0 + self.state.total_pnl) if self.state.demo_mode \
+        balance  = max(1.0, self.state.balance + self.state.total_pnl) if self.state.demo_mode \
                    else self.state.balance
 
         return {

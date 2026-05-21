@@ -99,9 +99,13 @@ def _atr(candles: list[dict], period: int = 14) -> float:
 # ── Strategy implementations ──────────────────────────────────────────────────
 
 def ema_cross_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
-    """EMA 9 / 21 crossover — fires on a fresh cross, 15m candles."""
+    """EMA 9/21 crossover with RSI momentum gate and ATR-based SL.
+
+    Only fires on a fresh cross where the EMAs have separated by ≥0.05%
+    (avoids whipsaw on flat markets) and RSI confirms the direction.
+    """
     closes = [c["close"] for c in candles]
-    _hold  = lambda r: StrategySignal("EMA_CROSS", symbol, "hold", 0.0, r, 1.2, 2.5)
+    _hold  = lambda r, sl=1.2, tp=3.0: StrategySignal("EMA_CROSS", symbol, "hold", 0.0, r, sl, tp)
 
     if len(closes) < 25:
         return _hold("Insufficient data")
@@ -112,70 +116,125 @@ def ema_cross_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
     curr9, prev9   = ema9[-1],  ema9[-2]
     curr21, prev21 = ema21[-1], ema21[-2]
 
-    if prev9 <= prev21 and curr9 > curr21:
-        return StrategySignal("EMA_CROSS", symbol, "long",  0.78,
-                              f"EMA9 {curr9:.2f} crossed above EMA21 {curr21:.2f}", 1.2, 2.5)
-    if prev9 >= prev21 and curr9 < curr21:
-        return StrategySignal("EMA_CROSS", symbol, "short", 0.78,
-                              f"EMA9 {curr9:.2f} crossed below EMA21 {curr21:.2f}", 1.2, 2.5)
+    price = closes[-1]
+    atr   = _atr(candles[-15:], 14)
+    sl    = max(1.2, (atr / price * 100) * 2.0) if price > 0 else 1.2
+    tp    = sl * 2.5   # 2.5:1 R:R
 
-    gap = abs(curr9 - curr21) / curr21 * 100
-    return _hold(f"No crossover — spread {gap:.2f}%")
+    gap_pct = abs(curr9 - curr21) / curr21 * 100
+    if gap_pct < 0.05:
+        return _hold(f"EMA gap too flat ({gap_pct:.3f}%) — skipping whipsaw", sl, tp)
+
+    rsi = _rsi(closes, 14)
+
+    if prev9 <= prev21 and curr9 > curr21 and rsi > 45:
+        conf   = 0.82 if rsi > 55 else 0.72
+        reason = f"EMA9 crossed above EMA21 (gap {gap_pct:.2f}%), RSI {rsi:.1f}"
+        return StrategySignal("EMA_CROSS", symbol, "long",  conf, reason, sl, tp)
+
+    if prev9 >= prev21 and curr9 < curr21 and rsi < 55:
+        conf   = 0.82 if rsi < 45 else 0.72
+        reason = f"EMA9 crossed below EMA21 (gap {gap_pct:.2f}%), RSI {rsi:.1f}"
+        return StrategySignal("EMA_CROSS", symbol, "short", conf, reason, sl, tp)
+
+    return _hold(f"No valid cross — gap {gap_pct:.2f}%, RSI {rsi:.1f}", sl, tp)
 
 
 def rsi_mean_revert_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
-    """RSI mean-reversion: buy <28, sell >72."""
-    closes = [c["close"] for c in candles]
-    _hold  = lambda r, sl, tp: StrategySignal("RSI_MEAN_REVERT", symbol, "hold", 0.0, r, sl, tp)
+    """RSI mean-reversion with trend guard, tighter thresholds, and 2.5:1 R:R.
 
-    if len(closes) < 20:
-        return _hold("Insufficient data", 1.5, 3.0)
+    Only fires in ranging conditions (EMA20/EMA50 spread < 0.25%).
+    Thresholds raised to RSI < 25 / > 75 — rarer but higher quality signals.
+    SL floor raised to 1.2% (2× ATR min) to survive normal noise.
+    """
+    closes = [c["close"] for c in candles]
+    _hold  = lambda r, sl=1.5, tp=3.75: StrategySignal("RSI_MEAN_REVERT", symbol, "hold", 0.0, r, sl, tp)
+
+    if len(closes) < 25:
+        return _hold("Insufficient data")
 
     rsi   = _rsi(closes, 14)
     price = closes[-1]
     atr   = _atr(candles[-15:], 14)
-    sl    = max(0.5, (atr / price * 100) * 1.5) if price > 0 else 1.5
-    tp    = sl * 2.0
+    sl    = max(1.2, (atr / price * 100) * 2.0) if price > 0 else 1.5
+    tp    = sl * 2.5   # 2.5:1 R:R
 
-    if rsi < 28:
-        conf = 0.92 if rsi < 22 else 0.72
-        return StrategySignal("RSI_MEAN_REVERT", symbol, "long",  conf,
-                              f"RSI oversold {rsi:.1f} — mean-reversion long", sl, tp)
-    if rsi > 72:
-        conf = 0.92 if rsi > 78 else 0.72
+    # Trend guard: don't mean-revert into a strong trend or a mean-reverting regime
+    ema20  = _ema(closes, 20)
+    ema50  = _ema(closes, 50) if len(closes) >= 50 else _ema(closes, len(closes) // 2)
+    spread = abs(ema20[-1] - ema50[-1]) / ema50[-1] * 100
+    if spread > 0.25:
+        return _hold(f"Trending market (EMA spread {spread:.2f}%) — no mean-revert", sl, tp)
+
+    # Additional slope guard: if EMA20 is moving strongly in one direction,
+    # fading it is fighting momentum. Require EMA20 slope (last 3 bars) < 0.05%.
+    ema20_slope = abs(ema20[-1] - ema20[-4]) / ema20[-4] * 100 if len(ema20) >= 4 else 0.0
+    if ema20_slope > 0.05:
+        return _hold(f"EMA20 slope too steep ({ema20_slope:.3f}%) — momentum risk", sl, tp)
+
+    if rsi < 25:
+        conf = 0.90 if rsi < 20 else 0.75
+        return StrategySignal("RSI_MEAN_REVERT", symbol, "long", conf,
+                              f"RSI deep oversold {rsi:.1f}, ranging (spread {spread:.2f}%)", sl, tp)
+    if rsi > 75:
+        conf = 0.90 if rsi > 80 else 0.75
         return StrategySignal("RSI_MEAN_REVERT", symbol, "short", conf,
-                              f"RSI overbought {rsi:.1f} — mean-reversion short", sl, tp)
+                              f"RSI deep overbought {rsi:.1f}, ranging (spread {spread:.2f}%)", sl, tp)
 
-    return _hold(f"RSI neutral {rsi:.1f}", sl, tp)
+    return _hold(f"RSI neutral {rsi:.1f} (spread {spread:.2f}%)", sl, tp)
 
 
 def breakout_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
-    """20-period high/low breakout with volume confirmation."""
-    _hold = lambda r: StrategySignal("BREAKOUT", symbol, "hold", 0.0, r, 1.0, 3.5)
+    """20-period high/low breakout — ATR-based SL, body confirmation, strict volume.
+
+    Improvements over v1:
+    - ATR-based SL (2× ATR, min 1.5%) replaces the fixed 1% that was too tight.
+    - TP = 3× SL giving a 3:1 R:R.
+    - Close must exceed the breakout level by ≥0.10% (filters wick fakeouts).
+    - Volume must be ≥1.5× the 20-period average for full confidence.
+    - RSI gate: longs require RSI < 70, shorts require RSI > 30 (avoids chasing).
+    """
+    _hold = lambda r, sl=1.5, tp=4.5: StrategySignal("BREAKOUT", symbol, "hold", 0.0, r, sl, tp)
 
     if len(candles) < 22:
         return _hold("Insufficient data")
 
-    lookback   = candles[-21:-1]
-    curr       = candles[-1]
-    ph         = max(c["high"]   for c in lookback)
-    pl         = min(c["low"]    for c in lookback)
-    avg_vol    = sum(c["volume"] for c in lookback) / len(lookback)
-    vol_ratio  = curr["volume"] / avg_vol if avg_vol > 0 else 1.0
-    vol_ok     = vol_ratio > 1.2
+    lookback  = candles[-21:-1]
+    curr      = candles[-1]
+    price     = curr["close"]
+    atr       = _atr(candles[-15:], 14)
 
-    if curr["close"] > ph:
-        conf   = 0.88 if vol_ok else 0.56
-        reason = f"Broke 20p high {ph:.2f}" + (" ✓ volume" if vol_ok else " — weak vol")
-        return StrategySignal("BREAKOUT", symbol, "long",  conf, reason, 1.0, 3.5)
+    sl  = max(1.5, (atr / price * 100) * 2.0) if price > 0 else 1.5
+    tp  = sl * 3.0   # 3:1 R:R
 
-    if curr["close"] < pl:
-        conf   = 0.88 if vol_ok else 0.56
-        reason = f"Broke 20p low {pl:.2f}" + (" ✓ volume" if vol_ok else " — weak vol")
-        return StrategySignal("BREAKOUT", symbol, "short", conf, reason, 1.0, 3.5)
+    ph        = max(c["high"]   for c in lookback)
+    pl        = min(c["low"]    for c in lookback)
+    avg_vol   = sum(c["volume"] for c in lookback) / len(lookback)
+    vol_ratio = curr["volume"] / avg_vol if avg_vol > 0 else 1.0
+    rsi       = _rsi([c["close"] for c in candles], 14)
 
-    pct_to_high = (ph - curr["close"]) / ph * 100
-    return _hold(f"Range-bound — {pct_to_high:.1f}% from breakout")
+    # Require a meaningful close beyond the level (not a wick poke)
+    margin_up  = (price - ph) / ph * 100  if ph > 0 else 0.0
+    margin_dn  = (pl - price) / pl * 100  if pl > 0 else 0.0
+
+    if price > ph and margin_up >= 0.10:
+        if vol_ratio < 1.2 or rsi >= 70:
+            return _hold(f"Long breakout weak: vol×{vol_ratio:.1f} RSI {rsi:.1f}")
+        conf   = 0.88 if vol_ratio >= 1.5 else 0.72
+        reason = (f"Broke 20p high {ph:.2f} by {margin_up:.2f}%, "
+                  f"vol×{vol_ratio:.1f}, RSI {rsi:.1f}")
+        return StrategySignal("BREAKOUT", symbol, "long",  conf, reason, sl, tp)
+
+    if price < pl and margin_dn >= 0.10:
+        if vol_ratio < 1.2 or rsi <= 30:
+            return _hold(f"Short breakout weak: vol×{vol_ratio:.1f} RSI {rsi:.1f}")
+        conf   = 0.88 if vol_ratio >= 1.5 else 0.72
+        reason = (f"Broke 20p low {pl:.2f} by {margin_dn:.2f}%, "
+                  f"vol×{vol_ratio:.1f}, RSI {rsi:.1f}")
+        return StrategySignal("BREAKOUT", symbol, "short", conf, reason, sl, tp)
+
+    pct_to_high = (ph - price) / ph * 100
+    return _hold(f"Range-bound — {pct_to_high:.1f}% from breakout", sl, tp)
 
 
 def funding_arb_strategy(symbol: str, candles: list[dict],

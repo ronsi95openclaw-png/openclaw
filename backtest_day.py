@@ -30,13 +30,16 @@ HISTORICAL_DIR = Path(__file__).parent / "data" / "historical"
 CANDLE_INTERVAL = 900   # 15 min in seconds
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--cycles", type=int, default=96, help="Simulation cycles (default 96 = 24 h)")
+parser.add_argument("--cycles",  type=int,   default=96,   help="Simulation cycles (default 96 = 24 h)")
+parser.add_argument("--balance", type=float, default=100.0, help="Starting balance in USDT (default 100)")
+parser.add_argument("--goal",    type=float, default=20000.0, help="Profit goal in USDT (default 20000)")
 args = parser.parse_args()
 
 CYCLES       = args.cycles
-LOOKBACK     = 100       # candles needed for indicators
+LOOKBACK     = 100
 TOTAL_NEEDED = LOOKBACK + CYCLES
-STARTING_BAL = 1000.0
+STARTING_BAL = args.balance
+GOAL         = args.goal
 
 # ── Bootstrap engine ──────────────────────────────────────────────────────────
 
@@ -323,5 +326,29 @@ if _SIM_JOURNAL.exists():
         except Exception: pass
     print(f"\n  Signal journal: {_SIM_JOURNAL.name}")
     print(f"  {len(lines)} entries — " + "  ".join(f"{k}={v}" for k, v in sorted(events.items())))
+
+# ── $100 → goal projector ─────────────────────────────────────────────────────
+if total_closed >= 2 and total_wins > 0:
+    exp_per_trade_pct = (exp / STARTING_BAL) * 100
+    trades_per_day    = total_closed / (CYCLES / 96) if CYCLES >= 96 else total_closed
+    daily_growth_pct  = exp_per_trade_pct * trades_per_day if trades_per_day > 0 else 0.0
+
+    print(f"\n  ── $100 → ${GOAL:,.0f} Projector {'─'*38}")
+    print(f"  Expectancy per trade : {exp_per_trade_pct:+.3f}% of account")
+    print(f"  Avg trades / day     : {trades_per_day:.2f}")
+    print(f"  Projected daily gain : {daily_growth_pct:+.3f}%")
+    if daily_growth_pct > 0:
+        # Compound growth: balance × (1 + daily_growth)^n = GOAL → n = log(GOAL/START)/log(1+r)
+        import math as _math
+        days = _math.log(GOAL / STARTING_BAL) / _math.log(1 + daily_growth_pct / 100)
+        print(f"  Days to ${GOAL:,.0f}       : ~{days:.0f} days ({days/30:.1f} months)")
+        milestones = [500, 1000, 2500, 5000, 10000, 20000]
+        print(f"  Milestones (compounding):")
+        for m in milestones:
+            if m > STARTING_BAL:
+                d = _math.log(m / STARTING_BAL) / _math.log(1 + daily_growth_pct / 100)
+                print(f"    ${m:>6,.0f}  →  ~{d:.0f} days ({d/30:.1f} mo)")
+    else:
+        print("  (Negative expectancy — strategies need more tuning before projecting)")
 
 print("\n" + "="*70 + "\n")
