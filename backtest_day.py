@@ -148,13 +148,15 @@ for sym, fname in SYMBOLS_MAP.items():
 
 # ── Patch BloFinBot for backtest ──────────────────────────────────────────────
 
-from trading.blofin_bot import BloFinBot, _STATE_FILE, LEVERAGE
+from trading.blofin_bot import BloFinBot, _STATE_FILE, _OUTCOMES_FILE, LEVERAGE
 from trading.blofin_strategies import _WEIGHTS_FILE, STRATEGIES
 import trading.blofin_bot as _bot_mod
 
-_JOURNAL_TS  = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-_SIM_JOURNAL = _bot_mod._JOURNAL_FILE.parent / f"signal_journal_bt_{_JOURNAL_TS}.jsonl"
-_bot_mod._JOURNAL_FILE = _SIM_JOURNAL
+_JOURNAL_TS   = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+_SIM_JOURNAL  = _bot_mod._JOURNAL_FILE.parent / f"signal_journal_bt_{_JOURNAL_TS}.jsonl"
+_SIM_OUTCOMES = _bot_mod._OUTCOMES_FILE.parent / f"trade_outcomes_bt_{_JOURNAL_TS}.jsonl"
+_bot_mod._JOURNAL_FILE  = _SIM_JOURNAL
+_bot_mod._OUTCOMES_FILE = _SIM_OUTCOMES
 
 
 def _reset():
@@ -368,6 +370,20 @@ if _SIM_JOURNAL.exists():
         except Exception: pass
     print(f"\n  Signal journal: {_SIM_JOURNAL.name}")
     print(f"  {len(lines)} entries — " + "  ".join(f"{k}={v}" for k, v in sorted(events.items())))
+
+if _SIM_OUTCOMES.exists():
+    outcome_lines = _SIM_OUTCOMES.read_text().splitlines()
+    print(f"\n  Trade outcomes log: {_SIM_OUTCOMES.name}  ({len(outcome_lines)} records)")
+    # Print last 3 outcomes as a sample of WHY analysis
+    if outcome_lines:
+        print("  Sample narratives:")
+        for ln in outcome_lines[-3:]:
+            try:
+                r = json.loads(ln)
+                label = "WIN " if r["outcome"] == "win" else "LOSS"
+                print(f"    [{label}] {r['narrative'][:120]}")
+            except Exception:
+                pass
 
 # ── $100 → goal projector ─────────────────────────────────────────────────────
 if total_closed >= 2 and total_wins > 0:

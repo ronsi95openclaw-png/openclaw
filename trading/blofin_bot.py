@@ -18,9 +18,10 @@ from typing import Optional
 
 logger = logging.getLogger("clawbot.trading.blofin_bot")
 
-_STATE_FILE   = Path(__file__).parent.parent / "data" / "blofin_state.json"
-_LOG_FILE     = Path(__file__).parent.parent / "data" / "logs" / "blofin_trades.log"
-_JOURNAL_FILE = Path(__file__).parent.parent / "data" / "logs" / "signal_journal.jsonl"
+_STATE_FILE    = Path(__file__).parent.parent / "data" / "blofin_state.json"
+_LOG_FILE      = Path(__file__).parent.parent / "data" / "logs" / "blofin_trades.log"
+_JOURNAL_FILE  = Path(__file__).parent.parent / "data" / "logs" / "signal_journal.jsonl"
+_OUTCOMES_FILE = Path(__file__).parent.parent / "data" / "logs" / "trade_outcomes.jsonl"
 
 SYMBOLS        = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
 LEVERAGE       = 3
@@ -286,9 +287,33 @@ class BloFinBot:
                     if size <= 0:
                         continue
 
+                # Ruflo pre-trade advisory (always runs, advisory only — never blocks)
+                ruflo_adj = 0.0
+                try:
+                    from runtime.ruflo_agent import get_advisor as _get_advisor
+                    _adv = _get_advisor()
+                    _advice = _adv.pre_trade_advice(
+                        symbol=symbol, strategy=sig.strategy,
+                        action=sig.action.upper(), confidence=raw_conf,
+                        regime=regime_label,
+                    )
+                    ruflo_adj = _advice.confidence_adj
+                    if _advice.available:
+                        self._journal("ruflo_advice", symbol=symbol, strategy=sig.strategy,
+                                      action=sig.action, regime=regime_label,
+                                      similar_wins=_advice.similar_wins,
+                                      similar_losses=_advice.similar_losses,
+                                      win_rate=round(_advice.win_rate, 3),
+                                      avg_pnl=round(_advice.avg_pnl, 4),
+                                      confidence_adj=_advice.confidence_adj,
+                                      latency_ms=round(_advice.latency_ms, 1))
+                except Exception:
+                    pass
+
                 self._journal("open", symbol=symbol, strategy=sig.strategy,
                               action=sig.action, price=round(price, 4),
                               raw_conf=round(raw_conf, 3), weight=round(weight, 3),
+                              ruflo_adj=round(ruflo_adj, 3),
                               size=size, sl_pct=sig.sl_pct, tp_pct=sig.tp_pct,
                               regime=regime_label, signal_reason=sig.reason)
                 self._open_position(sig, price, size, regime_label=regime_label)
@@ -394,6 +419,96 @@ class BloFinBot:
                           "strategy": sig.strategy, "side": sig.action,
                           "price": price, "size": size, "demo": self.state.demo_mode})
 
+    def _generate_why_narrative(self, pos: dict, outcome: str, exit_price: float, pnl: float) -> str:
+        """Build a human-readable explanation of why a trade won or lost."""
+        strategy  = pos["strategy"]
+        side      = pos["side"]
+        entry     = pos["entry_price"]
+        sl        = pos["sl_price"]
+        tp        = pos["tp_price"]
+        regime    = pos.get("regime_label", "UNKNOWN")
+        reason    = pos.get("reason", "")
+        conf      = pos.get("confidence", 0)
+
+        pct_to_sl = abs(entry - sl) / entry * 100
+        pct_to_tp = abs(tp - entry) / entry * 100
+        rr        = round(pct_to_tp / pct_to_sl, 1) if pct_to_sl > 0 else 0.0
+
+        raw_move            = (exit_price - entry) / entry * 100
+        favorable_move_pct  = raw_move if side == "long" else -raw_move
+
+        regime_up = regime.upper()
+
+        if outcome == "win":
+            parts = [
+                f"TP HIT: {strategy} {side.upper()} {pos['symbol']} "
+                f"@ {entry:.4f} → {exit_price:.4f} ({favorable_move_pct:+.2f}%)",
+                f"Regime: {regime} | R:R={rr}:1 | Conf: {conf}%",
+                f"Entry trigger: {reason}",
+            ]
+            if ("BULL" in regime_up and side == "long") or ("BEAR" in regime_up and side == "short"):
+                why = "Entered WITH the trend — regime-direction alignment captured directional momentum."
+            elif "BREAKOUT" in strategy:
+                why = "Breakout continuation validated the squeeze expansion. Momentum followed through."
+            elif "EMA" in strategy:
+                why = "EMA crossover momentum held — price continued in crossover direction to TP."
+            elif "RSI" in strategy:
+                why = "Oversold/overbought mean-reversion played out — bounce confirmed by RSI recovery."
+            elif "BOLLINGER" in strategy:
+                why = "Volatility squeeze expanded in breakout direction. Momentum follow-through hit TP."
+            elif "TREND" in strategy:
+                why = "ADX/trend strength sustained. Trailing position captured the directional leg."
+            else:
+                why = "Signal conditions held through the trade. No adverse volatility interrupted the move."
+            parts.append(f"WHY IT WORKED: {why}")
+        else:
+            parts = [
+                f"SL HIT: {strategy} {side.upper()} {pos['symbol']} "
+                f"@ {entry:.4f} → {exit_price:.4f} ({favorable_move_pct:+.2f}%)",
+                f"Regime: {regime} | R:R was {rr}:1 | Conf: {conf}%",
+                f"Entry trigger: {reason}",
+            ]
+            if ("BEAR" in regime_up and side == "long") or ("BULL" in regime_up and side == "short"):
+                why = "Counter-trend entry in a trending regime — price continued against position (regime mismatch)."
+            elif favorable_move_pct < -(pct_to_sl * 0.4):
+                why = "Fast reversal immediately after entry — likely a false breakout or whipsaw. Tighter entry confirmation may help."
+            elif "RANGING" in regime_up or "NEUTRAL" in regime_up or "RANGE" in regime_up:
+                why = "Ranging/neutral conditions lacked directional follow-through. Momentum signal faded without trend support."
+            elif conf < 70:
+                why = f"Marginal confidence ({conf}%) — near the entry threshold. Low-confidence setups have higher false-signal rate."
+            else:
+                why = "Market conditions shifted after entry. Normal stop-loss event — no clear systematic pattern identified."
+            parts.append(f"WHY IT FAILED: {why}")
+
+        return " | ".join(parts)
+
+    def _write_trade_outcome(self, pos: dict, outcome: str, exit_price: float,
+                             pnl: float, narrative: str) -> None:
+        """Persist the full trade outcome record (including WHY) to trade_outcomes.jsonl."""
+        _OUTCOMES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts":            datetime.now(timezone.utc).isoformat(),
+            "trade_id":      pos["id"],
+            "symbol":        pos["symbol"],
+            "strategy":      pos["strategy"],
+            "side":          pos["side"],
+            "outcome":       outcome,
+            "pnl":           round(pnl, 4),
+            "entry_price":   pos["entry_price"],
+            "exit_price":    exit_price,
+            "sl_price":      pos["sl_price"],
+            "tp_price":      pos["tp_price"],
+            "confidence":    pos.get("confidence", 0),
+            "regime":        pos.get("regime_label", "UNKNOWN"),
+            "signal_reason": pos.get("reason", ""),
+            "narrative":     narrative,
+        }
+        try:
+            with open(_OUTCOMES_FILE, "a") as f:
+                f.write(json.dumps(record) + "\n")
+        except Exception:
+            pass
+
     def _check_positions(self) -> None:
         to_close: list[tuple[dict, str, float]] = []
 
@@ -421,6 +536,9 @@ class BloFinBot:
         pnl   = mult * (exit_price - pos["entry_price"]) / pos["entry_price"] \
                 * pos["entry_price"] * pos["size"] * LEVERAGE
 
+        # Generate WHY analysis before removing from state
+        narrative = self._generate_why_narrative(pos, outcome, exit_price, pnl)
+
         with self._lock:
             if pos in self.state.open_positions:
                 self.state.open_positions.remove(pos)
@@ -431,19 +549,24 @@ class BloFinBot:
                 "pnl":        round(pnl, 4),
                 "outcome":    outcome,
                 "closed_at":  datetime.now(timezone.utc).strftime("%H:%M:%S"),
+                "narrative":  narrative,
             }
             self.state.trade_log.insert(0, record)
             self.state.trade_log = self.state.trade_log[:50]
 
         self.weights.record_result(pos["strategy"], outcome == "win")
-        logger.info(f"CLOSE {pos['symbol']} [{outcome}]  PnL={pnl:+.4f}")
+        logger.info(f"CLOSE {pos['symbol']} [{outcome.upper()}]  PnL={pnl:+.4f}  {narrative[:100]}")
         self._append_log({"event": "close", "id": pos["id"], "outcome": outcome,
                           "pnl": round(pnl, 4), "exit_price": exit_price})
         self._journal("close", symbol=pos["symbol"], strategy=pos["strategy"],
                       side=pos["side"], outcome=outcome, pnl=round(pnl, 4),
                       entry_price=pos["entry_price"], exit_price=exit_price,
                       regime=pos.get("regime_label", "UNKNOWN"),
-                      trade_id=pos["id"])
+                      signal_reason=pos.get("reason", ""),
+                      trade_id=pos["id"], narrative=narrative)
+
+        # Write detailed outcome record (WHY analysis) to trade_outcomes.jsonl
+        self._write_trade_outcome(pos, outcome, exit_price, pnl, narrative)
 
         # Feed capital preservation engine after each closed trade
         if self._orchestrator is not None:
@@ -451,7 +574,7 @@ class BloFinBot:
                 equity=self.state.balance + self.state.total_pnl,
                 trade_pnl=pnl,
             )
-            # Record outcome in Ruflo memory for future advisory lookups (advisory only)
+            # Record outcome in Ruflo HNSW memory — narrative teaches WHY similar setups worked/failed
             self._orchestrator.record_trade_outcome(
                 symbol=pos.get("symbol", "UNKNOWN"),
                 strategy=pos.get("strategy", "UNKNOWN"),
@@ -459,6 +582,7 @@ class BloFinBot:
                 regime=pos.get("regime_label", "UNKNOWN"),
                 action=pos.get("side", "UNKNOWN").upper(),
                 win=(outcome == "win"),
+                metadata={"narrative": narrative, "signal_reason": pos.get("reason", "")},
             )
 
     def _current_price(self, pos: dict) -> float:

@@ -163,20 +163,26 @@ class RufloAdvisor:
             return
         try:
             key = f"{symbol}:{strategy}:{action}:{regime}:{int(time.time())}"
+            narrative = (metadata or {}).get("narrative", "")
+            signal_reason = (metadata or {}).get("signal_reason", "")
             content = (
                 f"{symbol} {strategy} {action} regime={regime} "
                 f"pnl={pnl:.4f} win={win}"
+                + (f" | {signal_reason}" if signal_reason else "")
+                + (f" | {narrative}" if narrative else "")
             )
             self._bridge.memory_store(
                 key=key,
                 content=content,
                 metadata={
-                    "symbol":   symbol,
-                    "strategy": strategy,
-                    "action":   action,
-                    "regime":   regime,
-                    "pnl":      pnl,
-                    "win":      win,
+                    "symbol":        symbol,
+                    "strategy":      strategy,
+                    "action":        action,
+                    "regime":        regime,
+                    "pnl":           pnl,
+                    "win":           win,
+                    "signal_reason": signal_reason,
+                    "narrative":     narrative,
                     **(metadata or {}),
                 },
             )
