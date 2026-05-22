@@ -101,6 +101,17 @@ class CryptoComBot:
             s.open_positions  = raw.get("open_positions",  [])
             s.last_flush_date = raw.get("last_flush_date", "")
             s.scan_interval   = raw.get("scan_interval",   30)
+            # Drop malformed positions that would crash the scan loop
+            required = {"id", "symbol", "strategy", "side", "entry_price", "size", "sl_price", "tp_price"}
+            valid = [p for p in s.open_positions if isinstance(p, dict) and required.issubset(p)]
+            if len(valid) < len(s.open_positions):
+                logger.warning("Dropped %d malformed position(s) on load",
+                               len(s.open_positions) - len(valid))
+            s.open_positions = valid
+            # Backfill original_entry for positions saved before that field existed
+            for pos in s.open_positions:
+                if "original_entry" not in pos:
+                    pos["original_entry"] = pos.get("entry_price", 0.0)
             # Migrate confidence values stored as old int 0-100 format → 0-1 float
             for rec in s.open_positions + s.trade_log:
                 c = rec.get("confidence", 0)
@@ -424,28 +435,16 @@ class CryptoComBot:
                     if size <= 0:
                         continue
 
-                # Correlated exposure gate — only fires when positions are already open;
-                # checks whether adding this same-direction trade would breach the limit
-                if self._orchestrator and self._orchestrator._capital \
-                        and self.state.open_positions:
-                    try:
-                        check_pos = []
-                        for p in self.state.open_positions:
-                            notional   = p.get("entry_price", 0) * p.get("size", 0) * LEVERAGE
-                            correlated = p.get("side") == sig.action
-                            check_pos.append({"notional": notional, "correlated": correlated})
-                        check_pos.append({
-                            "notional":   price * size * LEVERAGE,
-                            "correlated": True,
-                        })
-                        if self._orchestrator._capital.check_correlated_exposure(check_pos):
-                            logger.info(
-                                "Signal BLOCKED [%s/%s]: correlated exposure limit reached",
-                                symbol, sig.strategy,
-                            )
-                            continue
-                    except Exception as _ce:
-                        logger.debug("Correlation check failed (non-fatal): %s", _ce)
+                # Correlated exposure gate — block only when 2+ existing positions are
+                # already in the same direction (adding a 3rd would be all-in one way)
+                same_dir = sum(1 for p in self.state.open_positions
+                               if p.get("side") == sig.action)
+                if same_dir >= 2:
+                    logger.info(
+                        "Signal BLOCKED [%s/%s]: %d same-direction positions already open",
+                        symbol, sig.strategy, same_dir,
+                    )
+                    continue
 
                 # ATR volatility scalar: reduce size when short-term vol > baseline
                 # Protects against over-sizing into sudden volatility spikes
@@ -522,7 +521,8 @@ class CryptoComBot:
             from trading.exchange import get_derivatives_balance
             bal = get_derivatives_balance()
             if bal:
-                self.state.balance = bal.get("available", self.state.balance)
+                with self._lock:
+                    self.state.balance = bal.get("available", self.state.balance)
                 return self.state.balance
         except Exception:
             pass
@@ -531,7 +531,8 @@ class CryptoComBot:
             balances = get_account_balance()
             usdt     = balances.get("USDT", {}).get("available", 0.0)
             if usdt > 0:
-                self.state.balance = usdt
+                with self._lock:
+                    self.state.balance = usdt
                 return usdt
         except Exception as e:
             logger.warning("Balance fetch failed: %s", e)
@@ -665,7 +666,7 @@ class CryptoComBot:
             pos["current_price"] = price
 
             # DCA add-on: if price hit the DCA trigger and we haven't added yet
-            if pos.get("dca_count", 1) == 0 and pos.get("dca_size", 0) > 0:
+            if pos.get("dca_count", 0) == 0 and pos.get("dca_size", 0) > 0:
                 dca_trig = pos["dca_trigger"]
                 hit_dca  = (price <= dca_trig) if pos["side"] == "long" else (price >= dca_trig)
                 if hit_dca:
@@ -716,10 +717,10 @@ class CryptoComBot:
                 if hit_partial:
                     half_size   = round(pos["size"] * 0.5, 6)
                     partial_pnl = mult_p * (price - pos["entry_price"]) * half_size * LEVERAGE
-                    pos["size"]             = half_size
-                    pos["sl_price"]         = pos["entry_price"]   # free ride: SL → breakeven
-                    pos["partial_tp_taken"] = True
                     with self._lock:
+                        pos["size"]             = half_size
+                        pos["sl_price"]         = pos["entry_price"]   # free ride: SL → breakeven
+                        pos["partial_tp_taken"] = True
                         self.state.total_pnl = round(self.state.total_pnl + partial_pnl, 4)
                     logger.info("PARTIAL TP %s %s @%.4f  pnl=%+.4f  SL→BE  remaining=%.6f",
                                 pos["side"].upper(), pos["symbol"], price, partial_pnl, half_size)
