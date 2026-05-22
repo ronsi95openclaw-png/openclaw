@@ -41,7 +41,7 @@ _SYSTEMS: List[Tuple[str, str, str, str, str]] = [
     ("Monte Carlo Engine",           "operational",   "none",     "research.montecarlo.engine",     "MonteCarloEngine"),
     ("Optimization (Grid)",          "operational",   "none",     "research.optimization.grid_search", "grid_search"),
     ("Walk-Forward Engine",          "operational",   "none",     "research.walkforward.engine",    "WalkForwardEngine"),
-    ("AI Brain (Ollama/Claude)",     "advisory",      "low",      "core.brain",                     "Brain"),
+    ("AI Brain (Ollama/Claude)",     "advisory",      "low",      "core.brain",                     "ask_llm"),
     ("Prometheus Metrics",           "operational",   "low",      "core.metrics",                   "TRADES_TOTAL"),
     ("Resource Manager",             "operational",   "low",      "system.resource_manager",        "ResourceManager"),
     ("Security Firewall",            "operational",   "medium",   "security.api_firewall",          "APIFirewall"),
