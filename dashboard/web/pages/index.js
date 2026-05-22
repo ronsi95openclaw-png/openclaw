@@ -5,8 +5,12 @@ import {
   BarChart, Bar, Cell,
 } from 'recharts'
 
-const API  = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-const WS   = process.env.NEXT_PUBLIC_WS_URL  || 'ws://localhost:8000/ws'
+const API  = ''   // relative — proxied by Next.js to localhost:8000
+const WS   = process.env.NEXT_PUBLIC_WS_URL || (
+  typeof window !== 'undefined'
+    ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:8000/ws`
+    : 'ws://localhost:8000/ws'
+)
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

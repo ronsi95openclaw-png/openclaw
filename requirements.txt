@@ -1,6 +1,11 @@
 # Core numerics / research
 numpy>=1.26
 
+# Dashboard API
+fastapi>=0.111
+uvicorn[standard]>=0.29
+websockets>=12.0
+
 # Google Sheets reporting
 gspread>=6.0
 google-auth>=2.0
