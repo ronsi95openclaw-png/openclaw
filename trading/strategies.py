@@ -40,14 +40,27 @@ class StrategySignal:
 
 @dataclass
 class StrategyStats:
-    trades: int   = 0
-    wins:   int   = 0
-    losses: int   = 0
-    weight: float = 1.0
+    trades:          int   = 0
+    wins:            int   = 0
+    losses:          int   = 0
+    weight:          float = 1.0
+    recent_outcomes: list  = field(default_factory=list)  # True=win False=loss, newest last (max 20)
 
     @property
     def win_rate(self) -> float:
-        return (self.wins / self.trades) if self.trades > 0 else 0.5
+        if self.trades == 0:
+            return 0.5
+        if len(self.recent_outcomes) >= 5:
+            # Recency-weighted: most recent trade = weight 1.0, each older = 0.85×
+            # A strategy whose last 5 trades were all losses adapts ~3× faster than simple WR
+            total_w = win_w = 0.0
+            for i, won in enumerate(reversed(self.recent_outcomes)):
+                w = 0.85 ** i
+                total_w += w
+                if won:
+                    win_w += w
+            return win_w / total_w if total_w > 0 else 0.5
+        return self.wins / self.trades
 
     def update_weight(self) -> None:
         if self.trades < 3:
@@ -389,10 +402,11 @@ class StrategyWeightEngine:
             for name, d in raw.items():
                 if name in self.stats:
                     s         = self.stats[name]
-                    s.trades  = d.get("trades", 0)
-                    s.wins    = d.get("wins",   0)
-                    s.losses  = d.get("losses", 0)
-                    s.weight  = d.get("weight", 1.0)
+                    s.trades           = d.get("trades",           0)
+                    s.wins             = d.get("wins",             0)
+                    s.losses           = d.get("losses",           0)
+                    s.weight           = d.get("weight",           1.0)
+                    s.recent_outcomes  = d.get("recent_outcomes",  [])
                     # Integrity check: wins+losses must equal trades.
                     # If not, the record was saved by an older code version that
                     # didn't track outcomes. Reset counters so weight engine has
@@ -412,7 +426,8 @@ class StrategyWeightEngine:
         _WEIGHTS_FILE.parent.mkdir(parents=True, exist_ok=True)
         raw = {
             name: {"trades": s.trades, "wins": s.wins,
-                   "losses": s.losses, "weight": s.weight}
+                   "losses": s.losses, "weight": s.weight,
+                   "recent_outcomes": s.recent_outcomes[-20:]}
             for name, s in self.stats.items()
         }
         _WEIGHTS_FILE.write_text(json.dumps(raw, indent=2))
@@ -426,6 +441,9 @@ class StrategyWeightEngine:
             s.wins += 1
         else:
             s.losses += 1
+        s.recent_outcomes.append(won)
+        if len(s.recent_outcomes) > 20:
+            s.recent_outcomes.pop(0)
         s.update_weight()
         self.save()
         logger.info(

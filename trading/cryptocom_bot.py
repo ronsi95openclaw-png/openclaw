@@ -303,7 +303,7 @@ class CryptoComBot:
         from trading.strategies import (
             ema_cross_strategy, rsi_mean_revert_strategy,
             breakout_strategy, bollinger_band_strategy, trend_follow_strategy,
-            _rsi,
+            _rsi, _atr,
         )
 
         self.state.last_scan  = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
@@ -447,6 +447,18 @@ class CryptoComBot:
                     except Exception as _ce:
                         logger.debug("Correlation check failed (non-fatal): %s", _ce)
 
+                # ATR volatility scalar: reduce size when short-term vol > baseline
+                # Protects against over-sizing into sudden volatility spikes
+                try:
+                    atr_short = _atr(candles[-10:], 5)
+                    atr_base  = _atr(candles, 14)
+                    if atr_base > 0:
+                        vol_ratio = atr_short / atr_base
+                        if vol_ratio > 1.3:
+                            size = round(size * max(0.6, 1.0 / vol_ratio), 6)
+                except Exception:
+                    pass
+
                 self._open_position(sig, price, size, regime_label=regime_label,
                                    rsi=current_rsi, balance=balance, mode=mode)
                 fired += 1
@@ -550,6 +562,11 @@ class CryptoComBot:
         dca_trigger  = (price * (1 - dca_dist_pct / 100) if sig.action == "long"
                         else price * (1 + dca_dist_pct / 100))
 
+        # Partial TP: close 50% of position at halfway to full TP, move SL to breakeven
+        partial_tp_dist  = sig.tp_pct * 0.5
+        partial_tp_price = (price * (1 + partial_tp_dist / 100) if sig.action == "long"
+                            else price * (1 - partial_tp_dist / 100))
+
         if not self.state.demo_mode:
             try:
                 from trading.executor import open_position
@@ -585,10 +602,12 @@ class CryptoComBot:
             "reason":         sig.reason,
             "regime_label":   regime_label,
             # DCA fields
-            "dca_size":       dca_size,
-            "dca_trigger":    round(dca_trigger, 6),
-            "dca_count":      0,
-            "original_entry": price,
+            "dca_size":          dca_size,
+            "dca_trigger":       round(dca_trigger, 6),
+            "dca_count":         0,
+            "original_entry":    price,
+            "partial_tp_price":  round(partial_tp_price, 6),
+            "partial_tp_taken":  False,
         }
 
         with self._lock:
@@ -688,6 +707,25 @@ class CryptoComBot:
                     self._append_log({"event": "dca_add", "id": pos["id"],
                                       "symbol": pos["symbol"], "dca_price": round(price, 4),
                                       "avg_entry": round(avg_entry, 6), "new_size": pos["size"]})
+
+            # Partial TP: close 50% and move SL to breakeven at halfway to full TP
+            if not pos.get("partial_tp_taken") and pos.get("partial_tp_price"):
+                mult_p     = 1 if pos["side"] == "long" else -1
+                hit_partial = ((price >= pos["partial_tp_price"]) if pos["side"] == "long"
+                               else (price <= pos["partial_tp_price"]))
+                if hit_partial:
+                    half_size   = round(pos["size"] * 0.5, 6)
+                    partial_pnl = mult_p * (price - pos["entry_price"]) * half_size * LEVERAGE
+                    pos["size"]             = half_size
+                    pos["sl_price"]         = pos["entry_price"]   # free ride: SL → breakeven
+                    pos["partial_tp_taken"] = True
+                    with self._lock:
+                        self.state.total_pnl = round(self.state.total_pnl + partial_pnl, 4)
+                    logger.info("PARTIAL TP %s %s @%.4f  pnl=%+.4f  SL→BE  remaining=%.6f",
+                                pos["side"].upper(), pos["symbol"], price, partial_pnl, half_size)
+                    self._append_log({"event": "partial_tp", "id": pos["id"],
+                                      "price": round(price, 4), "pnl": round(partial_pnl, 4),
+                                      "remaining_size": half_size})
 
             mult    = 1 if pos["side"] == "long" else -1
             pnl_pct = mult * (price - pos["entry_price"]) / pos["entry_price"]
