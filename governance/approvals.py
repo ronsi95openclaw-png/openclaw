@@ -5,6 +5,7 @@ Thread-safe; never deletes or modifies existing log entries.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -199,11 +200,15 @@ class ApprovalQueue:
     # ── Internal helpers ──────────────────────────────────────────────────
 
     def _append_log(self, record: Dict[str, Any]) -> None:
-        """Append a JSON line to the immutable log file."""
+        """Append a JSON line to the immutable log file (file-locked for multi-process safety)."""
         record.setdefault("_logged_at", datetime.now(timezone.utc).isoformat())
         line = json.dumps(record, default=str)
         with open(self._log_path, "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                fh.write(line + "\n")
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
 
     def _load(self) -> None:
         """Replay the log file to reconstruct in-memory state on startup."""

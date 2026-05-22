@@ -9,6 +9,7 @@ AI SAFETY CONTRACT:
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -168,6 +169,10 @@ class EmergencyControls:
         The approval must already exist in APPROVED state.
         The executing operator must be ADMIN and must NOT be the halt-setter.
 
+        Maker/checker uses the halt_operator captured in the approval request
+        payload (not live state) to prevent a concurrent halt from bypassing
+        the check-then-release gap.
+
         Returns:
             True  → halt released.
             False → request not approved or permission denied.
@@ -177,14 +182,8 @@ class EmergencyControls:
             logger.warning("execute_approved_release: %s is not ADMIN", executing_operator)
             return False
 
-        with self._lock:
-            if executing_operator == self._halt_operator:
-                logger.error(
-                    "execute_approved_release: maker/checker violation — "
-                    "%s triggered the halt and cannot release it", executing_operator
-                )
-                return False
-
+        # Fetch approval outside the lock — ApprovalQueue has its own lock
+        # and never calls back into EmergencyControls, so no deadlock risk.
         approval = self._approvals.get(request_id)
         if approval is None or approval.status != ApprovalStatus.APPROVED:
             status_val = approval.status.value if approval else "NOT_FOUND"
@@ -194,14 +193,34 @@ class EmergencyControls:
             )
             return False
 
+        # Use the halt_operator captured at request_halt_release() time, not
+        # the live _halt_operator — a concurrent emergency_halt_all() between
+        # the two lock scopes could overwrite _halt_operator, allowing the
+        # wrong operator to pass the maker/checker check.
+        captured_halt_operator = approval.payload.get("halt_operator", "")
+        if executing_operator == captured_halt_operator:
+            logger.error(
+                "execute_approved_release: maker/checker violation — "
+                "%s triggered the halt and cannot release it "
+                "(halt_operator from request payload=%r)",
+                executing_operator, captured_halt_operator,
+            )
+            return False
+
         now = datetime.now(timezone.utc)
         with self._lock:
+            if not self._halted:
+                logger.warning(
+                    "execute_approved_release: halt already released (request_id=%s)",
+                    request_id,
+                )
+                return False
             self._halted = False
             self._append_log({
                 "event":            "EMERGENCY_HALT_RELEASED",
                 "request_id":       request_id,
                 "executing_op":     executing_operator,
-                "original_halter":  self._halt_operator,
+                "original_halter":  captured_halt_operator,
                 "ts":               now.isoformat(),
             })
 
@@ -237,8 +256,12 @@ class EmergencyControls:
     # ── Internal helpers ──────────────────────────────────────────────────
 
     def _append_log(self, record: Dict[str, Any]) -> None:
-        """Append to immutable emergency log (never modify existing entries)."""
+        """Append to immutable emergency log (file-locked for multi-process safety)."""
         record.setdefault("_logged_at", datetime.now(timezone.utc).isoformat())
         line = json.dumps(record, default=str)
         with open(self._log_path, "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                fh.write(line + "\n")
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
