@@ -277,6 +277,25 @@ def set_leverage(instrument: str, leverage: int) -> bool:
         return False
 
 
+def get_open_orders(instrument: str = None) -> list:
+    """Return list of open/pending orders from exchange."""
+    api_key, secret = _get_keys()
+    params = {"status": "ACTIVE"}
+    if instrument:
+        params["instrument_name"] = instrument
+    body = _sign("private/get-open-orders", params, api_key, secret)
+    try:
+        r = requests.post(f"{_PRIVATE}/get-open-orders", json=body, timeout=10)
+        r.raise_for_status()
+        payload = r.json()
+        if payload.get("code", 0) != 0:
+            raise ValueError(f"get-open-orders error: {payload.get('message', payload)}")
+        return payload.get("result", {}).get("order_list", [])
+    except Exception as exc:
+        logger.warning("get_open_orders error: %s", exc)
+        return []
+
+
 def get_positions(instrument: str = None) -> list:
     """Return list of open perpetual positions from exchange."""
     api_key, secret = _get_keys()

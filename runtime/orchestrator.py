@@ -255,6 +255,12 @@ class RuntimeOrchestrator:
                     alert_emergency_halt("Drawdown limit breached", equity)
             except Exception:
                 pass
+            try:
+                from runtime.metrics import get_registry
+                get_registry().record_capital_transition(old_state, new_state)
+                get_registry().update_capital_state(new_state)
+            except Exception:
+                pass
 
     def record_trade_outcome(
         self,

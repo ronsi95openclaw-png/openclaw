@@ -96,6 +96,11 @@ class CryptoComBot:
         self._orchestrator = self._init_orchestrator()
         self._reporter     = self._init_reporter()
 
+        # Phase 2: portfolio risk engine, metrics, reconciliation
+        self._portfolio_risk = self._init_portfolio_risk()
+        self._metrics        = self._init_metrics()
+        self._run_startup_reconciliation()
+
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _load_state(self) -> None:
@@ -248,6 +253,52 @@ class CryptoComBot:
             logger.warning("SheetReporter unavailable: %s", exc)
             return None
 
+    def _init_portfolio_risk(self):
+        try:
+            from risk.portfolio_risk import PortfolioRiskEngine
+            engine = PortfolioRiskEngine(leverage=LEVERAGE)
+            logger.info("PortfolioRiskEngine initialised")
+            return engine
+        except Exception as exc:
+            logger.warning("PortfolioRiskEngine unavailable: %s", exc)
+            return None
+
+    def _init_metrics(self):
+        try:
+            from runtime.metrics import get_registry, start_http_server
+            registry = get_registry()
+            start_http_server(port=9090)
+            logger.info("Prometheus metrics on :9090")
+            return registry
+        except Exception as exc:
+            logger.warning("Metrics registry unavailable: %s", exc)
+            return None
+
+    def _run_startup_reconciliation(self) -> None:
+        try:
+            from runtime.reconciliation import reconcile_on_startup
+            balance = (
+                max(100.0, min(2000.0, 1000.0 + self.state.total_pnl))
+                if self.state.demo_mode
+                else self.state.balance
+            )
+            report = reconcile_on_startup(
+                local_positions=list(self.state.open_positions),
+                local_balance=balance,
+                demo_mode=self.state.demo_mode,
+            )
+            if report.halt_required:
+                logger.critical(
+                    "Startup reconciliation HALT required: %s", report.summary()
+                )
+                self.state.status_msg = "HALTED — reconciliation failure"
+            elif not report.passed:
+                logger.warning("Startup reconciliation warnings: %s", report.summary())
+            else:
+                logger.info("Startup reconciliation passed (%dms)", report.duration_ms)
+        except Exception as exc:
+            logger.warning("Startup reconciliation error (non-fatal): %s", exc)
+
     # ── Control ───────────────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -331,6 +382,7 @@ class CryptoComBot:
             _rsi, _atr,
         )
 
+        _scan_start = time.monotonic()
         self.state.last_scan  = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
         self.state.status_msg = "Scanning…"
         self._reset_daily_counter_if_needed()
@@ -496,6 +548,16 @@ class CryptoComBot:
         self._adjust_scan_interval()
         self._save_state()
 
+        # Phase 2 metrics
+        _scan_ms = (time.monotonic() - _scan_start) * 1000
+        if self._metrics:
+            try:
+                self._metrics.record_scan_duration(_scan_ms / 1000.0)
+                self._metrics.update_positions(open_cnt)
+                self._metrics.update_pnl(self.state.total_pnl)
+            except Exception:
+                pass
+
     # ── Market data ───────────────────────────────────────────────────────────
 
     def _fetch_market_data(self, symbol: str) -> tuple[list[dict] | None, float]:
@@ -574,6 +636,22 @@ class CryptoComBot:
                        regime_label: str = "UNKNOWN",
                        rsi: float = 50.0, balance: float = 0.0,
                        mode: str = "DEMO") -> None:
+        # Portfolio risk gate: block new positions when exposure limits breached
+        if self._portfolio_risk and balance > 0:
+            try:
+                prices = {p["symbol"]: p.get("entry_price", price)
+                          for p in self.state.open_positions}
+                prices[sig.symbol] = price
+                self._portfolio_risk.update_positions(self.state.open_positions, prices)
+                if self._portfolio_risk.should_reduce_positions(balance, regime_label):
+                    logger.warning(
+                        "PortfolioRisk BLOCKED new position [%s/%s]: exposure limit exceeded",
+                        sig.symbol, regime_label,
+                    )
+                    return
+            except Exception as _pre:
+                logger.debug("Portfolio risk check error (non-fatal): %s", _pre)
+
         sl = price * (1 - sig.sl_pct / 100) if sig.action == "long" else price * (1 + sig.sl_pct / 100)
         tp = price * (1 + sig.tp_pct / 100) if sig.action == "long" else price * (1 - sig.tp_pct / 100)
         trade_id = _next_trade_id(sig.strategy)

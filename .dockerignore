@@ -1,0 +1,16 @@
+.env
+credentials.json
+setup.sh
+__pycache__
+*.pyc
+*.pyo
+.git
+.github
+node_modules
+dashboard/web/.next
+dashboard/web/node_modules
+data/logs/
+data/optimization/
+*.egg-info
+.pytest_cache
+.mypy_cache
