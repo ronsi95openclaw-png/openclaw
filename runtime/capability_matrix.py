@@ -49,6 +49,7 @@ _SYSTEMS: List[Tuple[str, str, str, str, str]] = [
     ("Control Center Dashboard",     "operational",   "none",     "dashboard.control_center",       "create_app"),
     ("Ruflo MCP Bridge",             "advisory",      "none",     "runtime.ruflo_bridge",           "RufloBridge"),
     ("Ruflo Advisory Agent",         "advisory",      "none",     "runtime.ruflo_agent",            "RufloAdvisor"),
+    ("Qwen Compressor",              "operational",   "low",      "runtime.qwen_compressor",        "compress_trade"),
     ("Crypto.com Bot",               "operational",   "high",     "trading.cryptocom_bot",          "CryptoComBot"),
     ("Google Sheets Reporter",       "operational",   "low",      "reporting.google_sheets",        "SheetReporter"),
 ]
@@ -134,7 +135,7 @@ def _get_unanswered_questions(results: list) -> List[str]:
     missing = [r["system"] for r in results if r["status"] == "MISSING"]
     questions = [
         "Which agents are live? → BloFinBot scan loop (4 strategies) + RuntimeOrchestrator (if wired)",
-        "Which model powers each? → core.brain routes: Ollama qwen2.5:14b (simple) / Claude Haiku (complex)",
+        "Which model powers each? → Qwen qwen2.5:14b (per-trade compression) / Claude Opus (daily analysis) / Claude Haiku (complex tasks via core.brain)",
         "What triggers them? → 30s scan loop in BloFinBot._loop() + Telegram commands",
         "What outputs do they produce? → TradingIntent → IntentVerdict → position open/close",
         "How are conflicts resolved? → IntentPipeline: first valid intent wins; one position per symbol",

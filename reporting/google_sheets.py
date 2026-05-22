@@ -51,6 +51,12 @@ _REGIME_HEADERS = [
     "Timestamp", "Pair", "Regime", "ADX", "RSI", "ATR Ratio",
 ]
 
+_ANALYSIS_HEADERS = [
+    "Date", "Overall Health", "Win Rate %", "Expectancy $",
+    "Top Failure Pattern", "Top Win Pattern", "Immediate Action",
+    "Weight Adjustments", "Ruflo Directive", "Qwen Lessons Used", "Model",
+]
+
 
 class SheetReporter:
     """Async Google Sheets reporter.
@@ -240,6 +246,36 @@ class SheetReporter:
             regimes_str, notes,
         ])
 
+    def log_analysis_report(
+        self,
+        date:             str,
+        overall_health:   str,
+        win_rate_pct:     float,
+        expectancy_usd:   float,
+        top_failure:      str   = "",
+        top_win:          str   = "",
+        immediate_action: str   = "",
+        weight_adjustments: dict = None,
+        ruflo_directive:  str   = "",
+        qwen_lessons_used: int  = 0,
+        model:            str   = "claude-opus-4-7",
+    ) -> None:
+        """Log the daily Claude Opus AnalysisReport to the 'Claude Analysis' tab."""
+        weight_str = "; ".join(f"{k}→{v:.2f}x" for k, v in (weight_adjustments or {}).items())
+        self._enqueue("Claude Analysis", [
+            date,
+            overall_health,
+            round(win_rate_pct, 1),
+            round(expectancy_usd, 4),
+            top_failure[:120] if top_failure else "",
+            top_win[:120] if top_win else "",
+            immediate_action[:120] if immediate_action else "",
+            weight_str,
+            ruflo_directive[:120] if ruflo_directive else "",
+            qwen_lessons_used,
+            model,
+        ])
+
     def is_connected(self) -> bool:
         return self._connected
 
@@ -333,10 +369,11 @@ class SheetReporter:
             return None
 
         headers_map = {
-            "Signals": _SIGNALS_HEADERS,
-            "Trades":  _TRADES_HEADERS,
-            "Daily":   _DAILY_HEADERS,
-            "Regime":  _REGIME_HEADERS,
+            "Signals":         _SIGNALS_HEADERS,
+            "Trades":          _TRADES_HEADERS,
+            "Daily":           _DAILY_HEADERS,
+            "Regime":          _REGIME_HEADERS,
+            "Claude Analysis": _ANALYSIS_HEADERS,
         }
         try:
             try:

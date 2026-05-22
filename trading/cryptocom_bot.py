@@ -566,6 +566,13 @@ class CryptoComBot:
                 "dca_count":    pos.get("dca_count", 0),
                 "demo":         self.state.demo_mode,
             }
+            # Qwen compression — adds 2-sentence lesson before Claude Opus reads it
+            try:
+                from runtime.qwen_compressor import compress_trade
+                outcome_record["qwen_lesson"] = compress_trade(outcome_record)
+            except Exception:
+                outcome_record["qwen_lesson"] = ""
+
             with open(_OUTCOMES_FILE, "a", encoding="utf-8") as _f:
                 _f.write(json.dumps(outcome_record) + "\n")
         except Exception as _e:
@@ -700,7 +707,7 @@ class CryptoComBot:
                 date=today,
                 balance=s["balance"],
                 day_pnl=s["total_pnl"],
-                total_pnl=s["total_pnl"],
+                start_balance=1000.0,
                 trades=s["trades_today"],
                 wins=wins, losses=losses,
                 strategy_stats=strategy_stats,
@@ -711,19 +718,55 @@ class CryptoComBot:
         # Claude Opus analysis — runs asynchronously so it doesn't block the bot
         if run_analysis and (wins + losses) >= 5:
             import threading
+            reporter_ref = self._reporter
+            orchestrator_ref = self._orchestrator
+
             def _analyse():
                 try:
                     from runtime.claude_analyst import run_analysis as _run
+                    from pathlib import Path
+
+                    # Count how many outcomes have a Qwen lesson (for Sheets logging)
+                    outcomes_path = _OUTCOMES_FILE
+                    qwen_count = 0
+                    if outcomes_path.exists():
+                        import json as _json
+                        for ln in outcomes_path.read_text().splitlines():
+                            try:
+                                if _json.loads(ln).get("qwen_lesson"):
+                                    qwen_count += 1
+                            except Exception:
+                                pass
+
                     report = _run(silent=True)
                     logger.info(
-                        "Daily Claude analysis: %s  WR=%.0f%%  actions=%d",
+                        "Daily Claude analysis: %s  WR=%.0f%%  actions=%d  qwen_lessons=%d",
                         report.overall_health, report.win_rate_pct,
-                        len(report.immediate_actions),
+                        len(report.immediate_actions), qwen_count,
                     )
-                    # Feed Ruflo learning directive into the journal
-                    if report.ruflo_learning_directive and self._orchestrator:
+
+                    # Log analysis report to Google Sheets "Claude Analysis" tab
+                    if reporter_ref:
                         try:
-                            self._orchestrator.record_trade_outcome(
+                            reporter_ref.log_analysis_report(
+                                date=today,
+                                overall_health=report.overall_health,
+                                win_rate_pct=report.win_rate_pct,
+                                expectancy_usd=report.expectancy_usd,
+                                top_failure=report.top_failure_patterns[0] if report.top_failure_patterns else "",
+                                top_win=report.top_win_patterns[0] if report.top_win_patterns else "",
+                                immediate_action=report.immediate_actions[0] if report.immediate_actions else "",
+                                weight_adjustments=report.weight_adjustments,
+                                ruflo_directive=report.ruflo_learning_directive,
+                                qwen_lessons_used=qwen_count,
+                            )
+                        except Exception:
+                            pass
+
+                    # Feed Ruflo learning directive into the journal
+                    if report.ruflo_learning_directive and orchestrator_ref:
+                        try:
+                            orchestrator_ref.record_trade_outcome(
                                 symbol="ALL", strategy="ANALYST",
                                 pnl=0.0, regime="DAILY_REVIEW", action="REVIEW",
                                 win=report.win_rate_pct >= 55,
