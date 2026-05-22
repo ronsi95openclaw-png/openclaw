@@ -444,12 +444,26 @@ class StrategyWeightEngine:
         s.recent_outcomes.append(won)
         if len(s.recent_outcomes) > 20:
             s.recent_outcomes.pop(0)
+        old_weight = s.weight
         s.update_weight()
         self.save()
         logger.info(
             f"[{strategy}] weight={s.weight:.2f}  "
             f"WR={s.win_rate:.0%}  trades={s.trades}"
         )
+        # Obsidian: record weight change if significant
+        try:
+            import sys
+            from pathlib import Path
+            sys.path.insert(0, str(Path.home() / "ai-system"))
+            from obsidian.strategy_writer import write_strategy_evolution
+            write_strategy_evolution(
+                strategy=strategy, old_weight=old_weight, new_weight=s.weight,
+                reason=f"{'win' if won else 'loss'} recorded",
+                trades=s.trades, win_rate=s.win_rate,
+            )
+        except Exception:
+            pass
 
     def effective_confidence(self, strategy: str, raw_conf: float) -> float:
         w = self.stats.get(strategy, StrategyStats()).weight

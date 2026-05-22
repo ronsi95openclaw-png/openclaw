@@ -790,6 +790,15 @@ class CryptoComBot:
 
             with open(_OUTCOMES_FILE, "a", encoding="utf-8") as _f:
                 _f.write(json.dumps(outcome_record) + "\n")
+
+            # Obsidian knowledge vault — trade journal entry
+            try:
+                import sys
+                sys.path.insert(0, str(Path.home() / "ai-system"))
+                from obsidian.trade_journal_writer import write_trade
+                write_trade(outcome_record)
+            except Exception:
+                pass
         except Exception as _e:
             logger.debug("Outcome JSONL write failed (non-fatal): %s", _e)
 
@@ -967,6 +976,18 @@ class CryptoComBot:
                 trades=s["trades_today"], wins=wins, losses=losses,
                 demo=self.state.demo_mode,
             )
+        except Exception:
+            pass
+
+        # Obsidian knowledge vault — daily note + strategy performance snapshot
+        try:
+            import sys
+            sys.path.insert(0, str(Path.home() / "ai-system"))
+            from obsidian.vault_manager import write_daily_note
+            from obsidian.optimization_writer import write_strategy_performance
+            write_daily_note(report_date, s["total_pnl"], s["trades_today"],
+                             wins, losses, notes)
+            write_strategy_performance(s["strategy_weights"])
         except Exception:
             pass
 
