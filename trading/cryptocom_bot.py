@@ -54,18 +54,19 @@ LEVERAGE       = 3   # perpetual futures leverage
 
 @dataclass
 class BotState:
-    running:        bool  = False
-    demo_mode:      bool  = True
-    risk_pct:       float = 1.5
-    scan_interval:  int   = 30
-    balance:        float = 1000.0
-    total_pnl:      float = 0.0
-    trades_today:   int   = 0
-    trades_date:    str   = ""
-    last_scan:      str   = ""
-    status_msg:     str   = "Idle"
-    open_positions: list  = field(default_factory=list)
-    trade_log:      list  = field(default_factory=list)
+    running:         bool  = False
+    demo_mode:       bool  = True
+    risk_pct:        float = 1.5
+    scan_interval:   int   = 30
+    balance:         float = 1000.0
+    total_pnl:       float = 0.0
+    trades_today:    int   = 0
+    trades_date:     str   = ""
+    last_scan:       str   = ""
+    last_flush_date: str   = ""
+    status_msg:      str   = "Idle"
+    open_positions:  list  = field(default_factory=list)
+    trade_log:       list  = field(default_factory=list)
 
 
 class CryptoComBot:
@@ -97,7 +98,8 @@ class CryptoComBot:
             s.trades_date    = raw.get("trades_date",    "")
             s.trades_today   = raw.get("trades_today",   0)
             s.trade_log      = raw.get("trade_log",      [])
-            s.open_positions = raw.get("open_positions", [])
+            s.open_positions  = raw.get("open_positions",  [])
+            s.last_flush_date = raw.get("last_flush_date", "")
             # Reset daily counter if the persisted date is stale
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             if s.trades_date and s.trades_date != today:
@@ -116,7 +118,8 @@ class CryptoComBot:
                 "trades_date":    self.state.trades_date,
                 "trades_today":   self.state.trades_today,
                 "trade_log":      self.state.trade_log[-50:],
-                "open_positions": self.state.open_positions,
+                "open_positions":  self.state.open_positions,
+                "last_flush_date": self.state.last_flush_date,
             }
         _STATE_FILE.write_text(json.dumps(raw, indent=2))
 
@@ -248,6 +251,23 @@ class CryptoComBot:
     # ── Main scan loop ────────────────────────────────────────────────────────
 
     def _loop(self) -> None:
+        from datetime import timedelta
+        # Missed-flush recovery: if yesterday's summary was never flushed (e.g. bot
+        # was offline at midnight), run it now in a background thread so the scan
+        # loop isn't delayed.
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+        if self.state.last_flush_date and self.state.last_flush_date != yesterday:
+            logger.info(
+                "Missed daily flush detected (last=%s, expected=%s) — running catch-up",
+                self.state.last_flush_date, yesterday,
+            )
+            threading.Thread(
+                target=self.flush_daily_summary,
+                kwargs={"notes": "catch_up"},
+                daemon=True,
+                name="flush-catchup",
+            ).start()
+
         _last_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         while not self._stop.is_set():
             try:
@@ -788,7 +808,13 @@ class CryptoComBot:
 
     def flush_daily_summary(self, notes: str = "", run_analysis: bool = True) -> None:
         """Write daily summary row to Sheets and run Claude Opus analysis."""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        from datetime import timedelta
+        # If called as a catch-up flush (bot restarted after midnight), report yesterday's date
+        flush_date = self.state.last_flush_date
+        yesterday  = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+        today      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # Use yesterday if this is a missed-flush catch-up, else today
+        report_date = yesterday if (notes == "catch_up" and flush_date != yesterday) else today
         s     = self.get_status()
 
         # Aggregate per-strategy PnL from trade log
@@ -808,7 +834,7 @@ class CryptoComBot:
 
         if self._reporter:
             self._reporter.log_daily_summary(
-                date=today,
+                date=report_date,
                 balance=s["balance"],
                 day_pnl=s["total_pnl"],
                 start_balance=1000.0,
@@ -822,7 +848,7 @@ class CryptoComBot:
         try:
             from runtime.telegram_alerts import alert_daily_summary
             alert_daily_summary(
-                date=today, total_pnl=s["total_pnl"],
+                date=report_date, total_pnl=s["total_pnl"],
                 trades=s["trades_today"], wins=wins, losses=losses,
                 demo=self.state.demo_mode,
             )
@@ -892,3 +918,7 @@ class CryptoComBot:
                 except Exception as exc:
                     logger.warning("Claude daily analysis failed (non-fatal): %s", exc)
             threading.Thread(target=_analyse, daemon=True, name="claude-analyst").start()
+
+        # Stamp the flush date so startup recovery knows this day was covered
+        self.state.last_flush_date = report_date
+        self._save_state()
