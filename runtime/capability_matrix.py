@@ -113,19 +113,10 @@ def _check_wiring() -> Tuple[bool, str]:
     try:
         import ast
         from pathlib import Path
-        src = (Path(__file__).parent.parent / "trading" / "blofin_bot.py").read_text()
-        tree = ast.parse(src)
-        # Look for _init_orchestrator or build_orchestrator references
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and node.id in ("_init_orchestrator", "build_orchestrator"):
-                return True, "blofin_bot.py imports and calls orchestrator"
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if "orchestrator" in node.value:
-                    return True, "blofin_bot.py references orchestrator"
-        # Also check string for method name
+        src = (Path(__file__).parent.parent / "trading" / "cryptocom_bot.py").read_text()
         if "_init_orchestrator" in src or "build_orchestrator" in src:
-            return True, "blofin_bot.py calls build_orchestrator"
-        return False, "blofin_bot.py does NOT import orchestrator — signals bypass all validation"
+            return True, "cryptocom_bot.py calls build_orchestrator — all signals validated"
+        return False, "cryptocom_bot.py does NOT import orchestrator — signals bypass all validation"
     except Exception as exc:
         return False, f"Could not check wiring: {exc}"
 
