@@ -13,3 +13,5 @@ build/
 .claude/
 .superpowers/
 .swarm/
+credentials.json
+credentials*.json
