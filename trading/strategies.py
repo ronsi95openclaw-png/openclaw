@@ -400,10 +400,11 @@ class StrategyWeightEngine:
                     if s.trades > 0 and (s.wins + s.losses) == 0:
                         logger.warning(
                             "Weight integrity: %s has trades=%d but wins=0 losses=0 "
-                            "— resetting counters (weight %.2f kept)",
+                            "— resetting to clean slate (was weight=%.2f)",
                             name, s.trades, s.weight,
                         )
                         s.trades = 0
+                        s.weight = 1.0   # rehabilitate — give it a fresh start
         except Exception as e:
             logger.warning(f"Weight load failed: {e}")
 

@@ -302,7 +302,7 @@ class CryptoComBot:
     def _scan(self) -> None:
         from trading.strategies import (
             ema_cross_strategy, rsi_mean_revert_strategy,
-            breakout_strategy, trend_follow_strategy,
+            breakout_strategy, bollinger_band_strategy, trend_follow_strategy,
             _rsi,
         )
 
@@ -356,6 +356,7 @@ class CryptoComBot:
                 ema_cross_strategy(symbol, candles),
                 rsi_mean_revert_strategy(symbol, candles),
                 breakout_strategy(symbol, candles),
+                bollinger_band_strategy(symbol, candles),
                 trend_follow_strategy(symbol, candles),
             ]
 
@@ -363,6 +364,11 @@ class CryptoComBot:
                 eff_conf = self.weights.effective_confidence(sig.strategy, sig.confidence)
 
                 if sig.action == "hold":
+                    continue
+
+                # Max 1 open position per strategy — prevents one strategy
+                # from filling all slots and forces portfolio diversification
+                if any(p["strategy"] == sig.strategy for p in self.state.open_positions):
                     continue
 
                 # Log every non-hold signal (including blocked) to Sheets Signals tab
@@ -417,6 +423,29 @@ class CryptoComBot:
                         size = 0.0
                     if size <= 0:
                         continue
+
+                # Correlated exposure gate — prevent two same-direction positions
+                # on correlated assets (BTC/ETH/SOL all move together)
+                if self._orchestrator and self._orchestrator._capital:
+                    try:
+                        check_pos = []
+                        for p in self.state.open_positions:
+                            notional   = p.get("entry_price", 0) * p.get("size", 0) * LEVERAGE
+                            correlated = p.get("side") == sig.action
+                            check_pos.append({"notional": notional, "correlated": correlated})
+                        # Add the candidate itself as correlated
+                        check_pos.append({
+                            "notional":   price * size * LEVERAGE,
+                            "correlated": True,
+                        })
+                        if self._orchestrator._capital.check_correlated_exposure(check_pos):
+                            logger.info(
+                                "Signal BLOCKED [%s/%s]: correlated exposure limit reached",
+                                symbol, sig.strategy,
+                            )
+                            continue
+                    except Exception as _ce:
+                        logger.debug("Correlation check failed (non-fatal): %s", _ce)
 
                 self._open_position(sig, price, size, regime_label=regime_label,
                                    rsi=current_rsi, balance=balance, mode=mode)
