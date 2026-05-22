@@ -41,8 +41,9 @@ from typing import Optional
 
 logger = logging.getLogger("openclaw.trading.cryptocom_bot")
 
-_STATE_FILE = Path(__file__).parent.parent / "data" / "cryptocom_state.json"
-_LOG_FILE   = Path(__file__).parent.parent / "data" / "logs" / "cryptocom_trades.log"
+_STATE_FILE    = Path(__file__).parent.parent / "data" / "cryptocom_state.json"
+_LOG_FILE      = Path(__file__).parent.parent / "data" / "logs" / "cryptocom_trades.log"
+_OUTCOMES_FILE = Path(__file__).parent.parent / "data" / "logs" / "trade_outcomes.jsonl"
 
 # Symbols (internal names — mapped to BTCUSD-PERP etc. at execution time)
 SYMBOLS        = ["BTC_USDT", "ETH_USDT", "SOL_USDT"]
@@ -183,12 +184,23 @@ class CryptoComBot:
     # ── Main scan loop ────────────────────────────────────────────────────────
 
     def _loop(self) -> None:
+        _last_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         while not self._stop.is_set():
             try:
                 self._scan()
             except Exception as e:
                 logger.error("Scan error: %s", e, exc_info=True)
                 self.state.status_msg = f"Error: {str(e)[:80]}"
+
+            # End-of-day: flush summary + trigger Claude Opus analysis
+            _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if _today != _last_day:
+                _last_day = _today
+                try:
+                    self.flush_daily_summary()
+                except Exception as _e:
+                    logger.warning("End-of-day flush failed (non-fatal): %s", _e)
+
             self._stop.wait(self.state.scan_interval)
 
     def _scan(self) -> None:
@@ -532,6 +544,32 @@ class CryptoComBot:
             }
             self.state.trade_log.insert(0, record)
             self.state.trade_log = self.state.trade_log[:50]
+
+        # Append to outcomes JSONL — feeds Claude Analyst and Ruflo memory
+        try:
+            _OUTCOMES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            outcome_record = {
+                "ts":           datetime.now(timezone.utc).isoformat(),
+                "id":           pos.get("id", ""),
+                "symbol":       pos["symbol"],
+                "strategy":     pos["strategy"],
+                "side":         pos["side"],
+                "outcome":      outcome,
+                "pnl":          round(pnl, 4),
+                "entry_price":  pos["entry_price"],
+                "exit_price":   exit_price,
+                "size":         pos["size"],
+                "regime":       pos.get("regime_label", "UNKNOWN"),
+                "confidence":   pos.get("confidence", 0) / 100.0,
+                "signal_reason": pos.get("reason", ""),
+                "narrative":    pos.get("narrative", ""),
+                "dca_count":    pos.get("dca_count", 0),
+                "demo":         self.state.demo_mode,
+            }
+            with open(_OUTCOMES_FILE, "a", encoding="utf-8") as _f:
+                _f.write(json.dumps(outcome_record) + "\n")
+        except Exception as _e:
+            logger.debug("Outcome JSONL write failed (non-fatal): %s", _e)
 
         if not self.state.demo_mode:
             try:
