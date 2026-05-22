@@ -317,12 +317,14 @@ class SheetReporter:
                 logger.error("SheetReporter: GOOGLE_SHEET_ID not set")
                 return False
 
-            # No credentials at all
+            # No credentials at all — log once, then silently skip
             if not self._creds_json and not self._creds_file:
-                logger.warning(
-                    "SheetReporter: no credentials found — set GOOGLE_CREDS_JSON "
-                    "or GOOGLE_SHEETS_CREDENTIALS_FILE"
-                )
+                if not getattr(self, "_warned_no_creds", False):
+                    logger.warning(
+                        "SheetReporter: no credentials found — set GOOGLE_CREDS_JSON "
+                        "or GOOGLE_SHEETS_CREDENTIALS_FILE"
+                    )
+                    self._warned_no_creds = True
                 return False
 
             try:

@@ -66,7 +66,7 @@ class RufloBridge:
     ):
         self._transport  = transport  or os.getenv("RUFLO_MCP_TRANSPORT", "stdio")
         self._http_port  = http_port  or int(os.getenv("RUFLO_MCP_HTTP_PORT", "3001"))
-        self._timeout    = timeout_s  or float(os.getenv("RUFLO_TIMEOUT_S", "30"))
+        self._timeout    = timeout_s  or float(os.getenv("RUFLO_TIMEOUT_S", "5"))
         self._namespace  = memory_namespace or os.getenv("RUFLO_MEMORY_NAMESPACE", "openclaw")
 
         self._proc:       Optional[subprocess.Popen] = None

@@ -91,12 +91,18 @@ class CryptoComBot:
         try:
             raw = json.loads(_STATE_FILE.read_text())
             s = self.state
-            s.demo_mode    = raw.get("demo_mode",    True)
-            s.risk_pct     = raw.get("risk_pct",     1.5)
-            s.total_pnl    = raw.get("total_pnl",    0.0)
-            s.trades_date  = raw.get("trades_date",  "")
-            s.trades_today = raw.get("trades_today", 0)
-            s.trade_log    = raw.get("trade_log",    [])
+            s.demo_mode      = raw.get("demo_mode",      True)
+            s.risk_pct       = raw.get("risk_pct",       1.5)
+            s.total_pnl      = raw.get("total_pnl",      0.0)
+            s.trades_date    = raw.get("trades_date",    "")
+            s.trades_today   = raw.get("trades_today",   0)
+            s.trade_log      = raw.get("trade_log",      [])
+            s.open_positions = raw.get("open_positions", [])
+            # Reset daily counter if the persisted date is stale
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if s.trades_date and s.trades_date != today:
+                s.trades_today = 0
+                s.trades_date  = today
         except Exception as e:
             logger.warning("State load failed: %s", e)
 
@@ -104,12 +110,13 @@ class CryptoComBot:
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
             raw = {
-                "demo_mode":    self.state.demo_mode,
-                "risk_pct":     self.state.risk_pct,
-                "total_pnl":    self.state.total_pnl,
-                "trades_date":  self.state.trades_date,
-                "trades_today": self.state.trades_today,
-                "trade_log":    self.state.trade_log[-50:],
+                "demo_mode":      self.state.demo_mode,
+                "risk_pct":       self.state.risk_pct,
+                "total_pnl":      self.state.total_pnl,
+                "trades_date":    self.state.trades_date,
+                "trades_today":   self.state.trades_today,
+                "trade_log":      self.state.trade_log[-50:],
+                "open_positions": self.state.open_positions,
             }
         _STATE_FILE.write_text(json.dumps(raw, indent=2))
 
@@ -128,6 +135,47 @@ class CryptoComBot:
         if self.state.trades_date != today:
             self.state.trades_today = 0
             self.state.trades_date  = today
+
+    def _auto_disable_weak_strategies(self) -> None:
+        """Suspend strategies with weight < 0.3 and 20+ trades (backlog #5).
+        Sets weight to 0.0 to prevent any signals — logs once per disable."""
+        for name, stats in self.weights.stats.items():
+            if stats.trades >= 20 and 0 < stats.weight < 0.3:
+                stats.weight = 0.0
+                self.weights.save()
+                logger.warning(
+                    "AUTO-DISABLED %s: weight=%.2f with %d trades — "
+                    "set to 0.0 until manual reset",
+                    name, stats.weight, stats.trades,
+                )
+
+    def _auto_apply_opus_weights(self) -> None:
+        """Apply weight_adjustments from the latest Claude Opus analysis JSON (backlog #2).
+        Reads data/optimization/analysis_*.json and merges recommended adjustments."""
+        import glob
+        analysis_dir = Path(__file__).parent.parent / "data" / "optimization"
+        files = sorted(analysis_dir.glob("analysis_*.json"),
+                       key=lambda f: f.stat().st_mtime, reverse=True)
+        if not files:
+            return
+        try:
+            report = json.loads(files[0].read_text())
+            adjustments = report.get("weight_adjustments", {})
+            if not adjustments:
+                return
+            applied = {}
+            for strategy, factor in adjustments.items():
+                if strategy in self.weights.stats:
+                    old = self.weights.stats[strategy].weight
+                    # Clamp: Opus can only nudge ±50% per cycle, never outside 0.1–2.0
+                    new = max(0.1, min(2.0, old * float(factor)))
+                    self.weights.stats[strategy].weight = round(new, 3)
+                    applied[strategy] = f"{old:.2f}→{new:.2f}"
+            if applied:
+                self.weights.save()
+                logger.info("Opus weight auto-apply from %s: %s", files[0].name, applied)
+        except Exception as exc:
+            logger.debug("Opus weight auto-apply skipped: %s", exc)
 
     # ── Wiring ────────────────────────────────────────────────────────────────
 
@@ -200,6 +248,11 @@ class CryptoComBot:
                     self.flush_daily_summary()
                 except Exception as _e:
                     logger.warning("End-of-day flush failed (non-fatal): %s", _e)
+                # Auto-apply Claude Opus weight recommendations (backlog #2)
+                try:
+                    self._auto_apply_opus_weights()
+                except Exception as _e:
+                    logger.debug("Opus weight auto-apply error (non-fatal): %s", _e)
 
             self._stop.wait(self.state.scan_interval)
 
@@ -248,7 +301,7 @@ class CryptoComBot:
                     regime_label = self._orchestrator.classify_regime(
                         symbol, c_objs
                     ) or "UNKNOWN"
-                    if regime_label != "UNKNOWN" and self._reporter:
+                    if self._reporter:
                         self._reporter.log_regime(symbol, regime_label,
                                                   rsi=current_rsi)
                 except Exception:
@@ -324,7 +377,9 @@ class CryptoComBot:
                                    rsi=current_rsi, balance=balance, mode=mode)
                 fired += 1
 
-        self._check_positions()
+        self._check_positions()      # close SL/TP hits AFTER opening new positions
+        # Auto-disable strategies with weight < 0.3 and 20+ trades (backlog #5)
+        self._auto_disable_weak_strategies()
         open_cnt = len(self.state.open_positions)
         self.state.status_msg = (
             f"Scanned {len(SYMBOLS)} symbols — {fired} trade(s) opened. "
@@ -662,7 +717,7 @@ class CryptoComBot:
             positions = list(self.state.open_positions)
             trade_log = list(self.state.trade_log[:20])
 
-        unreal  = sum(p.get("unrealized_pnl", 0) for p in positions)
+        unreal  = sum((p.get("unrealized_pnl", 0.0) for p in positions), 0.0)
         balance = max(100.0, 1000.0 + self.state.total_pnl) if self.state.demo_mode \
                   else self.state.balance
 
