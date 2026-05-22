@@ -48,7 +48,7 @@ def open_position(
     a boolean 'sl_tp_ok' so the caller can detect unhedged positions.
     """
     from trading.exchange import (
-        set_leverage, place_perp_order, to_perp_instrument, _MIN_QTY_PERP,
+        set_leverage, place_perp_order, cancel_all_orders, to_perp_instrument, _MIN_QTY_PERP,
     )
 
     instrument = to_perp_instrument(symbol)
@@ -69,27 +69,61 @@ def open_position(
     entry_result   = place_perp_order(instrument, entry_side, "MARKET", qty)
     entry_order_id = entry_result.get("order_id", "")
 
+    # Guard: exchange must return an order_id for the entry, otherwise we have
+    # no way to track or cancel this position.
+    if not entry_order_id:
+        logger.critical(
+            "Entry order returned no order_id [%s %s] — cannot track position, aborting",
+            side, symbol,
+        )
+        result = {
+            "symbol": symbol, "instrument": instrument, "side": side, "qty": qty,
+            "entry_order_id": "", "sl_order_id": "", "tp_order_id": "",
+            "sl_price": sl_price, "tp_price": tp_price, "leverage": leverage,
+            "sl_tp_ok": False, "status": "ENTRY_NO_ID",
+        }
+        _log_trade({"event": "open", **result})
+        return result
+
     sl_order_id = tp_order_id = ""
 
     try:
         sl          = place_perp_order(instrument, exit_side, "STOP_LOSS", qty, ref_price=sl_price)
         sl_order_id = sl.get("order_id", "")
     except Exception as exc:
-        logger.critical("SL order FAILED [%s] — position is UNHEDGED: %s", symbol, exc)
+        # SL failed — cancel everything so position doesn't sit unhedged.
+        logger.critical(
+            "SL order FAILED [%s %s] — cancelling all orders to prevent unhedged position: %s",
+            side, symbol, exc,
+        )
+        cancel_all_orders(instrument)
+        result = {
+            "symbol": symbol, "instrument": instrument, "side": side, "qty": qty,
+            "entry_order_id": entry_order_id, "sl_order_id": "", "tp_order_id": "",
+            "sl_price": sl_price, "tp_price": tp_price, "leverage": leverage,
+            "sl_tp_ok": False, "status": "SL_FAILED",
+        }
+        _log_trade({"event": "open", **result})
+        return result
 
     try:
         tp          = place_perp_order(instrument, exit_side, "TAKE_PROFIT", qty, ref_price=tp_price)
         tp_order_id = tp.get("order_id", "")
     except Exception as exc:
-        logger.critical("TP order FAILED [%s] — position has no take-profit: %s", symbol, exc)
-
-    sl_tp_ok = bool(sl_order_id and tp_order_id)
-    if not sl_tp_ok:
+        # TP failed — cancel all (including the SL just placed) so position is clean.
         logger.critical(
-            "UNHEDGED POSITION OPENED [%s %s] qty=%.6f  sl_ok=%s  tp_ok=%s — "
-            "manual intervention required",
-            side, symbol, qty, bool(sl_order_id), bool(tp_order_id),
+            "TP order FAILED [%s %s] — cancelling all orders to prevent partial hedge: %s",
+            side, symbol, exc,
         )
+        cancel_all_orders(instrument)
+        result = {
+            "symbol": symbol, "instrument": instrument, "side": side, "qty": qty,
+            "entry_order_id": entry_order_id, "sl_order_id": sl_order_id, "tp_order_id": "",
+            "sl_price": sl_price, "tp_price": tp_price, "leverage": leverage,
+            "sl_tp_ok": False, "status": "TP_FAILED",
+        }
+        _log_trade({"event": "open", **result})
+        return result
 
     result = {
         "symbol":          symbol,
@@ -102,8 +136,8 @@ def open_position(
         "sl_price":        sl_price,
         "tp_price":        tp_price,
         "leverage":        leverage,
-        "sl_tp_ok":        sl_tp_ok,
-        "status":          "opened" if sl_tp_ok else "UNHEDGED",
+        "sl_tp_ok":        True,
+        "status":          "opened",
     }
     _log_trade({"event": "open", **result})
     return result

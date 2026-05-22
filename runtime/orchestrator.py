@@ -249,7 +249,7 @@ class RuntimeOrchestrator:
             )
             try:
                 from runtime.telegram_alerts import alert_capital_state, alert_emergency_halt
-                dd = self._capital._drawdown_tracker.daily_drawdown()
+                dd = self._capital.daily_drawdown()
                 alert_capital_state(old_state, new_state, equity, dd)
                 if new_state == "EMERGENCY_HALT":
                     alert_emergency_halt("Drawdown limit breached", equity)

@@ -11,12 +11,16 @@ AI SAFETY CONTRACT:
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from collections import deque
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+_STATE_FILE = Path(__file__).parent.parent / "data" / "capital_state.json"
 
 logger = logging.getLogger("openclaw.risk.capital_preservation")
 
@@ -90,6 +94,12 @@ class RollingDrawdownTracker:
     def monthly_drawdown(self, as_of: Optional[datetime] = None) -> float:
         """Return the maximum drawdown fraction within the past 30 days."""
         return self._window_drawdown(hours=30 * 24, as_of=as_of)
+
+    def initialize_peak(self, equity: float) -> None:
+        """Seed the all-time peak at startup. Thread-safe; call before any record()."""
+        with self._lock:
+            if equity > self._alltime_peak:
+                self._alltime_peak = equity
 
     def alltime_peak(self) -> float:
         with self._lock:
@@ -228,7 +238,10 @@ class CapitalPreservationEngine:
         # Seed alltime_peak with starting_equity so the first real equity reading
         # can't produce a spurious negative drawdown or division-by-zero.
         if starting_equity > 0:
-            self._drawdown_tracker._alltime_peak = starting_equity
+            self._drawdown_tracker.initialize_peak(starting_equity)
+
+        # Restore persisted state (survives restarts — prevents reset-to-SAFE after halt).
+        self._load_persisted_state()
 
         # Immutable append-only operator reset log (in-memory only here;
         # governance module writes to disk).
@@ -257,7 +270,9 @@ class CapitalPreservationEngine:
             self._loss_streak_tracker.record_trade(trade_pnl)
 
         with self._lock:
-            self._evaluate_transitions(current_equity)
+            changed = self._evaluate_transitions(current_equity)
+        if changed:
+            self._persist_state()
 
     # ── State accessors ───────────────────────────────────────────────────
 
@@ -393,6 +408,11 @@ class CapitalPreservationEngine:
             previous_state.value,
             operator_id,
         )
+        self._persist_state()
+
+    def daily_drawdown(self) -> float:
+        """Public accessor for daily drawdown fraction (no private field access needed)."""
+        return self._drawdown_tracker.daily_drawdown()
 
     def get_status_dict(self) -> Dict[str, Any]:
         """Return a dashboard-friendly status snapshot."""
@@ -421,10 +441,52 @@ class CapitalPreservationEngine:
 
     # ── Internals ─────────────────────────────────────────────────────────
 
-    def _evaluate_transitions(self, current_equity: float) -> None:
-        """Check all thresholds and update state accordingly.
+    def _persist_state(self) -> None:
+        """Write current capital state to disk so restarts don't reset to SAFE."""
+        with self._lock:
+            state = self._state.value
+            peak  = self._drawdown_tracker.alltime_peak()
+            streak = self._loss_streak_tracker.streak
+        payload = {
+            "state":       state,
+            "ts":          datetime.now(timezone.utc).isoformat(),
+            "alltime_peak": peak,
+            "loss_streak": streak,
+        }
+        try:
+            _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _STATE_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, indent=2))
+            tmp.replace(_STATE_FILE)
+        except Exception as exc:
+            logger.warning("Failed to persist capital state: %s", exc)
 
-        Called with self._lock held.  Reads from drawdown tracker and loss
+    def _load_persisted_state(self) -> None:
+        """Restore capital state from disk. Called once at __init__ time."""
+        if not _STATE_FILE.exists():
+            return
+        try:
+            data = json.loads(_STATE_FILE.read_text())
+            state_name = data.get("state", "SAFE")
+            loaded_state = CapitalState(state_name)
+            # Never downgrade if starting_equity already seeded a higher peak.
+            persisted_peak = float(data.get("alltime_peak", 0.0))
+            if persisted_peak > 0:
+                self._drawdown_tracker.initialize_peak(persisted_peak)
+            # Restore state — but only if it's more severe than the current default.
+            if loaded_state.severity() > self._state.severity():
+                self._state = loaded_state
+            logger.info(
+                "Capital state restored from disk: %s (alltime_peak=%.2f)",
+                loaded_state.value, persisted_peak,
+            )
+        except Exception as exc:
+            logger.warning("Could not load persisted capital state: %s", exc)
+
+    def _evaluate_transitions(self, current_equity: float) -> bool:
+        """Check all thresholds and update state. Returns True if state changed.
+
+        Called with self._lock held. Reads from drawdown tracker and loss
         streak tracker (which have their own internal locks).
         """
         # Fetch current metrics (calls acquire their own locks — OK because
@@ -461,7 +523,7 @@ class CapitalPreservationEngine:
                 old_state.value, target_state.value,
                 daily_dd, weekly_dd, monthly_dd, streak,
             )
-            return
+            return True
 
         # Auto-recovery: DEFENSIVE → SAFE is the only auto-recovery path.
         # Conditions for recovery:
@@ -480,6 +542,9 @@ class CapitalPreservationEngine:
                     "(equity=%.2f, peak=%.2f, daily_dd=%.4f)",
                     current_equity, peak, daily_dd,
                 )
+                return True
+
+        return False
 
     @staticmethod
     def _state_risk_scalar(state: CapitalState) -> float:

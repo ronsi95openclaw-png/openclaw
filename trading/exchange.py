@@ -119,11 +119,11 @@ def fetch_candles(instrument: str, timeframe: str = "15m", count: int = 100) -> 
     candles = [
         {
             "ts":     int(c.get("t", 0)),
-            "open":   float(c.get("o", 0) or c.get("open",  0)),
-            "high":   float(c.get("h", 0) or c.get("high",  0)),
-            "low":    float(c.get("l", 0) or c.get("low",   0)),
-            "close":  float(c.get("c", 0) or c.get("close", 0)),
-            "volume": float(c.get("v", 0) or c.get("volume",0)),
+            "open":   float(c["o"]      if "o"      in c else c.get("open",   0.0)),
+            "high":   float(c["h"]      if "h"      in c else c.get("high",   0.0)),
+            "low":    float(c["l"]      if "l"      in c else c.get("low",    0.0)),
+            "close":  float(c["c"]      if "c"      in c else c.get("close",  0.0)),
+            "volume": float(c["v"]      if "v"      in c else c.get("volume", 0.0)),
         }
         for c in raw
     ]
@@ -135,7 +135,10 @@ def fetch_ticker(instrument: str) -> dict:
     """Latest bid/ask/last for an instrument (full dict, matches BloFin format)."""
     r = requests.get(f"{_PUBLIC}/get-ticker", params={"instrument_name": instrument}, timeout=8)
     r.raise_for_status()
-    raw = r.json()["result"]["data"][0]
+    data = r.json().get("result", {}).get("data", [])
+    if not data:
+        raise ValueError(f"No ticker data returned for {instrument}")
+    raw = data[0]
     return {
         "last":       float(raw.get("a", raw.get("last", 0))),
         "bid":        float(raw.get("b", 0)),
@@ -178,7 +181,10 @@ def fetch_ticker_price(instrument: str) -> float:
     """Latest ask price for an instrument."""
     r = requests.get(f"{_PUBLIC}/get-ticker", params={"instrument_name": instrument}, timeout=8)
     r.raise_for_status()
-    return float(r.json()["result"]["data"][0]["a"])
+    data = r.json().get("result", {}).get("data", [])
+    if not data:
+        raise ValueError(f"No ticker price data returned for {instrument}")
+    return float(data[0]["a"])
 
 
 # ── Private endpoints ─────────────────────────────────────────────────────────
