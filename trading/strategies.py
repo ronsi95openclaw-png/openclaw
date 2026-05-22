@@ -192,7 +192,7 @@ def rsi_mean_revert_strategy(symbol: str, candles: list[dict]) -> StrategySignal
     ema50  = _ema(closes, 50) if len(closes) >= 50 else _ema(closes, max(10, len(closes)//2))
     spread = abs(ema20[-1] - ema50[-1]) / ema50[-1] * 100
 
-    if spread > 0.30:
+    if spread > 0.50:
         return _hold(f"Trend active (spread {spread:.2f}%) — skip mean-revert", sl, tp)
 
     # Require current candle body in recovery direction — prevents entering waterfalls
@@ -291,8 +291,8 @@ def bollinger_band_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
 
     bw_min = min(bw_history)
 
-    # Must have squeezed tight recently
-    if bw_min > 1.5:
+    # Must have squeezed tight recently — crypto baseline is 3-8%, squeeze = tight relative to that
+    if bw_min > 4.0:
         return _hold(f"No recent squeeze (min BW {bw_min:.2f}%)", sl, tp)
 
     # Current bandwidth must be expanding from the squeeze
@@ -393,6 +393,17 @@ class StrategyWeightEngine:
                     s.wins    = d.get("wins",   0)
                     s.losses  = d.get("losses", 0)
                     s.weight  = d.get("weight", 1.0)
+                    # Integrity check: wins+losses must equal trades.
+                    # If not, the record was saved by an older code version that
+                    # didn't track outcomes. Reset counters so weight engine has
+                    # a clean baseline — weight is preserved.
+                    if s.trades > 0 and (s.wins + s.losses) == 0:
+                        logger.warning(
+                            "Weight integrity: %s has trades=%d but wins=0 losses=0 "
+                            "— resetting counters (weight %.2f kept)",
+                            name, s.trades, s.weight,
+                        )
+                        s.trades = 0
         except Exception as e:
             logger.warning(f"Weight load failed: {e}")
 

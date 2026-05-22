@@ -100,6 +100,12 @@ class CryptoComBot:
             s.trade_log      = raw.get("trade_log",      [])
             s.open_positions  = raw.get("open_positions",  [])
             s.last_flush_date = raw.get("last_flush_date", "")
+            s.scan_interval   = raw.get("scan_interval",   30)
+            # Migrate confidence values stored as old int 0-100 format → 0-1 float
+            for rec in s.open_positions + s.trade_log:
+                c = rec.get("confidence", 0)
+                if isinstance(c, (int, float)) and c > 1.0:
+                    rec["confidence"] = round(c / 100.0, 4)
             # Reset daily counter if the persisted date is stale
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             if s.trades_date and s.trades_date != today:
@@ -120,6 +126,7 @@ class CryptoComBot:
                 "trade_log":      self.state.trade_log[-50:],
                 "open_positions":  self.state.open_positions,
                 "last_flush_date": self.state.last_flush_date,
+                "scan_interval":   self.state.scan_interval,
             }
         _STATE_FILE.write_text(json.dumps(raw, indent=2))
 
@@ -545,7 +552,7 @@ class CryptoComBot:
             "opened_at":      datetime.now(timezone.utc).strftime("%H:%M:%S"),
             "demo":           self.state.demo_mode,
             "confidence":     round(self.weights.effective_confidence(
-                                  sig.strategy, sig.confidence) * 100),
+                                  sig.strategy, sig.confidence), 4),
             "reason":         sig.reason,
             "regime_label":   regime_label,
             # DCA fields
@@ -586,6 +593,7 @@ class CryptoComBot:
                 confidence=self.weights.effective_confidence(sig.strategy, sig.confidence),
                 rsi=rsi, mode=mode,
             )
+        self._save_state()
 
     def _check_positions(self) -> None:
         # If capital engine says flatten-all (EMERGENCY_HALT), close every open position
@@ -700,7 +708,7 @@ class CryptoComBot:
                 "exit_price":   exit_price,
                 "size":         pos["size"],
                 "regime":       pos.get("regime_label", "UNKNOWN"),
-                "confidence":   pos.get("confidence", 0) / 100.0,
+                "confidence":   pos.get("confidence", 0.0),
                 "signal_reason": pos.get("reason", ""),
                 "narrative":    pos.get("narrative", ""),
                 "dca_count":    pos.get("dca_count", 0),
@@ -753,7 +761,7 @@ class CryptoComBot:
                 pnl=round(pnl, 4), outcome=outcome,
                 balance=round(bal_after, 2),
                 regime=pos.get("regime_label", "UNKNOWN"),
-                confidence=pos.get("confidence", 0) / 100.0,
+                confidence=pos.get("confidence", 0.0),
                 mode="DEMO" if self.state.demo_mode else "LIVE",
                 notes=f"WR={win_rate:.0%}",
             )
@@ -769,6 +777,7 @@ class CryptoComBot:
                 pnl=round(pnl, 4), regime=pos.get("regime_label", "UNKNOWN"),
                 action=pos["side"].upper(), win=(outcome == "win"),
             )
+        self._save_state()
 
     def _current_price(self, pos: dict) -> float:
         if self.state.demo_mode:
@@ -781,8 +790,10 @@ class CryptoComBot:
 
     def _walk_price(self, pos: dict) -> float:
         current = pos.get("current_price", pos["entry_price"])
-        drift   = random.gauss(0, 0.004)
-        revert  = (pos["entry_price"] - current) / pos["entry_price"] * 0.02
+        # Reduced noise (0.15% per step vs 0.4%) + stronger mean reversion (8% vs 2%)
+        # so positions last long enough to test SL/TP logic meaningfully
+        drift  = random.gauss(0, 0.0015)
+        revert = (pos["entry_price"] - current) / pos["entry_price"] * 0.08
         return max(current * 0.5, current * (1 + drift + revert))
 
     # ── Demo candle generator ─────────────────────────────────────────────────
