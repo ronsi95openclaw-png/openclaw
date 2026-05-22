@@ -237,6 +237,14 @@ class RuntimeOrchestrator:
                 "Capital state transition: %s → %s  equity=%.2f",
                 old_state, new_state, equity,
             )
+            try:
+                from runtime.telegram_alerts import alert_capital_state, alert_emergency_halt
+                dd = self._capital._drawdown_tracker.daily_drawdown()
+                alert_capital_state(old_state, new_state, equity, dd)
+                if new_state == "EMERGENCY_HALT":
+                    alert_emergency_halt("Drawdown limit breached", equity)
+            except Exception:
+                pass
 
     def record_trade_outcome(
         self,

@@ -149,6 +149,22 @@ class CryptoComBot:
                     name, stats.weight, stats.trades,
                 )
 
+    def _adjust_scan_interval(self) -> None:
+        """Dynamic scan interval — fast in trending, slow in ranging (backlog #3).
+        Trending regimes: 15s. Ranging/unknown: 60s. Default: 30s."""
+        if not self.state.open_positions and not self._orchestrator:
+            return
+        regimes = {p.get("regime_label", "UNKNOWN") for p in self.state.open_positions}
+        trending = {"TRENDING_BULL", "TRENDING_BEAR", "MOMENTUM_BULL", "MOMENTUM_BEAR",
+                    "VOL_EXPANSION", "NEWS_SPIKE"}
+        slow     = {"RANGING", "MEAN_REVERTING", "VOL_COMPRESSION", "UNKNOWN"}
+        if regimes & trending:
+            self.state.scan_interval = 15
+        elif regimes & slow:
+            self.state.scan_interval = 60
+        else:
+            self.state.scan_interval = 30
+
     def _auto_apply_opus_weights(self) -> None:
         """Apply weight_adjustments from the latest Claude Opus analysis JSON (backlog #2).
         Reads data/optimization/analysis_*.json and merges recommended adjustments."""
@@ -182,7 +198,7 @@ class CryptoComBot:
     def _init_orchestrator(self):
         try:
             from runtime.orchestrator import build_orchestrator
-            return build_orchestrator(with_governance=False)
+            return build_orchestrator(with_governance=True)
         except Exception as exc:
             logger.warning("RuntimeOrchestrator unavailable: %s", exc)
             return None
@@ -385,6 +401,7 @@ class CryptoComBot:
             f"Scanned {len(SYMBOLS)} symbols — {fired} trade(s) opened. "
             f"{open_cnt} position(s) open."
         )
+        self._adjust_scan_interval()
         self._save_state()
 
     # ── Market data ───────────────────────────────────────────────────────────
@@ -506,6 +523,17 @@ class CryptoComBot:
                           "strategy": sig.strategy, "side": sig.action,
                           "price": price, "size": initial_size,
                           "dca_size": dca_size, "regime": regime_label})
+
+        try:
+            from runtime.telegram_alerts import alert_trade_opened
+            alert_trade_opened(
+                symbol=sig.symbol, side=sig.action, strategy=sig.strategy,
+                entry=price, sl=sl, tp=tp, size=initial_size,
+                confidence=self.weights.effective_confidence(sig.strategy, sig.confidence),
+                regime=regime_label, demo=self.state.demo_mode,
+            )
+        except Exception:
+            pass
 
         if self._reporter:
             self._reporter.log_trade_open(
@@ -646,6 +674,16 @@ class CryptoComBot:
         self._append_log({"event": "close", "id": pos["id"], "outcome": outcome,
                           "pnl": round(pnl, 4), "exit_price": exit_price})
 
+        try:
+            from runtime.telegram_alerts import alert_trade_closed
+            alert_trade_closed(
+                symbol=pos["symbol"], outcome=outcome, pnl=pnl,
+                total_pnl=self.state.total_pnl, strategy=pos["strategy"],
+                demo=self.state.demo_mode,
+            )
+        except Exception:
+            pass
+
         # Sheets: log close — include balance, mode, win rate note
         if self._reporter:
             win_rate    = self.weights.stats[pos["strategy"]].win_rate
@@ -721,6 +759,13 @@ class CryptoComBot:
         balance = max(100.0, 1000.0 + self.state.total_pnl) if self.state.demo_mode \
                   else self.state.balance
 
+        capital_state = "UNKNOWN"
+        if self._orchestrator is not None:
+            try:
+                capital_state = self._orchestrator._capital.get_state().name
+            except Exception:
+                pass
+
         return {
             "running":          self.is_running(),
             "demo_mode":        self.state.demo_mode,
@@ -730,11 +775,15 @@ class CryptoComBot:
             "unrealized_pnl":   round(unreal, 4),
             "trades_today":     self.state.trades_today,
             "last_scan":        self.state.last_scan,
+            "scan_interval":    self.state.scan_interval,
+            "capital_state":    capital_state,
             "status_msg":       self.state.status_msg,
             "open_positions":   positions,
             "trade_log":        trade_log,
             "strategy_weights": self.weights.summary(),
             "sheets_connected": bool(self._reporter and self._reporter.is_connected()),
+            "telegram_ok":      __import__("runtime.telegram_alerts",
+                                           fromlist=["is_configured"]).is_configured(),
         }
 
     def flush_daily_summary(self, notes: str = "", run_analysis: bool = True) -> None:
@@ -769,6 +818,16 @@ class CryptoComBot:
                 regimes_seen=regimes,
                 notes=notes,
             )
+
+        try:
+            from runtime.telegram_alerts import alert_daily_summary
+            alert_daily_summary(
+                date=today, total_pnl=s["total_pnl"],
+                trades=s["trades_today"], wins=wins, losses=losses,
+                demo=self.state.demo_mode,
+            )
+        except Exception:
+            pass
 
         # Claude Opus analysis — runs asynchronously so it doesn't block the bot
         if run_analysis and (wins + losses) >= 5:
