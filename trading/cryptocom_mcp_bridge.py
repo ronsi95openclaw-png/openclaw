@@ -248,21 +248,75 @@ def _normalize_mcp_ticker(response: Any) -> Optional[Dict]:
         return None
 
 
+# ── File cache (written by MCP injector script) ───────────────────────────────
+
+_CACHE_DIR = None  # set lazily to avoid circular import at module level
+
+def _cache_dir():
+    global _CACHE_DIR
+    if _CACHE_DIR is None:
+        from pathlib import Path
+        _CACHE_DIR = Path(__file__).parent.parent / "data" / "mcp_cache"
+    return _CACHE_DIR
+
+def _read_cache_candles(symbol: str) -> List[Dict]:
+    """Return candles from file cache if written within 20 minutes, else []."""
+    import json, time
+    try:
+        path = _cache_dir() / f"{symbol}_candles.json"
+        if not path.exists():
+            return []
+        payload = json.loads(path.read_text())
+        if time.time() - payload.get("written_at", 0) > 1200:   # 20 min stale
+            return []
+        return payload.get("candles", [])
+    except Exception:
+        return []
+
+def _read_cache_ticker(symbol: str) -> Dict:
+    """Return ticker from file cache if written within 5 minutes, else {}."""
+    import json, time
+    try:
+        path = _cache_dir() / f"{symbol}_ticker.json"
+        if not path.exists():
+            return {}
+        payload = json.loads(path.read_text())
+        if time.time() - payload.get("written_at", 0) > 300:    # 5 min stale
+            return {}
+        return payload.get("ticker", {})
+    except Exception:
+        return {}
+
+
 # ── REST fallbacks ────────────────────────────────────────────────────────────
 
 def _rest_fetch_candles(symbol: str, timeframe: str, count: int) -> List[Dict]:
+    # 1. File cache (written by mcp_injector.py running in Claude session)
+    cached = _read_cache_candles(symbol)
+    if cached:
+        logger.debug("MCP cache hit for %s candles (%d)", symbol, len(cached))
+        return cached[-count:] if len(cached) > count else cached
+    # 2. Live REST
     try:
-        from trading.exchange import fetch_candles
-        return fetch_candles(symbol, timeframe, count)
+        from trading.exchange import fetch_candles, to_perp_instrument
+        instrument = to_perp_instrument(symbol)   # BTC_USDT → BTCUSD-PERP
+        return fetch_candles(instrument, timeframe, count)
     except Exception as exc:
         logger.warning("REST candles fallback failed [%s]: %s", symbol, exc)
         return []
 
 
 def _rest_fetch_ticker(symbol: str) -> Dict:
+    # 1. File cache
+    cached = _read_cache_ticker(symbol)
+    if cached:
+        logger.debug("MCP cache hit for %s ticker", symbol)
+        return cached
+    # 2. Live REST
     try:
-        from trading.exchange import fetch_ticker
-        return fetch_ticker(symbol)
+        from trading.exchange import fetch_ticker, to_perp_instrument
+        instrument = to_perp_instrument(symbol)   # BTC_USDT → BTCUSD-PERP
+        return fetch_ticker(instrument)
     except Exception as exc:
         logger.warning("REST ticker fallback failed [%s]: %s", symbol, exc)
         return {}

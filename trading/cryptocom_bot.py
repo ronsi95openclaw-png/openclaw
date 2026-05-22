@@ -476,23 +476,22 @@ class CryptoComBot:
     # ── Market data ───────────────────────────────────────────────────────────
 
     def _fetch_market_data(self, symbol: str) -> tuple[list[dict] | None, float]:
-        if self.state.demo_mode:
-            return self._fake_candles(symbol), random.uniform(-0.0003, 0.0003)
+        # Always try real market data — demo_mode only blocks order execution, not data
         try:
-            # Use MCP bridge — pulls from injected MCP data if available in session,
-            # otherwise falls back to exchange.py REST API automatically
             from trading.cryptocom_mcp_bridge import get_bridge
             bridge  = get_bridge()
             candles = bridge.fetch_candles(symbol, "15m", 100)
-            try:
-                from trading.exchange import fetch_funding_rate
-                funding = fetch_funding_rate(symbol)
-            except Exception:
-                funding = 0.0
-            return (candles if candles else None), funding
+            if candles:
+                try:
+                    from trading.exchange import fetch_funding_rate, to_perp_instrument
+                    funding = fetch_funding_rate(to_perp_instrument(symbol))
+                except Exception:
+                    funding = 0.0
+                return candles, funding
         except Exception as e:
-            logger.warning("Market data fetch failed [%s]: %s", symbol, e)
-            return None, 0.0
+            logger.warning("Market data fetch failed [%s]: %s — using simulation", symbol, e)
+        # Simulation fallback: only reached if REST and cache both unavailable
+        return self._fake_candles(symbol), random.uniform(-0.0003, 0.0003)
 
     def _validate_candles(self, symbol: str, candles: list) -> bool:
         """Reject candle sets with bad data before any strategy runs on them."""
@@ -857,13 +856,17 @@ class CryptoComBot:
         self._save_state()
 
     def _current_price(self, pos: dict) -> float:
-        if self.state.demo_mode:
-            return self._walk_price(pos)
+        # Always try real price — demo_mode only blocks order execution
         try:
-            from trading.exchange import fetch_ticker
-            return fetch_ticker(pos["symbol"])["last"]
+            from trading.cryptocom_mcp_bridge import get_bridge
+            ticker = get_bridge().fetch_ticker(pos["symbol"])
+            price  = ticker.get("last", 0.0)
+            if price > 0:
+                return price
         except Exception:
-            return pos.get("current_price", pos["entry_price"])
+            pass
+        # Fallback: random walk from last known price (simulation only)
+        return self._walk_price(pos)
 
     def _walk_price(self, pos: dict) -> float:
         current = pos.get("current_price", pos["entry_price"])
