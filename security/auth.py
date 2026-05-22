@@ -2,18 +2,37 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 from typing import Optional
+
+logger = logging.getLogger("openclaw.security.auth")
 
 
 class TokenAuth:
     """Simple token-based authentication for dashboard endpoints."""
 
     def __init__(self, token: Optional[str] = None) -> None:
-        self._token = token or os.environ.get("DASHBOARD_TOKEN", "changeme")
+        resolved = token or os.environ.get("DASHBOARD_TOKEN", "")
+        if not resolved:
+            logger.warning(
+                "DASHBOARD_TOKEN is not set — dashboard API is UNAUTHENTICATED. "
+                "Set DASHBOARD_TOKEN in .env before any network exposure."
+            )
+            self._token = ""
+        elif resolved == "changeme":
+            logger.warning(
+                "DASHBOARD_TOKEN is still the default 'changeme' — change it in .env "
+                "before any network exposure."
+            )
+            self._token = resolved
+        else:
+            self._token = resolved
 
     def verify_token(self, provided: str) -> bool:
         """Constant-time comparison to prevent timing attacks."""
+        if not self._token:
+            return True   # unauthenticated mode — allow all from local only
         return hmac.compare_digest(
             self._token.encode(),
             provided.encode() if provided else b"",
@@ -37,5 +56,12 @@ class TelegramAuthChecker:
 
     def is_allowed(self, user_id: int) -> bool:
         if not self._allowed:
-            return True  # No allowlist = allow all (dev mode)
+            # No allowlist configured — deny by default and warn operator.
+            # Set TELEGRAM_ALLOWED_IDS in .env to allow your user ID.
+            logger.warning(
+                "TelegramAuthChecker: no allowlist configured — denying user_id=%s. "
+                "Set TELEGRAM_ALLOWED_IDS in .env to enable Telegram commands.",
+                user_id,
+            )
+            return False
         return user_id in self._allowed

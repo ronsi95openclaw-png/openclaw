@@ -234,13 +234,24 @@ class StrategyWeightEngine:
                         self.strategies.append(name)
                 m = self._metrics[name]
                 m.weight = float(d.get("weight", m.weight))
-                m.trades = deque(
-                    [
-                        _TradeRecord(pnl=t["pnl"], pnl_pct=t["pnl_pct"])
-                        for t in d.get("trades", [])
-                    ],
-                    maxlen=self.lookback_trades,
-                )
+                raw_trades = d.get("trades", [])
+                # Guard: older save format stored trades as an int count, not a list
+                if isinstance(raw_trades, list):
+                    m.trades = deque(
+                        [
+                            _TradeRecord(pnl=t["pnl"], pnl_pct=t["pnl_pct"])
+                            for t in raw_trades
+                            if isinstance(t, dict) and "pnl" in t and "pnl_pct" in t
+                        ],
+                        maxlen=self.lookback_trades,
+                    )
+                else:
+                    logger.debug(
+                        "Strategy weights: '%s' has legacy int trade count (%s) — "
+                        "resetting history, preserving weight.",
+                        name, raw_trades,
+                    )
+                    m.trades = deque(maxlen=self.lookback_trades)
             logger.debug("Strategy weights loaded from %s", path)
         except Exception as exc:
             logger.warning("Failed to load strategy weights from %s: %s", path, exc)

@@ -132,9 +132,9 @@ def _macd(closes: list[float],
         return 0.0, 0.0, 0.0
     ema_fast = _ema(closes, fast)
     ema_slow = _ema(closes, slow)
-    # Align lengths
+    # Align lengths — build oldest-to-newest (matching closes order)
     min_len  = min(len(ema_fast), len(ema_slow))
-    macd_arr = [ema_fast[-(min_len-i)] - ema_slow[-(min_len-i)] for i in range(min_len)]
+    macd_arr = [ema_fast[i - min_len] - ema_slow[i - min_len] for i in range(min_len)]
     if len(macd_arr) < signal:
         return macd_arr[-1], macd_arr[-1], 0.0
     sig_arr  = _ema(macd_arr, signal)
@@ -441,9 +441,9 @@ class StrategyWeightEngine:
             s.wins += 1
         else:
             s.losses += 1
-        s.recent_outcomes.append(won)
-        if len(s.recent_outcomes) > 20:
+        if len(s.recent_outcomes) >= 20:
             s.recent_outcomes.pop(0)
+        s.recent_outcomes.append(won)
         old_weight = s.weight
         s.update_weight()
         self.save()

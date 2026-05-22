@@ -131,6 +131,10 @@ class SoakTestRunner:
                 f"Memory grew {memory_growth_mb:.1f} MB, "
                 f"limit={self.max_memory_growth_mb:.1f} MB"
             )
+        if errors > 0:
+            passed = False
+            prev = failure_reason + "; " if failure_reason else ""
+            failure_reason = prev + f"{errors} iteration error(s) during soak"
 
         result = SoakTestResult(
             duration_seconds=time.monotonic() - start_ts,

@@ -325,8 +325,10 @@ class RuntimeOrchestrator:
             return False
         try:
             return self._governance.is_emergency_halted()
-        except Exception:
-            return False
+        except Exception as exc:
+            # Fail-safe: if governance check throws, assume halted rather than allow trades
+            logger.warning("Governance halt check failed — treating as HALTED (fail-safe): %s", exc)
+            return True
 
     def _load_regime_compat(self):
         """Load strategy/regime compatibility module (advisory)."""

@@ -50,16 +50,23 @@ class EventBus:
 
     def publish(self, event_type: str, data: Dict[str, Any]) -> None:
         """Thread-safe publish — callable from sync bot threads."""
-        if self._loop is None or self._loop.is_closed():
+        # Snapshot loop reference under lock to prevent TOCTOU None-deref
+        with self._lock:
+            loop   = self._loop
+            queues = list(self._queues)
+        if loop is None or loop.is_closed():
             return
         payload = json.dumps({"type": event_type, "data": data}, default=str)
-        with self._lock:
-            queues = list(self._queues)
         for q in queues:
             try:
-                self._loop.call_soon_threadsafe(q.put_nowait, payload)
-            except Exception:
-                pass
+                loop.call_soon_threadsafe(q.put_nowait, payload)
+            except asyncio.QueueFull:
+                logger.warning(
+                    "EventBus: queue full for event '%s' — WebSocket client too slow, dropping event",
+                    event_type,
+                )
+            except Exception as exc:
+                logger.debug("EventBus: publish error for event '%s': %s", event_type, exc)
 
     def subscriber_count(self) -> int:
         with self._lock:

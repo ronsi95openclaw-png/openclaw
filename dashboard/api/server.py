@@ -34,14 +34,25 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from dashboard.api.event_bus import get_bus
+from security.auth import TokenAuth
 
-logger = logging.getLogger("openclaw.dashboard.server")
+logger    = logging.getLogger("openclaw.dashboard.server")
+_auth     = TokenAuth()   # reads DASHBOARD_TOKEN from env on startup
+
+
+def _require_local_or_token(request: Request) -> None:
+    """Allow unauthenticated access from localhost; require token from external origins."""
+    if _auth.is_local_request(request.client.host if request.client else ""):
+        return
+    token = request.headers.get("X-Dashboard-Token", "")
+    if not _auth.verify_token(token):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Dashboard-Token")
 
 app = FastAPI(title="OpenClaw Dashboard", version="1.0.0")
 
@@ -155,7 +166,7 @@ def api_outcomes(limit: int = 20):
 # ── Bot control ───────────────────────────────────────────────────────────────
 
 @app.post("/api/bot/start")
-def api_start():
+def api_start(_: None = Depends(_require_local_or_token)):
     bot = get_bot()
     if bot.is_running():
         return {"status": "already_running"}
@@ -165,7 +176,7 @@ def api_start():
 
 
 @app.post("/api/bot/stop")
-def api_stop():
+def api_stop(_: None = Depends(_require_local_or_token)):
     bot = get_bot()
     bot.stop()
     get_bus().publish("state_update", bot.get_status())
@@ -173,12 +184,12 @@ def api_stop():
 
 
 class BotConfig(BaseModel):
-    demo_mode: Optional[bool] = None
-    risk_pct:  Optional[float] = None
+    demo_mode: Optional[bool]  = None
+    risk_pct:  Optional[float] = Field(default=None, ge=0.1, le=4.0)
 
 
 @app.post("/api/bot/configure")
-def api_configure(cfg: BotConfig):
+def api_configure(cfg: BotConfig, _: None = Depends(_require_local_or_token)):
     bot = get_bot()
     bot.configure(demo_mode=cfg.demo_mode, risk_pct=cfg.risk_pct)
     return {"status": "updated", "config": bot.get_status()}

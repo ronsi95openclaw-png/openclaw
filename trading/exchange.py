@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import logging
 import os
+import threading
 import time
 
 import requests
@@ -25,6 +26,22 @@ _TIMEFRAME_MAP = {
 }
 
 
+# ── Nonce counter — monotonic, thread-safe, never repeats within process ─────
+
+_nonce_lock    = threading.Lock()
+_nonce_counter = 0
+
+
+def _next_nonce() -> str:
+    """Return a strictly-increasing nonce safe for concurrent callers."""
+    global _nonce_counter
+    base = int(time.time() * 1000)
+    with _nonce_lock:
+        # Ensure nonce is always strictly greater than the previous one
+        _nonce_counter = max(base, _nonce_counter + 1)
+        return str(_nonce_counter)
+
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 def _get_keys() -> tuple[str, str]:
@@ -37,7 +54,7 @@ def _get_keys() -> tuple[str, str]:
 
 def _sign(method: str, params: dict, api_key: str, secret: str) -> dict:
     """Build a signed request body for Crypto.com private API."""
-    nonce   = str(int(time.time() * 1000))
+    nonce   = _next_nonce()
     req_id  = nonce
 
     # Deterministic param string: sorted keys, no spaces

@@ -51,6 +51,17 @@ MAX_POSITIONS  = 3
 CONF_THRESHOLD = 0.60
 LEVERAGE       = 3   # perpetual futures leverage
 
+# Monotonic counter for collision-free trade IDs within the same second
+_trade_id_lock    = threading.Lock()
+_trade_id_counter = 0
+
+
+def _next_trade_id(strategy: str) -> str:
+    global _trade_id_counter
+    with _trade_id_lock:
+        _trade_id_counter += 1
+        return f"CX{strategy[:3].upper()}{int(time.time())}{_trade_id_counter:04d}"
+
 
 @dataclass
 class BotState:
@@ -554,7 +565,7 @@ class CryptoComBot:
                        mode: str = "DEMO") -> None:
         sl = price * (1 - sig.sl_pct / 100) if sig.action == "long" else price * (1 + sig.sl_pct / 100)
         tp = price * (1 + sig.tp_pct / 100) if sig.action == "long" else price * (1 - sig.tp_pct / 100)
-        trade_id = f"CX{sig.strategy[:3]}{int(time.time())}"
+        trade_id = _next_trade_id(sig.strategy)
 
         # DCA split-entry: open 60% now, reserve 40% for a DCA add
         # DCA triggers at 50% of SL distance from entry
@@ -581,7 +592,15 @@ class CryptoComBot:
                     leverage=LEVERAGE,
                 )
                 if not result.get("sl_tp_ok"):
-                    logger.critical("UNHEDGED position opened for %s — SL/TP missing", sig.symbol)
+                    # Position opened on exchange but missing SL/TP — do NOT track in state.
+                    # Operator must manually close this on the exchange.
+                    logger.critical(
+                        "UNHEDGED position on exchange for %s — SL/TP placement failed. "
+                        "NOT tracking in bot state. Manual close required on exchange.",
+                        sig.symbol,
+                    )
+                    self.state.status_msg = f"UNHEDGED {sig.symbol} — manual close needed"
+                    return
             except Exception as e:
                 logger.error("Order failed [%s]: %s", sig.symbol, e)
                 self.state.status_msg = f"Order failed: {str(e)[:80]}"
@@ -705,7 +724,7 @@ class CryptoComBot:
                             pos["entry_price"] = round(avg_entry, 6)
                             pos["size"]        = round(size1 + size2, 6)
                             pos["dca_count"]   = 1
-                    pos["dca_size"]    = 0.0
+                            pos["dca_size"]    = 0.0   # clear inside lock, only on success
                     logger.info("DCA ADD %s %s dca@%.4f  avg_entry=%.4f  size=%.6f",
                                 pos["side"].upper(), pos["symbol"],
                                 price, avg_entry, pos["size"])
