@@ -318,6 +318,8 @@ class CryptoComBot:
             candles, funding = self._fetch_market_data(symbol)
             if candles is None:
                 continue
+            if not self._validate_candles(symbol, candles):
+                continue
 
             closes = [c["close"] for c in candles]
             price  = closes[-1]
@@ -445,6 +447,26 @@ class CryptoComBot:
             logger.warning("Market data fetch failed [%s]: %s", symbol, e)
             return None, 0.0
 
+    def _validate_candles(self, symbol: str, candles: list) -> bool:
+        """Reject candle sets with bad data before any strategy runs on them."""
+        import math
+        if len(candles) < 30:
+            logger.debug("Candle validation: %s — too few candles (%d)", symbol, len(candles))
+            return False
+        for c in candles:
+            for field in ("open", "high", "low", "close", "volume"):
+                v = c.get(field, 0)
+                if not v or math.isnan(float(v)) or math.isinf(float(v)) or float(v) <= 0:
+                    logger.warning(
+                        "Candle validation: %s — bad %s value %r — skipping symbol",
+                        symbol, field, v,
+                    )
+                    return False
+            if c["high"] < c["low"] or c["high"] < c["close"] or c["low"] > c["close"]:
+                logger.warning("Candle validation: %s — OHLC integrity fail — skipping", symbol)
+                return False
+        return True
+
     def _refresh_balance(self) -> float:
         if self.state.demo_mode:
             return max(100.0, 1000.0 + self.state.total_pnl)
@@ -566,6 +588,21 @@ class CryptoComBot:
             )
 
     def _check_positions(self) -> None:
+        # If capital engine says flatten-all (EMERGENCY_HALT), close every open position
+        if self._orchestrator and self._orchestrator._capital:
+            try:
+                if self._orchestrator._capital.should_flatten_all():
+                    logger.critical(
+                        "EMERGENCY_HALT: flattening %d open position(s)",
+                        len(self.state.open_positions),
+                    )
+                    for pos in list(self.state.open_positions):
+                        price = self._current_price(pos)
+                        self._close_position(pos, "loss", price)
+                    return
+            except Exception as _e:
+                logger.warning("Flatten-all check failed (non-fatal): %s", _e)
+
         to_close = []
         for pos in list(self.state.open_positions):
             price = self._current_price(pos)

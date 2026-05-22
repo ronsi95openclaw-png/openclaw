@@ -187,6 +187,16 @@ class RuntimeOrchestrator:
             except Exception as exc:
                 logger.debug("Ruflo advisory error (non-fatal): %s", exc)
 
+        # Apply Ruflo advisory nudge — bounded to ±10% of raw confidence, clamped [0.01, 0.99]
+        # Ruflo is ADVISORY: it can nudge confidence but never approve or block a trade.
+        if ruflo_conf_adj != 0.0:
+            adjusted = confidence + (ruflo_conf_adj * 0.10)
+            confidence = round(max(0.01, min(0.99, adjusted)), 4)
+            logger.debug(
+                "Ruflo nudge applied  symbol=%s  raw_conf→%.3f  adj=%.4f  final=%.3f",
+                symbol, confidence - ruflo_conf_adj * 0.10, ruflo_conf_adj, confidence,
+            )
+
         # Build intent
         now = datetime.now(timezone.utc)
         intent = TradingIntent(

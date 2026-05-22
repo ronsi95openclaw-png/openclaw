@@ -165,8 +165,21 @@ class ReplayJournal:
         line = json.dumps(entry, default=str) + "\n"
         with self._lock:
             try:
+                # Rotate before write if file has grown past the size cap
+                if self._path.exists() and self._path.stat().st_size >= self._max_bytes:
+                    self._rotate()
                 # Atomic append: open in append mode (OS-level atomic on Linux)
                 with self._path.open("a", encoding="utf-8") as fh:
                     fh.write(line)
             except OSError as exc:
                 logger.error("ReplayJournal write failed: %s", exc)
+
+    def _rotate(self) -> None:
+        """Rename the current journal to a dated archive and start fresh."""
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        archive = self._path.with_name(f"{self._path.stem}_{ts}.jsonl")
+        try:
+            self._path.rename(archive)
+            logger.info("ReplayJournal rotated → %s", archive.name)
+        except OSError as exc:
+            logger.error("ReplayJournal rotation failed: %s", exc)
