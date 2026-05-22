@@ -20,7 +20,9 @@ from typing import Optional
 
 logger = logging.getLogger("openclaw.runtime.qwen_compressor")
 
-_MODEL = "qwen2.5:14b"
+# qwen3 is better at structured 2-sentence outputs; falls back to qwen2.5:14b
+# if qwen3 is not installed. Override via OLLAMA_MODEL_COMPRESSION env var.
+_TASK = "compression"
 
 _PROMPT_TEMPLATE = """\
 You are a concise trading analyst. Summarise this closed trade in exactly 2 sentences.
@@ -61,7 +63,7 @@ def compress_trade(record: dict) -> str:
     )
 
     try:
-        lesson = ask_llm(prompt, model=_MODEL)
+        lesson = ask_llm(prompt, task=_TASK)
         lesson = lesson.strip()
         logger.debug("Qwen lesson [%s/%s]: %s", record.get("symbol"), record.get("strategy"), lesson[:80])
         return lesson

@@ -39,6 +39,41 @@ MAX_TOKENS           = int(os.getenv("MAX_TOKENS_PER_RESPONSE", "500"))
 COMPLEXITY_THRESHOLD = int(os.getenv("COMPLEXITY_THRESHOLD", "50"))   # word count
 CACHE_TTL_SECONDS    = 3600   # 1 hour
 
+# ── Model registry — task-based routing ──────────────────────────────────────
+# Models available after local Ollama install on Ronnie's machine:
+#   qwen2.5:14b  — trade compression, general chat (existing)
+#   qwen3        — structured outputs, operational reasoning (NEW)
+#   deepseek-coder — code tasks, refactors (NEW)
+#   gemma3       — utilities, lightweight summaries (NEW)
+
+MODEL_REGISTRY: dict[str, list[str]] = {
+    # task → [primary, fallback, ...]
+    "compression":   ["qwen3",          "qwen2.5:14b"],
+    "reasoning":     ["qwen3",          "qwen2.5:14b"],
+    "code":          ["deepseek-coder", "qwen2.5:14b"],
+    "utility":       ["gemma3",         "qwen3",        "qwen2.5:14b"],
+    "structured":    ["qwen3",          "qwen2.5:14b"],
+    "default":       ["qwen2.5:14b"],
+}
+
+
+def model_for(task: str) -> str:
+    """Return the configured model name for a given task type.
+
+    Checks MODEL_REGISTRY; can be overridden per-task via env var
+    e.g. OLLAMA_MODEL_COMPRESSION=qwen2.5:14b.
+    """
+    env_key = f"OLLAMA_MODEL_{task.upper()}"
+    if os.getenv(env_key, "").strip():
+        return os.getenv(env_key).strip()
+    candidates = MODEL_REGISTRY.get(task, MODEL_REGISTRY["default"])
+    return candidates[0]
+
+
+def fallback_chain(task: str) -> list[str]:
+    """Return full fallback chain for a task (primary first)."""
+    return MODEL_REGISTRY.get(task, MODEL_REGISTRY["default"])
+
 _DATA_DIR   = Path(__file__).parent.parent / "data"
 _CACHE_FILE = _DATA_DIR / "response_cache.json"
 _USAGE_FILE = _DATA_DIR / "usage_stats.json"
@@ -227,9 +262,12 @@ def ask_llm(
     model: Optional[str] = None,
     system: Optional[str] = None,
     history: Optional[List[dict]] = None,
+    task: Optional[str] = None,
 ) -> str:
-    """Ask local Ollama. Used for simple tasks and as fallback."""
-    model = model or os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+    """Ask local Ollama. Supports task-based model selection with fallback chain."""
+    if model is None:
+        model = model_for(task) if task else os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -237,13 +275,33 @@ def ask_llm(
         messages.extend(_compress_history(history))
     messages.append({"role": "user", "content": prompt})
 
-    try:
-        response = ollama_chat(model=model, messages=messages)
-        result = response.message.content.strip()
-        _track_usage(model=model)
-        return result
-    except Exception as exc:
-        raise RuntimeError(f"Ollama generation failed: {exc}") from exc
+    # Try primary model, then fallback chain
+    chain = fallback_chain(task) if task else [model]
+    if model not in chain:
+        chain = [model] + chain
+
+    last_exc: Exception = RuntimeError("No models attempted")
+    for candidate in chain:
+        try:
+            response = ollama_chat(model=candidate, messages=messages)
+            result = response.message.content.strip()
+            _track_usage(model=candidate)
+            return result
+        except Exception as exc:
+            last_exc = exc
+            continue
+    raise RuntimeError(f"Ollama generation failed (all models tried): {last_exc}") from last_exc
+
+
+def ask_structured(
+    prompt: str,
+    system: Optional[str] = None,
+) -> str:
+    """Ask for a structured / JSON-formatted output using qwen3 (best at this task).
+
+    Falls back through the 'structured' chain automatically.
+    """
+    return ask_llm(prompt, system=system, task="structured")
 
 
 # ---------------------------------------------------------------------------
