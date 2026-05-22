@@ -36,53 +36,60 @@ def open_position(
     side: str,           # "LONG" or "SHORT"
     sl_price: float,
     tp_price: float,
-    notional_usd: float, # USDT amount (pre-leverage)
+    qty: float,          # base-currency quantity already calculated by bot risk model
     leverage: int = 3,
 ) -> dict:
     """Open a perpetual futures position with native SL/TP orders.
 
-    Returns dict with entry order ID, SL/TP order IDs, and quantity.
+    qty is the base-currency amount calculated by _calc_size() in the bot — the
+    executor uses it directly so the exchange position matches bot state exactly.
+
+    Returns dict with entry order ID, SL/TP order IDs, quantity, and
+    a boolean 'sl_tp_ok' so the caller can detect unhedged positions.
     """
     from trading.exchange import (
-        set_leverage, place_perp_order, fetch_ticker_price,
-        to_perp_instrument, _MIN_QTY_PERP,
+        set_leverage, place_perp_order, to_perp_instrument, _MIN_QTY_PERP,
     )
 
     instrument = to_perp_instrument(symbol)
+    min_qty    = _MIN_QTY_PERP.get(instrument, 0.001)
+
+    # Reject orders below exchange minimum rather than silently inflating
+    if qty < min_qty:
+        raise ValueError(
+            f"Order qty {qty} below exchange minimum {min_qty} for {instrument}. "
+            f"Increase balance or raise risk_pct."
+        )
 
     set_leverage(instrument, leverage)
-
-    try:
-        price = fetch_ticker_price(instrument)
-    except Exception as exc:
-        raise RuntimeError(f"Price fetch failed for {instrument}: {exc}") from exc
-
-    # Quantity in base currency: notional × leverage ÷ price
-    # e.g. $300 USDT × 3 leverage @ $77,000 BTC ≈ 0.0117 BTC
-    qty = round((notional_usd * leverage) / price, 8)
-    qty = max(qty, _MIN_QTY_PERP.get(instrument, 0.001))
 
     entry_side = "BUY"  if side == "LONG"  else "SELL"
     exit_side  = "SELL" if side == "LONG"  else "BUY"
 
-    entry_result = place_perp_order(instrument, entry_side, "MARKET", qty)
+    entry_result   = place_perp_order(instrument, entry_side, "MARKET", qty)
     entry_order_id = entry_result.get("order_id", "")
 
     sl_order_id = tp_order_id = ""
 
     try:
-        sl = place_perp_order(instrument, exit_side, "STOP_LOSS", qty,
-                              ref_price=sl_price)
+        sl          = place_perp_order(instrument, exit_side, "STOP_LOSS", qty, ref_price=sl_price)
         sl_order_id = sl.get("order_id", "")
     except Exception as exc:
-        logger.warning("SL order placement failed [%s]: %s", symbol, exc)
+        logger.critical("SL order FAILED [%s] — position is UNHEDGED: %s", symbol, exc)
 
     try:
-        tp = place_perp_order(instrument, exit_side, "TAKE_PROFIT", qty,
-                              ref_price=tp_price)
+        tp          = place_perp_order(instrument, exit_side, "TAKE_PROFIT", qty, ref_price=tp_price)
         tp_order_id = tp.get("order_id", "")
     except Exception as exc:
-        logger.warning("TP order placement failed [%s]: %s", symbol, exc)
+        logger.critical("TP order FAILED [%s] — position has no take-profit: %s", symbol, exc)
+
+    sl_tp_ok = bool(sl_order_id and tp_order_id)
+    if not sl_tp_ok:
+        logger.critical(
+            "UNHEDGED POSITION OPENED [%s %s] qty=%.6f  sl_ok=%s  tp_ok=%s — "
+            "manual intervention required",
+            side, symbol, qty, bool(sl_order_id), bool(tp_order_id),
+        )
 
     result = {
         "symbol":          symbol,
@@ -95,7 +102,8 @@ def open_position(
         "sl_price":        sl_price,
         "tp_price":        tp_price,
         "leverage":        leverage,
-        "status":          "opened",
+        "sl_tp_ok":        sl_tp_ok,
+        "status":          "opened" if sl_tp_ok else "UNHEDGED",
     }
     _log_trade({"event": "open", **result})
     return result

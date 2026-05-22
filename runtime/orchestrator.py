@@ -357,6 +357,7 @@ def build_orchestrator(
     journal_path: str = "data/replay_journal.jsonl",
     capital_config: Optional[Dict[str, Any]] = None,
     with_governance: bool = False,
+    starting_balance: float = 1000.0,
 ) -> RuntimeOrchestrator:
     """Factory: build a fully-wired RuntimeOrchestrator.
 
@@ -368,7 +369,11 @@ def build_orchestrator(
     capital_engine = None
     try:
         from risk.capital_preservation import CapitalPreservationEngine
-        cfg = capital_config or {}
+        cfg = dict(capital_config or {})
+        # Seed peak from starting_balance so the first equity reading can't
+        # produce a spurious drawdown or trigger a false EMERGENCY_HALT.
+        if "starting_equity" not in cfg:
+            cfg["starting_equity"] = starting_balance
         capital_engine = CapitalPreservationEngine(**cfg)
         logger.info("CapitalPreservationEngine loaded")
     except Exception as exc:

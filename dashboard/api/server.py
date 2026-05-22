@@ -47,9 +47,14 @@ app = FastAPI(title="OpenClaw Dashboard", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 # ── Bot singleton ─────────────────────────────────────────────────────────────
@@ -105,6 +110,7 @@ def api_positions():
 
 @app.get("/api/trades")
 def api_trades(limit: int = 50):
+    limit = max(1, min(limit, 500))
     return get_bot().state.trade_log[:limit]
 
 

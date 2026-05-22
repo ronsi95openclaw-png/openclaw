@@ -21,15 +21,22 @@ from trading.cryptocom_mcp_bridge import _normalize_mcp_candles, _normalize_mcp_
 CACHE_DIR = Path(__file__).parent.parent / "data" / "mcp_cache"
 
 
+def _atomic_write(path: Path, data: dict) -> None:
+    """Write JSON atomically: write to .tmp then rename to avoid partial-read race."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(path)   # atomic on POSIX; near-atomic on Windows
+
+
 def write_candles(symbol: str, raw_mcp_response: Any) -> int:
     """Normalise and cache MCP candle response for one symbol. Returns count."""
     candles = _normalize_mcp_candles(raw_mcp_response)
     if not candles:
         print(f"[injector] WARNING: no candles parsed for {symbol}")
         return 0
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = CACHE_DIR / f"{symbol}_candles.json"
-    path.write_text(json.dumps({"written_at": time.time(), "candles": candles}, indent=2))
+    _atomic_write(path, {"written_at": time.time(), "candles": candles})
     print(f"[injector] {symbol} candles: {len(candles)} written → {path.name}")
     return len(candles)
 
@@ -40,9 +47,8 @@ def write_ticker(symbol: str, raw_mcp_response: Any) -> bool:
     if not ticker or not ticker.get("last"):
         print(f"[injector] WARNING: no ticker parsed for {symbol}")
         return False
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = CACHE_DIR / f"{symbol}_ticker.json"
-    path.write_text(json.dumps({"written_at": time.time(), "ticker": ticker}, indent=2))
+    _atomic_write(path, {"written_at": time.time(), "ticker": ticker})
     print(f"[injector] {symbol} ticker: last={ticker['last']:.4f} → {path.name}")
     return True
 

@@ -158,14 +158,16 @@ class LossStreakTracker:
         self._total_wins: int = 0
 
     def record_trade(self, pnl: float) -> None:
-        """Record a completed trade PnL. Positive = win, negative = loss."""
+        """Record a completed trade PnL. Positive = win, negative = loss.
+        Breakeven (pnl == 0) resets the streak without counting as win or loss."""
         with self._lock:
             if pnl > 0:
                 self._streak = 0
                 self._total_wins += 1
-            else:
+            elif pnl < 0:
                 self._streak += 1
                 self._total_losses += 1
+            # pnl == 0: breakeven — reset streak, don't count as loss
 
     @property
     def streak(self) -> int:
@@ -210,7 +212,8 @@ class CapitalPreservationEngine:
         "weekend_risk_scalar":     0.50,   # 50% risk during weekend window
     }
 
-    def __init__(self, thresholds: Optional[Dict[str, float]] = None) -> None:
+    def __init__(self, thresholds: Optional[Dict[str, float]] = None,
+                 starting_equity: float = 0.0) -> None:
         self._lock = threading.Lock()
 
         # Merge caller-provided thresholds over defaults.
@@ -221,6 +224,11 @@ class CapitalPreservationEngine:
         self._state: CapitalState = CapitalState.SAFE
         self._drawdown_tracker = RollingDrawdownTracker()
         self._loss_streak_tracker = LossStreakTracker()
+
+        # Seed alltime_peak with starting_equity so the first real equity reading
+        # can't produce a spurious negative drawdown or division-by-zero.
+        if starting_equity > 0:
+            self._drawdown_tracker._alltime_peak = starting_equity
 
         # Immutable append-only operator reset log (in-memory only here;
         # governance module writes to disk).
@@ -272,15 +280,11 @@ class CapitalPreservationEngine:
         return base
 
     def should_flatten_all(self) -> bool:
-        """Return True if all open positions must be closed immediately."""
+        """Return True if all open positions must be closed immediately.
+        Tied strictly to EMERGENCY_HALT state — no secondary monthly_dd check
+        that could be inconsistent with the state machine."""
         with self._lock:
-            if self._state == CapitalState.EMERGENCY_HALT:
-                return True
-
-            # Also flatten if monthly drawdown threshold is breached (belt +
-            # braces: transition logic should have already set EMERGENCY_HALT).
-            monthly_dd = self._drawdown_tracker.monthly_drawdown()
-            return monthly_dd >= self._thresholds["monthly_dd_limit"]
+            return self._state == CapitalState.EMERGENCY_HALT
 
     def get_leverage_cap(self, base_leverage: float) -> float:
         """Scale down leverage based on current capital state.

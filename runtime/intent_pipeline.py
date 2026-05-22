@@ -16,6 +16,7 @@ It may REJECT any intent regardless of AI confidence score.
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -73,10 +74,11 @@ class IntentPipeline:
                  capital_engine=None,    # CapitalPreservationEngine | None
                  regime_compat=None,     # module with is_strategy_compatible() | None
                  max_dedup_window: int = 1000):  # kept for API compat, unused
-        self._capital  = capital_engine
-        self._compat   = regime_compat
+        self._capital   = capital_engine
+        self._compat    = regime_compat
         # key=(symbol,strategy,action) → expiry datetime; evicted lazily
         self._dedup: Dict[Tuple[str, str, str], datetime] = {}
+        self._dedup_lock = threading.Lock()   # atomic check-and-record
 
     def validate(self, intent: TradingIntent) -> IntentVerdict:
         """Run all gates. Returns IntentVerdict with approved=True/False."""
@@ -93,14 +95,17 @@ class IntentPipeline:
             logger.warning("INTENT REJECTED [stale] %s", intent.intent_id)
             return IntentVerdict(intent.intent_id, False, reason, 0.0, 0.0)
 
-        # Gate 3: Deduplication — same (symbol, strategy, action) within TTL window
+        # Gate 3: Deduplication — atomic check-and-record under lock
         dedup_key = (intent.symbol, intent.strategy, intent.action)
         now = datetime.now(timezone.utc)
-        if dedup_key in self._dedup and self._dedup[dedup_key] > now:
-            reason = (f"Duplicate signal {intent.symbol}/{intent.strategy}/{intent.action} "
-                      f"already approved within TTL")
-            logger.info("INTENT REJECTED [duplicate] %s: %s", intent.intent_id, reason)
-            return IntentVerdict(intent.intent_id, False, reason, 0.0, 0.0)
+        with self._dedup_lock:
+            if dedup_key in self._dedup and self._dedup[dedup_key] > now:
+                reason = (f"Duplicate signal {intent.symbol}/{intent.strategy}/{intent.action} "
+                          f"already approved within TTL")
+                logger.info("INTENT REJECTED [duplicate] %s: %s", intent.intent_id, reason)
+                return IntentVerdict(intent.intent_id, False, reason, 0.0, 0.0)
+            # Reserve the slot immediately so concurrent signals can't both pass
+            self._dedup[dedup_key] = now + timedelta(seconds=90)
 
         # Gate 4: Regime compatibility
         if self._compat is not None:
@@ -160,14 +165,21 @@ class IntentPipeline:
                 )
                 return False, reason
         except Exception as exc:
-            logger.warning("Regime compat check failed: %s — allowing intent", exc)
+            # Deny-by-default: a broken classifier must not allow forbidden strategies
+            logger.warning("Regime compat check failed: %s — blocking intent (fail-safe)", exc)
+            return False, f"Regime check unavailable — blocking {intent.strategy} as fail-safe"
         return True, ""
 
     def _record_seen(self, intent: TradingIntent) -> None:
-        key = (intent.symbol, intent.strategy, intent.action)
-        self._dedup[key] = intent.expires_at
-        # Evict expired entries to keep the dict bounded
+        # Slot already reserved in Gate 3; just refresh expiry and evict old entries
         now = datetime.now(timezone.utc)
-        expired = [k for k, exp in self._dedup.items() if exp <= now]
-        for k in expired:
-            del self._dedup[k]
+        with self._dedup_lock:
+            key = (intent.symbol, intent.strategy, intent.action)
+            self._dedup[key] = now + timedelta(seconds=90)
+            # Evict expired entries; hard-cap at 10k to prevent unbounded growth
+            expired = [k for k, exp in self._dedup.items() if exp <= now]
+            for k in expired:
+                del self._dedup[k]
+            if len(self._dedup) > 10_000:
+                oldest = sorted(self._dedup.items(), key=lambda x: x[1])[:5_000]
+                self._dedup = dict(oldest)

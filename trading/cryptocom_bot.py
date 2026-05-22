@@ -219,7 +219,9 @@ class CryptoComBot:
     def _init_orchestrator(self):
         try:
             from runtime.orchestrator import build_orchestrator
-            return build_orchestrator(with_governance=True)
+            balance = max(100.0, 1000.0 + self.state.total_pnl) if self.state.demo_mode \
+                      else self.state.balance
+            return build_orchestrator(with_governance=True, starting_balance=balance)
         except Exception as exc:
             logger.warning("RuntimeOrchestrator unavailable: %s", exc)
             return None
@@ -570,15 +572,16 @@ class CryptoComBot:
         if not self.state.demo_mode:
             try:
                 from trading.executor import open_position
-                notional_60pct = balance * (self.state.risk_pct / 100.0) * 0.6
-                open_position(
+                result = open_position(
                     symbol=sig.symbol,
                     side=sig.action.upper(),
                     sl_price=round(sl, 6),
                     tp_price=round(tp, 6),
-                    notional_usd=notional_60pct,
+                    qty=initial_size,   # pass exact base-currency qty from risk model
                     leverage=LEVERAGE,
                 )
+                if not result.get("sl_tp_ok"):
+                    logger.critical("UNHEDGED position opened for %s — SL/TP missing", sig.symbol)
             except Exception as e:
                 logger.error("Order failed [%s]: %s", sig.symbol, e)
                 self.state.status_msg = f"Order failed: {str(e)[:80]}"
@@ -674,32 +677,34 @@ class CryptoComBot:
                     entry1    = pos["entry_price"]
                     avg_entry = (entry1 * size1 + price * size2) / (size1 + size2)
 
+                    dca_ok = True
                     if not self.state.demo_mode:
                         try:
-                            # Cancel old SL/TP (sized for initial 60%), place fresh ones
-                            # for the full combined size at the same absolute price levels
                             from trading.exchange import (
                                 cancel_all_orders, place_perp_order, to_perp_instrument,
                             )
-                            instr = to_perp_instrument(pos["symbol"])
-                            cancel_all_orders(instr)
+                            instr     = to_perp_instrument(pos["symbol"])
                             exit_side = "SELL" if pos["side"] == "long" else "BUY"
                             total_qty = round(size1 + size2, 6)
-                            # Add DCA market order
+                            cancel_all_orders(instr)
                             place_perp_order(instr,
                                              "BUY" if pos["side"] == "long" else "SELL",
                                              "MARKET", size2)
-                            # Re-place SL/TP for full size
                             place_perp_order(instr, exit_side, "STOP_LOSS",  total_qty,
                                              ref_price=pos["sl_price"])
                             place_perp_order(instr, exit_side, "TAKE_PROFIT", total_qty,
                                              ref_price=pos["tp_price"])
                         except Exception as exc:
-                            logger.warning("DCA live order failed [%s]: %s", pos["symbol"], exc)
+                            logger.warning("DCA live order failed [%s]: %s — skipping state update",
+                                           pos["symbol"], exc)
+                            dca_ok = False
 
-                    pos["entry_price"] = round(avg_entry, 6)
-                    pos["size"]        = round(size1 + size2, 6)
-                    pos["dca_count"]   = 1
+                    # Only update bot state if orders succeeded (or in demo mode)
+                    if dca_ok:
+                        with self._lock:
+                            pos["entry_price"] = round(avg_entry, 6)
+                            pos["size"]        = round(size1 + size2, 6)
+                            pos["dca_count"]   = 1
                     pos["dca_size"]    = 0.0
                     logger.info("DCA ADD %s %s dca@%.4f  avg_entry=%.4f  size=%.6f",
                                 pos["side"].upper(), pos["symbol"],
