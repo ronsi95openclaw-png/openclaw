@@ -297,16 +297,24 @@ class SheetReporter:
             logger.warning("SheetReporter: queue full, dropping row for tab '%s'", tab)
 
     def _worker(self) -> None:
+        backoff = 0  # consecutive failure count
         while True:
             try:
                 tab, row = self._queue.get(timeout=5)
-                self._write_row(tab, row)
-                self._queue.task_done()
             except queue.Empty:
                 continue
+            try:
+                self._write_row(tab, row)
+                self._queue.task_done()
+                backoff = 0  # reset on success
             except Exception as exc:
                 logger.error("SheetReporter worker error: %s", exc)
-                time.sleep(15)
+                self._queue.task_done()
+                # Exponential backoff: 2, 4, 8, 16, 32, 60, 60, … seconds
+                backoff = min(backoff + 1, 6)
+                delay = min(2 ** backoff, 60)
+                logger.info("SheetReporter: retrying in %ds (failure count=%d)", delay, backoff)
+                time.sleep(delay)
 
     def _connect(self) -> bool:
         with self._connect_lock:
@@ -402,6 +410,8 @@ class SheetReporter:
         except Exception as exc:
             logger.warning("SheetReporter: append to '%s' failed: %s — reconnecting", tab, exc)
             self._connected = False
+            self._worksheets.clear()  # force full reconnect on next write
+            raise  # let the worker apply backoff
             self._worksheets.clear()
 
 

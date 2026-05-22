@@ -205,12 +205,25 @@ def api_flush():
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────
 
+_WS_MAX_CONNECTIONS = 20
+_ws_connection_count = 0
+_ws_count_lock = asyncio.Lock()
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    global _ws_connection_count
+    async with _ws_count_lock:
+        if _ws_connection_count >= _WS_MAX_CONNECTIONS:
+            await websocket.close(code=1008, reason="Too many connections")
+            logger.warning("WS: rejected connection — limit of %d reached", _WS_MAX_CONNECTIONS)
+            return
+        _ws_connection_count += 1
+
     await websocket.accept()
     bus = get_bus()
     q   = bus.subscribe()
-    logger.info("WS client connected (%d total)", bus.subscriber_count())
+    logger.info("WS client connected (%d/%d)", _ws_connection_count, _WS_MAX_CONNECTIONS)
 
     # Send full state immediately on connect
     try:
@@ -236,7 +249,10 @@ async def websocket_endpoint(websocket: WebSocket):
         pass
     finally:
         bus.unsubscribe(q)
-        logger.info("WS client disconnected (%d remaining)", bus.subscriber_count())
+        async with _ws_count_lock:
+            _ws_connection_count = max(0, _ws_connection_count - 1)
+        logger.info("WS client disconnected (%d/%d remaining)",
+                    _ws_connection_count, _WS_MAX_CONNECTIONS)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
