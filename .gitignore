@@ -16,6 +16,5 @@ build/
 credentials.json
 credentials*.json
 setup.sh
-start.sh
 dashboard/web/node_modules/
 dashboard/web/.next/

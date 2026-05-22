@@ -1,0 +1,90 @@
+{
+  "folders": [
+    {
+      "name": "🤖 OpenClaw Bot",
+      "path": "."
+    },
+    {
+      "name": "🧠 AI-OS Vault (Obsidian)",
+      "path": "../AI-Operating-System-Vault"
+    },
+    {
+      "name": "⚙️  AI System (Scheduler + Router)",
+      "path": "../ai-system"
+    }
+  ],
+  "settings": {
+    "python.defaultInterpreterPath": "python",
+    "editor.formatOnSave": true,
+    "editor.rulers": [100],
+    "files.exclude": {
+      "**/__pycache__": true,
+      "**/*.pyc": true,
+      "**/node_modules": true,
+      "**/.next": true
+    },
+    "python.analysis.extraPaths": ["."],
+    "terminal.integrated.cwd": "${workspaceFolder:🤖 OpenClaw Bot}",
+    "editor.fontFamily": "'JetBrains Mono', 'Fira Code', monospace",
+    "workbench.colorTheme": "One Dark Pro",
+    "files.watcherExclude": {
+      "**/data/replay_journal.jsonl": true,
+      "**/data/logs/**": true
+    }
+  },
+  "launch": {
+    "configurations": [
+      {
+        "name": "▶  Start Dashboard (API + UI)",
+        "type": "node",
+        "request": "launch",
+        "program": "${workspaceFolder:🤖 OpenClaw Bot}/start.sh",
+        "console": "integratedTerminal"
+      },
+      {
+        "name": "🐍 Dashboard API only (port 8000)",
+        "type": "python",
+        "request": "launch",
+        "module": "dashboard.api.server",
+        "cwd": "${workspaceFolder:🤖 OpenClaw Bot}",
+        "console": "integratedTerminal",
+        "justMyCode": false
+      },
+      {
+        "name": "🧪 Run simulation (paper trade)",
+        "type": "python",
+        "request": "launch",
+        "program": "${workspaceFolder:🤖 OpenClaw Bot}/simulate_day.py",
+        "cwd": "${workspaceFolder:🤖 OpenClaw Bot}",
+        "console": "integratedTerminal"
+      }
+    ]
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Start OpenClaw",
+        "type": "shell",
+        "command": "bash start.sh",
+        "options": { "cwd": "${workspaceFolder:🤖 OpenClaw Bot}" },
+        "group": { "kind": "build", "isDefault": true },
+        "presentation": { "reveal": "always", "panel": "new" }
+      },
+      {
+        "label": "Syntax check",
+        "type": "shell",
+        "command": "python -m py_compile trading/cryptocom_bot.py trading/strategies.py && echo 'OK'",
+        "options": { "cwd": "${workspaceFolder:🤖 OpenClaw Bot}" },
+        "group": "test"
+      },
+      {
+        "label": "Capability matrix",
+        "type": "shell",
+        "command": "python -m runtime.capability_matrix",
+        "options": { "cwd": "${workspaceFolder:🤖 OpenClaw Bot}" },
+        "group": "test"
+      }
+    ]
+  }
+}

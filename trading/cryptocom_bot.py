@@ -424,16 +424,16 @@ class CryptoComBot:
                     if size <= 0:
                         continue
 
-                # Correlated exposure gate — prevent two same-direction positions
-                # on correlated assets (BTC/ETH/SOL all move together)
-                if self._orchestrator and self._orchestrator._capital:
+                # Correlated exposure gate — only fires when positions are already open;
+                # checks whether adding this same-direction trade would breach the limit
+                if self._orchestrator and self._orchestrator._capital \
+                        and self.state.open_positions:
                     try:
                         check_pos = []
                         for p in self.state.open_positions:
                             notional   = p.get("entry_price", 0) * p.get("size", 0) * LEVERAGE
                             correlated = p.get("side") == sig.action
                             check_pos.append({"notional": notional, "correlated": correlated})
-                        # Add the candidate itself as correlated
                         check_pos.append({
                             "notional":   price * size * LEVERAGE,
                             "correlated": True,
