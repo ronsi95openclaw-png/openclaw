@@ -89,6 +89,7 @@ class CryptoComBot:
         self.state        = BotState()
         self._lock        = threading.Lock()
         self._stop        = threading.Event()
+        self._flush_lock  = threading.Lock()   # prevents concurrent date-boundary flushes
         self._thread: Optional[threading.Thread] = None
         self._load_state()
 
@@ -414,6 +415,10 @@ class CryptoComBot:
 
                 size = self._calc_size(balance, price, sig.sl_pct)
                 if size <= 0:
+                    logger.warning(
+                        "Signal SKIPPED [%s/%s]: size=0 (sl_pct=%.4f, price=%.4f, balance=%.2f)",
+                        symbol, sig.strategy, sig.sl_pct, price, balance,
+                    )
                     continue
 
                 # Intent pipeline gate
@@ -446,6 +451,11 @@ class CryptoComBot:
                     else:
                         size = 0.0
                     if size <= 0:
+                        logger.warning(
+                            "Signal SKIPPED [%s/%s]: adjusted size=0 "
+                            "(sl_usd=%.6f, risk_usd=%.6f, adjusted_risk=%.4f)",
+                            symbol, sig.strategy, sl_usd, risk_usd, adjusted_risk,
+                        )
                         continue
 
                 # Correlated exposure gate — block only when 2+ existing positions are
@@ -528,7 +538,8 @@ class CryptoComBot:
 
     def _refresh_balance(self) -> float:
         if self.state.demo_mode:
-            return max(100.0, 1000.0 + self.state.total_pnl)
+            # Cap at 2× starting capital so sizing stays realistic after winning sessions
+            return max(100.0, min(2000.0, 1000.0 + self.state.total_pnl))
         try:
             from trading.exchange import get_derivatives_balance
             bal = get_derivatives_balance()
@@ -738,11 +749,13 @@ class CryptoComBot:
                 hit_partial = ((price >= pos["partial_tp_price"]) if pos["side"] == "long"
                                else (price <= pos["partial_tp_price"]))
                 if hit_partial:
-                    half_size   = round(pos["size"] * 0.5, 6)
-                    partial_pnl = mult_p * (price - pos["entry_price"]) * half_size * LEVERAGE
+                    half_size = round(pos["size"] * 0.5, 6)
                     with self._lock:
+                        # Read entry_price inside lock — DCA may have updated it concurrently
+                        entry_price = pos["entry_price"]
+                        partial_pnl = mult_p * (price - entry_price) * half_size * LEVERAGE
                         pos["size"]             = half_size
-                        pos["sl_price"]         = pos["entry_price"]   # free ride: SL → breakeven
+                        pos["sl_price"]         = entry_price  # free ride: SL → breakeven
                         pos["partial_tp_taken"] = True
                         self.state.total_pnl = round(self.state.total_pnl + partial_pnl, 4)
                     logger.info("PARTIAL TP %s %s @%.4f  pnl=%+.4f  SL→BE  remaining=%.6f",
@@ -959,7 +972,20 @@ class CryptoComBot:
         }
 
     def flush_daily_summary(self, notes: str = "", run_analysis: bool = True) -> None:
-        """Write daily summary row to Sheets and run Claude Opus analysis."""
+        """Write daily summary row to Sheets and run Claude Opus analysis.
+
+        Protected by _flush_lock to prevent concurrent flushes (startup catch-up
+        thread vs end-of-day scan loop boundary race).
+        """
+        if not self._flush_lock.acquire(blocking=False):
+            logger.info("flush_daily_summary: another flush already running, skipping")
+            return
+        try:
+            self._flush_daily_summary_inner(notes=notes, run_analysis=run_analysis)
+        finally:
+            self._flush_lock.release()
+
+    def _flush_daily_summary_inner(self, notes: str = "", run_analysis: bool = True) -> None:
         from datetime import timedelta
         # If called as a catch-up flush (bot restarted after midnight), report yesterday's date
         flush_date = self.state.last_flush_date
