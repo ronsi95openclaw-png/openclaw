@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue as _queue
 import subprocess
 import sys
 import threading
@@ -76,6 +77,12 @@ class RufloBridge:
         self._available   = False
         self._tools:      List[str] = []
 
+        # Per-request response queues — key: request_id, value: Queue(maxsize=1).
+        # Eliminates response mismatch when concurrent callers share the same stdout.
+        self._pending_rpcs:  Dict[int, _queue.Queue] = {}
+        self._pending_lock   = threading.Lock()
+        self._reader_thread: Optional[threading.Thread] = None
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def start(self) -> bool:
@@ -85,7 +92,7 @@ class RufloBridge:
         return self._start_stdio()
 
     def stop(self) -> None:
-        """Gracefully stop the Ruflo subprocess."""
+        """Gracefully stop the Ruflo subprocess and reader thread."""
         if self._proc and self._proc.poll() is None:
             try:
                 self._proc.terminate()
@@ -98,6 +105,14 @@ class RufloBridge:
         self._proc = None
         self._initialized = False
         self._available = False
+        # Wake any callers blocked on their per-request queues so they time out
+        # cleanly rather than waiting until their timeout expires.
+        with self._pending_lock:
+            for q in self._pending_rpcs.values():
+                try:
+                    q.put_nowait({"error": "bridge stopped"})
+                except _queue.Full:
+                    pass
         logger.info("RufloBridge: stopped")
 
     def is_available(self) -> bool:
@@ -217,6 +232,9 @@ class RufloBridge:
                 logger.error("Ruflo process exited immediately: %s", stderr)
                 return False
 
+            # Start reader thread before any RPC calls
+            self._start_reader_thread()
+
             # MCP initialize handshake
             resp = self._rpc("initialize", {
                 "protocolVersion": _MCP_PROTOCOL_VERSION,
@@ -260,17 +278,65 @@ class RufloBridge:
             self._req_id += 1
             return self._req_id
 
+    def _start_reader_thread(self) -> None:
+        """Start a background thread that reads Ruflo stdout and routes responses."""
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop, daemon=True, name="ruflo-reader",
+        )
+        self._reader_thread.start()
+
+    def _reader_loop(self) -> None:
+        """Read JSON-RPC responses from Ruflo stdout; dispatch to per-request queues."""
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+        while True:
+            try:
+                raw = proc.stdout.readline()
+            except Exception:
+                break
+            if not raw:
+                break
+            try:
+                msg = json.loads(raw.decode().strip())
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            msg_id = msg.get("id")
+            if msg_id is None:
+                continue  # notification — not a request response
+            with self._pending_lock:
+                q = self._pending_rpcs.get(msg_id)
+            if q is not None:
+                try:
+                    q.put_nowait(msg)
+                except _queue.Full:
+                    pass  # caller already timed out and moved on
+
     def _rpc(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Send a JSON-RPC request and return the response dict."""
+        """Send a JSON-RPC request and return the response via a per-request queue.
+
+        Concurrent callers each own their own queue — responses can never be
+        consumed by the wrong caller.
+        """
         req_id = self._next_id()
-        request = {
-            "jsonrpc": "2.0",
-            "id":      req_id,
-            "method":  method,
-            "params":  params,
-        }
-        self._send(request)
-        return self._recv(req_id)
+        response_q: _queue.Queue = _queue.Queue(maxsize=1)
+        with self._pending_lock:
+            self._pending_rpcs[req_id] = response_q
+        try:
+            request = {
+                "jsonrpc": "2.0",
+                "id":      req_id,
+                "method":  method,
+                "params":  params,
+            }
+            self._send(request)
+            try:
+                return response_q.get(timeout=self._timeout)
+            except _queue.Empty:
+                raise TimeoutError(f"Ruflo RPC timeout after {self._timeout}s (id={req_id})")
+        finally:
+            with self._pending_lock:
+                self._pending_rpcs.pop(req_id, None)
 
     def _notify(self, method: str, params: Dict[str, Any] = None) -> None:
         """Send a JSON-RPC notification (no response expected)."""
@@ -286,30 +352,6 @@ class RufloBridge:
         self._proc.stdin.write(line.encode())
         self._proc.stdin.flush()
 
-    def _recv(self, expected_id: int) -> Dict[str, Any]:
-        """Read lines from stdout until we get the response matching expected_id."""
-        if self._proc is None or self._proc.stdout is None:
-            raise RuntimeError("Ruflo process not running")
-        deadline = time.monotonic() + self._timeout
-        while time.monotonic() < deadline:
-            # Non-blocking line read with timeout
-            import select
-            ready, _, _ = select.select([self._proc.stdout], [], [], 0.5)
-            if not ready:
-                if self._proc.poll() is not None:
-                    raise RuntimeError("Ruflo process died unexpectedly")
-                continue
-            raw = self._proc.stdout.readline()
-            if not raw:
-                continue
-            try:
-                msg = json.loads(raw.decode().strip())
-            except json.JSONDecodeError:
-                continue
-            if msg.get("id") == expected_id:
-                return msg
-            # Discard notifications and messages for other IDs
-        raise TimeoutError(f"Ruflo RPC timeout after {self._timeout}s")
 
     # ── Command discovery ─────────────────────────────────────────────────────
 

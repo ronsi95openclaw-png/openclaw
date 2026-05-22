@@ -162,7 +162,7 @@ class RufloAdvisor:
         if not self.is_available():
             return
         try:
-            key = f"{symbol}:{strategy}:{action}:{regime}:{int(time.time())}"
+            key = f"{symbol}:{strategy}:{action}:{regime}:{time.time_ns()}"
             narrative = (metadata or {}).get("narrative", "")
             signal_reason = (metadata or {}).get("signal_reason", "")
             content = (

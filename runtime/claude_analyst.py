@@ -182,13 +182,16 @@ class ClaudeAnalyst:
 
         prompt = _ANALYSIS_PROMPT.format(
             n=len(records),
-            outcomes_json=json.dumps(records, indent=2),
+            outcomes_json=json.dumps(self._sanitize_records(records), indent=2),
             weights_json=self._load_weights(),
             strategy_summary=self._strategy_summary(records),
             date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         )
         if extra_context:
-            prompt += f"\n\n## Additional Market Context (from Crypto.com live data)\n{extra_context}"
+            # Truncate and strip any control-like sequences to prevent injection via
+            # market data fields (e.g. a ticker name containing prompt overrides).
+            safe_ctx = self._sanitize_context(extra_context)
+            prompt += f"\n\n## Additional Market Context (from Crypto.com live data)\n{safe_ctx}"
 
         try:
             client   = self._get_client()
@@ -253,6 +256,33 @@ class ClaudeAnalyst:
             return _WEIGHTS_FILE.read_text()
         except Exception:
             return "{}"
+
+    @staticmethod
+    def _sanitize_records(records: List[Dict]) -> List[Dict]:
+        """Cap string field lengths to prevent prompt injection via trade record data."""
+        _MAX_STR = 200
+        sanitized = []
+        for rec in records:
+            clean: Dict[str, Any] = {}
+            for k, v in rec.items():
+                if isinstance(v, str) and len(v) > _MAX_STR:
+                    clean[k] = v[:_MAX_STR] + "…[truncated]"
+                else:
+                    clean[k] = v
+            sanitized.append(clean)
+        return sanitized
+
+    @staticmethod
+    def _sanitize_context(text: str) -> str:
+        """Truncate extra_context and strip markdown headers that could escape prompt structure."""
+        import re
+        # Cap total length
+        if len(text) > 2000:
+            text = text[:2000] + "\n…[truncated]"
+        # Remove any lines that look like prompt-injection attempts (new sections, instructions)
+        lines = text.splitlines()
+        safe_lines = [ln for ln in lines if not re.match(r"^(##+ |System:|IGNORE|Disregard)", ln)]
+        return "\n".join(safe_lines)
 
     def _parse_json(self, text: str) -> Optional[Dict]:
         try:
