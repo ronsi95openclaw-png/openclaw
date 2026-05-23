@@ -1,0 +1,178 @@
+---
+# OpenClaw Kubernetes Deployment
+# Single-leader design: replicas=1 is intentional. Do NOT increase replicas
+# without implementing distributed lock coordination (runtime/distributed_lock.py).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw
+  namespace: openclaw
+  labels:
+    app: openclaw
+    component: trading-bot
+    version: latest
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+    openclaw/demo-mode: "true"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Single-leader — no rolling update. Stop old pod before new.
+  selector:
+    matchLabels:
+      app: openclaw
+  template:
+    metadata:
+      labels:
+        app: openclaw
+        component: trading-bot
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: openclaw
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      containers:
+        - name: openclaw
+          image: ghcr.io/openclaw/openclaw:latest
+          imagePullPolicy: Always
+          ports:
+            - name: api
+              containerPort: 8000
+              protocol: TCP
+            - name: dashboard
+              containerPort: 3000
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+
+          # Non-sensitive configuration from ConfigMap
+          envFrom:
+            - configMapRef:
+                name: openclaw-config
+
+          # Sensitive values from Secrets
+          env:
+            - name: CRYPTOCOM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-secrets
+                  key: CRYPTOCOM_API_KEY
+            - name: CRYPTOCOM_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-secrets
+                  key: CRYPTOCOM_API_SECRET
+            - name: GOOGLE_SERVICE_ACCOUNT_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-secrets
+                  key: GOOGLE_SERVICE_ACCOUNT_JSON
+                  optional: true
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-secrets
+                  key: TELEGRAM_BOT_TOKEN
+                  optional: true
+
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+
+          # Liveness probe: if the API is unresponsive, restart the pod.
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: api
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+
+          # Readiness probe: only route traffic when diagnostics pass.
+          readinessProbe:
+            httpGet:
+              path: /api/diagnostics
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+
+          securityContext:
+            readOnlyRootFilesystem: false  # Python writes .pyc and runtime temp files
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          volumeMounts:
+            - name: openclaw-data
+              mountPath: /app/data
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: openclaw-data
+          persistentVolumeClaim:
+            claimName: openclaw-data
+        - name: tmp
+          emptyDir: {}
+
+      # Prefer nodes without other workloads to reduce latency jitter
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: NotIn
+                      values:
+                        - openclaw
+                topologyKey: kubernetes.io/hostname
+
+---
+# PersistentVolumeClaim for bot state data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openclaw-data
+  namespace: openclaw
+  labels:
+    app: openclaw
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard
+
+---
+# ServiceAccount (minimal permissions — no cluster-level access needed)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openclaw
+  namespace: openclaw
+  labels:
+    app: openclaw

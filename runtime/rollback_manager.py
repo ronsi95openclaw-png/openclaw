@@ -25,6 +25,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -510,6 +511,259 @@ class RollbackManager:
         except Exception as exc:
             logger.error("Post-rollback verification failed: %s", exc)
             return False
+
+    # ── Automated trigger helpers ─────────────────────────────────────────────
+
+    def _get_cooldowns(self) -> Dict[str, float]:
+        """Lazy-init cooldown tracking dict on self."""
+        if not hasattr(self, "_cooldowns"):
+            self._cooldowns: Dict[str, float] = {}
+            self._dedup_window: Dict[str, str] = {}
+            self._automated_rollback_count: int = 0
+            self._last_trigger_times: Dict[str, float] = {}
+        return self._cooldowns
+
+    def _check_cooldown(self, trigger_key: str, cooldown_s: float) -> bool:
+        """Returns True if cooldown has elapsed (ok to trigger)."""
+        cooldowns = self._get_cooldowns()
+        last = cooldowns.get(trigger_key, 0.0)
+        return time.monotonic() - last >= cooldown_s
+
+    def _record_cooldown(self, trigger_key: str) -> None:
+        """Record the current time as last trigger time for this key."""
+        cooldowns = self._get_cooldowns()
+        cooldowns[trigger_key] = time.monotonic()
+        # Also track in last_trigger_times for automation_status reporting
+        self._last_trigger_times[trigger_key] = time.monotonic()
+        self._automated_rollback_count = getattr(self, "_automated_rollback_count", 0) + 1
+
+    # ── Automated trigger methods ─────────────────────────────────────────────
+
+    def trigger_survivability_rollback(
+        self,
+        score: float,
+        threshold: float = 40.0,
+        cooldown_s: float = 300.0,
+        operator_id: str = "SYSTEM",
+    ) -> Optional[RollbackRecord]:
+        """Fire an emergency rollback when survivability score drops below threshold.
+
+        Returns None if score is above threshold or cooldown has not elapsed.
+        """
+        if score >= threshold:
+            return None
+        trigger_key = "SURVIVABILITY_COLLAPSE"
+        if not self._check_cooldown(trigger_key, cooldown_s):
+            logger.debug(
+                "trigger_survivability_rollback: cooldown active (score=%.1f)", score
+            )
+            return None
+        self._record_cooldown(trigger_key)
+        reason = f"Survivability score {score:.1f} below threshold {threshold}"
+        logger.warning("Auto-rollback: %s", reason)
+        try:
+            record = self.emergency_rollback(operator_id, reason)
+        except Exception as exc:
+            logger.error("trigger_survivability_rollback failed: %s", exc)
+            return None
+        # Escalation audit entry
+        try:
+            _append_audit(
+                self._audit_path,
+                {
+                    "event":       "ESCALATION",
+                    "trigger":     trigger_key,
+                    "score":       score,
+                    "threshold":   threshold,
+                    "rollback_id": record.rollback_id,
+                    "ts":          _now_iso(),
+                },
+            )
+        except Exception as exc:
+            logger.debug("escalation audit append skipped: %s", exc)
+        return record
+
+    def trigger_latency_rollback(
+        self,
+        p99_ms: float,
+        threshold_ms: float = 2000.0,
+        cooldown_s: float = 180.0,
+        operator_id: str = "SYSTEM",
+    ) -> Optional[RollbackRecord]:
+        """Fire an emergency rollback when latency p99 exceeds threshold_ms.
+
+        Returns None if p99_ms is below threshold or cooldown has not elapsed.
+        """
+        if p99_ms < threshold_ms:
+            return None
+        trigger_key = "LATENCY_EXPLOSION"
+        if not self._check_cooldown(trigger_key, cooldown_s):
+            logger.debug(
+                "trigger_latency_rollback: cooldown active (p99=%.1fms)", p99_ms
+            )
+            return None
+        self._record_cooldown(trigger_key)
+        reason = f"Latency p99 {p99_ms:.1f}ms exceeded {threshold_ms}ms"
+        logger.warning("Auto-rollback: %s", reason)
+        try:
+            record = self.emergency_rollback(operator_id, reason)
+        except Exception as exc:
+            logger.error("trigger_latency_rollback failed: %s", exc)
+            return None
+        return record
+
+    def trigger_drift_rollback(
+        self,
+        drift_score: float,
+        threshold: float = 0.7,
+        cooldown_s: float = 600.0,
+        operator_id: str = "SYSTEM",
+    ) -> Optional[RollbackRecord]:
+        """Escalate to weights rollback when strategy drift exceeds threshold.
+
+        Returns None if drift_score is below threshold or cooldown has not elapsed.
+        Note: drift_score here is treated as an anomaly magnitude (0–1 scale from
+        external detectors), not a ratio — rollback fires when score >= threshold.
+        """
+        if drift_score < threshold:
+            return None
+        trigger_key = "DRIFT_EXPLOSION"
+        if not self._check_cooldown(trigger_key, cooldown_s):
+            logger.debug(
+                "trigger_drift_rollback: cooldown active (drift=%.3f)", drift_score
+            )
+            return None
+        self._record_cooldown(trigger_key)
+
+        # Attempt weights rollback to default snapshot; fall back to emergency
+        default_snapshot = str(_WEIGHTS_PATH)
+        reason = f"Drift score {drift_score:.3f} exceeded threshold {threshold}"
+        logger.warning("Auto-rollback (drift): %s", reason)
+        try:
+            record = self.rollback_strategy_weights(
+                default_snapshot,
+                operator_id,
+                RollbackTrigger.DRIFT_EXPLOSION,
+            )
+        except Exception:
+            # Fall back to emergency rollback if weights rollback not possible
+            try:
+                record = self.emergency_rollback(operator_id, reason)
+            except Exception as exc:
+                logger.error("trigger_drift_rollback fallback failed: %s", exc)
+                return None
+        return record
+
+    def trigger_reconciliation_rollback(
+        self,
+        instability_count: int,
+        threshold: int = 5,
+        cooldown_s: float = 120.0,
+        operator_id: str = "SYSTEM",
+    ) -> Optional[RollbackRecord]:
+        """Fire an emergency rollback on repeated reconciliation failures.
+
+        Returns None if instability_count < threshold or cooldown has not elapsed.
+        """
+        if instability_count < threshold:
+            return None
+        trigger_key = "RECONCILIATION_INSTABILITY"
+        if not self._check_cooldown(trigger_key, cooldown_s):
+            logger.debug(
+                "trigger_reconciliation_rollback: cooldown active (count=%d)",
+                instability_count,
+            )
+            return None
+        self._record_cooldown(trigger_key)
+        reason = (
+            f"Reconciliation instability count {instability_count} "
+            f"exceeded threshold {threshold}"
+        )
+        logger.warning("Auto-rollback: %s", reason)
+        # Build a record using emergency_rollback but override the trigger in audit
+        try:
+            record = self.emergency_rollback(operator_id, reason)
+        except Exception as exc:
+            logger.error("trigger_reconciliation_rollback failed: %s", exc)
+            return None
+        # Append supplementary audit with explicit trigger type
+        try:
+            _append_audit(
+                self._audit_path,
+                {
+                    "event":               "ESCALATION",
+                    "trigger":             trigger_key,
+                    "instability_count":   instability_count,
+                    "threshold":           threshold,
+                    "rollback_id":         record.rollback_id,
+                    "ts":                  _now_iso(),
+                },
+            )
+        except Exception as exc:
+            logger.debug("reconciliation escalation audit skipped: %s", exc)
+        return record
+
+    # ── Introspection ─────────────────────────────────────────────────────────
+
+    def get_rollback_escalation_ladder(self) -> List[dict]:
+        """Return ordered list of rollback triggers by severity (lowest first)."""
+        return [
+            {
+                "trigger":               "RECONCILIATION_INSTABILITY",
+                "cooldown_s":            120,
+                "threshold_description": "instability_count >= 5",
+            },
+            {
+                "trigger":               "SURVIVABILITY_COLLAPSE",
+                "cooldown_s":            300,
+                "threshold_description": "survivability_score < 40",
+            },
+            {
+                "trigger":               "LATENCY_EXPLOSION",
+                "cooldown_s":            180,
+                "threshold_description": "ws_p99_ms >= 2000",
+            },
+            {
+                "trigger":               "DRIFT_EXPLOSION",
+                "cooldown_s":            600,
+                "threshold_description": "drift_score >= 0.7",
+            },
+            {
+                "trigger":               "MANUAL",
+                "cooldown_s":            0,
+                "threshold_description": "operator-initiated, no cooldown",
+            },
+        ]
+
+    def get_automation_status(self) -> dict:
+        """Return dict with last_trigger times, cooldown remaining, and total count."""
+        self._get_cooldowns()  # ensure lazy-init
+        now = time.monotonic()
+
+        _cooldown_map = {
+            "RECONCILIATION_INSTABILITY": 120.0,
+            "SURVIVABILITY_COLLAPSE":     300.0,
+            "LATENCY_EXPLOSION":          180.0,
+            "DRIFT_EXPLOSION":            600.0,
+        }
+
+        last_trigger: Dict[str, Optional[float]] = {}
+        cooldown_remaining: Dict[str, float] = {}
+
+        for trigger_key, cooldown_s in _cooldown_map.items():
+            last_t = self._cooldowns.get(trigger_key)
+            last_trigger[trigger_key] = last_t
+            if last_t is not None:
+                remaining = max(0.0, cooldown_s - (now - last_t))
+            else:
+                remaining = 0.0
+            cooldown_remaining[trigger_key] = remaining
+
+        return {
+            "last_trigger":              last_trigger,
+            "cooldown_remaining_s":      cooldown_remaining,
+            "total_automated_rollbacks": getattr(self, "_automated_rollback_count", 0),
+        }
 
 
 # ── Module singleton ──────────────────────────────────────────────────────────

@@ -1,0 +1,31 @@
+# OpenClaw Deployment Orchestrator Configuration
+orchestrator:
+  # Canary phase thresholds (composite health score required to advance)
+  phase_thresholds:
+    phase_1_to_2: 60
+    phase_2_to_3: 70
+    phase_3_to_4: 80
+    phase_4_to_stable: 85
+
+  # Rollback triggers
+  rollback_triggers:
+    survivability_threshold: 40
+    latency_p99_threshold_ms: 2000
+    ws_health_threshold: 0.3
+    integrity_critical_count: 1
+
+  # Freeze windows (UTC)
+  freeze_windows:
+    - start: "02:00"
+      end: "04:00"
+      days: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+      reason: "Maintenance window"
+
+  # Deployment settings
+  max_canary_duration_h: 48
+  convergence_checks: 5
+  convergence_interval_s: 60
+
+  # Audit
+  audit_path: "data/deployment_audit.jsonl"
+  retention_days: 90

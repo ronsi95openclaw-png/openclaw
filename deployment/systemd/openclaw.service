@@ -1,0 +1,75 @@
+[Unit]
+Description=OpenClaw Trading Bot
+Documentation=https://github.com/openclaw/openclaw
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=openclaw
+Group=openclaw
+WorkingDirectory=/opt/openclaw
+
+# Secrets loaded from an owner-root-only file — never hardcoded here.
+# Create /etc/openclaw/secrets.env with mode 600, owner root:root.
+# Example contents:
+#   CRYPTOCOM_API_KEY=...
+#   CRYPTOCOM_API_SECRET=...
+#   TELEGRAM_BOT_TOKEN=...
+#   GOOGLE_APPLICATION_CREDENTIALS=/etc/openclaw/credentials.json
+EnvironmentFile=/etc/openclaw/secrets.env
+
+# Non-sensitive runtime defaults (may be overridden by secrets.env)
+Environment=DEMO_MODE=true
+Environment=LOG_LEVEL=INFO
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=0
+
+ExecStart=/opt/openclaw/venv/bin/python dashboard/api/server.py
+ExecStop=/bin/kill -SIGTERM $MAINPID
+
+# Give the bot 30 seconds to flush state to disk before hard kill
+TimeoutStopSec=30
+
+Restart=on-failure
+RestartSec=10
+
+# stdout/stderr captured by journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openclaw
+
+# ── Security hardening ────────────────────────────────────────────────────────
+# Prevent the process from gaining new privileges via setuid/setgid.
+NoNewPrivileges=true
+
+# Mount most of the filesystem read-only; only named paths are writable.
+ProtectSystem=strict
+ReadWritePaths=/opt/openclaw/data /var/log/openclaw
+
+# Give the process its own private /tmp (isolated from other processes).
+PrivateTmp=true
+
+# Hide /home directories from the process (bot has no business there).
+ProtectHome=true
+
+# Prevent the process from modifying the kernel.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+
+# Hide /proc entries for other processes.
+ProtectProc=invisible
+
+# Restrict system calls to a safe subset.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Limit address space to 4 GB.
+LimitAS=4G
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

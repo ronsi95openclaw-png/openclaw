@@ -1,0 +1,76 @@
+---
+# OpenClaw API Service
+# ClusterIP — internal cluster access only.
+# Expose externally via an Ingress controller or LoadBalancer override.
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-api
+  namespace: openclaw
+  labels:
+    app: openclaw
+    component: api
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: openclaw
+  ports:
+    - name: api
+      protocol: TCP
+      port: 8000
+      targetPort: 8000
+
+---
+# OpenClaw Dashboard Service
+# ClusterIP — expose via Ingress for external access.
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-dashboard
+  namespace: openclaw
+  labels:
+    app: openclaw
+    component: dashboard
+spec:
+  type: ClusterIP
+  selector:
+    app: openclaw
+  ports:
+    - name: dashboard
+      protocol: TCP
+      port: 3000
+      targetPort: 3000
+
+# ── Optional NodePort overrides (development / bare-metal only) ───────────────
+# Uncomment the block below to expose services directly on the node IP.
+# Do NOT use NodePort in production — use an Ingress controller instead.
+#
+# ---
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: openclaw-api-nodeport
+#   namespace: openclaw
+#   labels:
+#     app: openclaw
+#     component: api
+#     environment: development
+# spec:
+#   type: NodePort
+#   selector:
+#     app: openclaw
+#   ports:
+#     - name: api
+#       protocol: TCP
+#       port: 8000
+#       targetPort: 8000
+#       nodePort: 30800   # accessible at <NodeIP>:30800
+#     - name: dashboard
+#       protocol: TCP
+#       port: 3000
+#       targetPort: 3000
+#       nodePort: 30300   # accessible at <NodeIP>:30300

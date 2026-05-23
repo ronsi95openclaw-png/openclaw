@@ -1,0 +1,30 @@
+---
+# OpenClaw Non-Sensitive Runtime Configuration
+# Sensitive values (API keys, secrets) are stored in Kubernetes Secrets,
+# never in ConfigMaps.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-config
+  namespace: openclaw
+  labels:
+    app: openclaw
+    component: config
+data:
+  # Paper trading safety gate — never set to "false" without explicit operator approval
+  DEMO_MODE: "true"
+
+  # Logging
+  LOG_LEVEL: "INFO"
+
+  # Snapshot daemon — interval between state snapshots written to /app/data
+  SNAPSHOT_INTERVAL_HOURS: "6"
+
+  # IntegrityMonitor — seconds between full integrity scans
+  INTEGRITY_SCAN_INTERVAL_S: "3600"
+
+  # SurvivabilityEngine — seconds between survivability score computations
+  SURVIVABILITY_SCAN_INTERVAL_S: "300"
+
+  # Prometheus metrics server port (exposed on the pod)
+  PROMETHEUS_PORT: "9090"

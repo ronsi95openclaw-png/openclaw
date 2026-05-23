@@ -1,0 +1,69 @@
+[Unit]
+Description=Grafana Monitoring Dashboard (OpenClaw)
+Documentation=http://docs.grafana.org
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=grafana
+Group=grafana
+
+# Grafana reads all configuration from grafana.ini — no secrets in this unit file.
+# Set GF_SECURITY_ADMIN_PASSWORD and GF_AUTH_* via grafana.ini or environment.
+# See: https://grafana.com/docs/grafana/latest/setup-grafana/configure-grafana/
+EnvironmentFile=-/etc/default/grafana-server
+
+Environment=GRAFANA_USER=grafana
+Environment=GRAFANA_GROUP=grafana
+Environment=GRAFANA_HOME=/usr/share/grafana
+Environment=LOG_DIR=/var/log/grafana
+Environment=DATA_DIR=/var/lib/grafana
+Environment=MAX_OPEN_FILES=10000
+Environment=CONF_DIR=/etc/grafana
+Environment=CONF_FILE=/etc/grafana/grafana.ini
+Environment=RESTART_ON_UPGRADE=true
+Environment=PLUGINS_DIR=/var/lib/grafana/plugins
+Environment=PROVISIONING_CFG_DIR=/etc/grafana/provisioning
+Environment=GF_SERVER_HTTP_PORT=3030
+Environment=GF_SERVER_DOMAIN=localhost
+Environment=GF_PATHS_DATA=/var/lib/grafana
+Environment=GF_PATHS_LOGS=/var/log/grafana
+Environment=GF_PATHS_PLUGINS=/var/lib/grafana/plugins
+Environment=GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+
+# Standard Grafana server binary path (installed via package manager)
+ExecStart=/usr/sbin/grafana-server                     \
+    --config=${CONF_FILE}                              \
+    --pidfile=/var/run/grafana/grafana-server.pid      \
+    --packaging=deb                                    \
+    cfg:default.paths.logs=/var/log/grafana            \
+    cfg:default.paths.data=/var/lib/grafana            \
+    cfg:default.paths.plugins=/var/lib/grafana/plugins \
+    cfg:default.paths.provisioning=/etc/grafana/provisioning
+
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStop=/bin/kill -SIGTERM $MAINPID
+
+TimeoutStopSec=20
+
+Restart=on-failure
+RestartSec=10
+
+LimitNOFILE=10000
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openclaw-grafana
+
+# ── Security hardening ────────────────────────────────────────────────────────
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/grafana /var/log/grafana /var/run/grafana
+PrivateTmp=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,56 @@
+[Unit]
+Description=OpenClaw Next.js Dashboard
+Documentation=https://github.com/openclaw/openclaw
+# Dashboard depends on the backend API being up first.
+After=network-online.target openclaw.service
+Wants=network-online.target
+Requires=openclaw.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=openclaw
+Group=openclaw
+WorkingDirectory=/opt/openclaw/dashboard/web
+
+# Inherit non-sensitive env from the same file as the bot service.
+EnvironmentFile=/etc/openclaw/secrets.env
+
+# Next.js runtime configuration
+Environment=NODE_ENV=production
+Environment=PORT=3000
+# Point the dashboard at the local API backend
+Environment=NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+Environment=NEXT_PUBLIC_WS_URL=ws://127.0.0.1:8000/ws
+
+ExecStartPre=/usr/bin/npm run build
+ExecStart=/usr/bin/npm run start
+ExecStop=/bin/kill -SIGTERM $MAINPID
+
+TimeoutStopSec=15
+TimeoutStartSec=120
+
+Restart=on-failure
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openclaw-dashboard
+
+# ── Security hardening ────────────────────────────────────────────────────────
+NoNewPrivileges=true
+ProtectSystem=strict
+# Next.js needs to write .next build cache
+ReadWritePaths=/opt/openclaw/dashboard/web/.next /var/log/openclaw
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

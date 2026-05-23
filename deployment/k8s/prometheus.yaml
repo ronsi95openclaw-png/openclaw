@@ -1,0 +1,115 @@
+---
+# Prometheus ServiceMonitor for OpenClaw
+# Requires the Prometheus Operator (kube-prometheus-stack) to be installed.
+# The label release=prometheus must match the Prometheus CR's serviceMonitorSelector.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: openclaw
+  namespace: openclaw
+  labels:
+    app: openclaw
+    release: prometheus  # Must match Prometheus CR's serviceMonitorSelector
+spec:
+  selector:
+    matchLabels:
+      app: openclaw
+      component: api
+  namespaceSelector:
+    matchNames:
+      - openclaw
+  endpoints:
+    - port: api
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      honorLabels: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+
+---
+# PrometheusRule — alerting rules for OpenClaw health signals
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: openclaw-alerts
+  namespace: openclaw
+  labels:
+    app: openclaw
+    release: prometheus
+spec:
+  groups:
+    - name: openclaw.survivability
+      interval: 60s
+      rules:
+        - alert: OpenClawSurvivabilityLow
+          expr: openclaw_survivability_score < 40
+          for: 2m
+          labels:
+            severity: critical
+            team: openclaw
+          annotations:
+            summary: "OpenClaw survivability score critically low"
+            description: "Survivability score is {{ $value | printf \"%.1f\" }} (threshold: 40). Automatic rollback may be triggered."
+
+        - alert: OpenClawSurvivabilityDegraded
+          expr: openclaw_survivability_score < 70
+          for: 5m
+          labels:
+            severity: warning
+            team: openclaw
+          annotations:
+            summary: "OpenClaw survivability score degraded"
+            description: "Survivability score is {{ $value | printf \"%.1f\" }}. Investigate subsystem health."
+
+    - name: openclaw.integrity
+      interval: 60s
+      rules:
+        - alert: OpenClawIntegrityCritical
+          expr: openclaw_integrity_critical_findings_total > 0
+          for: 0m
+          labels:
+            severity: critical
+            team: openclaw
+          annotations:
+            summary: "OpenClaw integrity monitor detected CRITICAL finding"
+            description: "{{ $value }} CRITICAL integrity finding(s) detected. Deployment rollback may be triggered."
+
+    - name: openclaw.latency
+      interval: 30s
+      rules:
+        - alert: OpenClawLatencyHigh
+          expr: openclaw_latency_p99_ms{quantile="p99"} > 500
+          for: 3m
+          labels:
+            severity: warning
+            team: openclaw
+          annotations:
+            summary: "OpenClaw p99 latency elevated"
+            description: "p99 latency for {{ $labels.operation }} is {{ $value | printf \"%.0f\" }}ms (threshold: 500ms)."
+
+        - alert: OpenClawLatencyExplosion
+          expr: openclaw_latency_p99_ms{quantile="p99"} > 2000
+          for: 1m
+          labels:
+            severity: critical
+            team: openclaw
+          annotations:
+            summary: "OpenClaw p99 latency explosion — rollback eligible"
+            description: "p99 latency for {{ $labels.operation }} is {{ $value | printf \"%.0f\" }}ms (threshold: 2000ms)."
+
+    - name: openclaw.websocket
+      interval: 30s
+      rules:
+        - alert: OpenClawWSHealthLow
+          expr: openclaw_ws_health_score < 0.3
+          for: 2m
+          labels:
+            severity: critical
+            team: openclaw
+          annotations:
+            summary: "OpenClaw WebSocket health critically low"
+            description: "WS health score is {{ $value | printf \"%.2f\" }} (threshold: 0.3). Market data feed may be disrupted."
