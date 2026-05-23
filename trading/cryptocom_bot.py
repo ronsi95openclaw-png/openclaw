@@ -41,6 +41,9 @@ from typing import Optional
 
 logger = logging.getLogger("openclaw.trading.cryptocom_bot")
 
+# Imported lazily inside methods to avoid circular-import issues at module load
+# from runtime.scan_interval_engine import get_scan_engine, ScanIntervalEngine
+
 _STATE_FILE    = Path(__file__).parent.parent / "data" / "cryptocom_state.json"
 _LOG_FILE      = Path(__file__).parent.parent / "data" / "logs" / "cryptocom_trades.log"
 _OUTCOMES_FILE = Path(__file__).parent.parent / "data" / "logs" / "trade_outcomes.jsonl"
@@ -113,6 +116,12 @@ class CryptoComBot:
 
         # Phase 8: real exchange balance feed → LiveBalanceGuardian
         self._balance_feed     = self._init_balance_feed()
+
+        # Phase 10: dynamic scan interval engine
+        self._scan_engine = self._init_scan_engine()
+
+        # Phase 10 obj-2: midnight weight application daemon
+        self._weight_scheduler = self._init_weight_scheduler()
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -201,20 +210,33 @@ class CryptoComBot:
                 )
 
     def _adjust_scan_interval(self) -> None:
-        """Dynamic scan interval — fast in trending, slow in ranging (backlog #3).
-        Trending regimes: 15s. Ranging/unknown: 60s. Default: 30s."""
-        if not self.state.open_positions and not self._orchestrator:
+        """Dynamic scan interval via ScanIntervalEngine with regime debounce."""
+        if self._scan_engine is None:
             return
-        regimes = {p.get("regime_label", "UNKNOWN") for p in self.state.open_positions}
-        trending = {"TRENDING_BULL", "TRENDING_BEAR", "MOMENTUM_BULL", "MOMENTUM_BEAR",
-                    "VOL_EXPANSION", "NEWS_SPIKE"}
-        slow     = {"RANGING", "MEAN_REVERTING", "VOL_COMPRESSION", "UNKNOWN"}
-        if regimes & trending:
-            self.state.scan_interval = 15
-        elif regimes & slow:
-            self.state.scan_interval = 60
-        else:
-            self.state.scan_interval = 30
+
+        # Get regime from IntentPipeline if available
+        intent_regime: Optional[str] = None
+        # NOTE: IntentPipeline does not expose get_last_regime() — use position_labels only
+        # If a future phase adds get_last_regime() to the pipeline, wire it here.
+
+        # Fallback: use position labels from open positions
+        position_regimes: set = {p.get("regime_label", "UNKNOWN") for p in self.state.open_positions}
+
+        old_interval = self.state.scan_interval
+        new_interval = self._scan_engine.compute_interval(intent_regime, position_regimes)
+
+        if new_interval != old_interval:
+            transition = self._scan_engine.apply(
+                new_interval, old_interval,
+                intent_regime or (next(iter(position_regimes), "UNKNOWN") if position_regimes else "UNKNOWN"),
+                "intent_pipeline" if intent_regime else "position_labels",
+            )
+            if transition:
+                self.state.scan_interval = new_interval
+                logger.info("Scan interval: %ds → %ds (regime=%s)",
+                            old_interval, new_interval, transition.regime)
+        elif self.state.scan_interval != new_interval:
+            self.state.scan_interval = new_interval
 
     def _auto_apply_opus_weights(self) -> None:
         """Apply weight_adjustments from the latest Claude Opus analysis JSON (backlog #2).
@@ -386,6 +408,27 @@ class CryptoComBot:
             logger.warning("BalanceFeedDaemon unavailable: %s", exc)
             return None
 
+    def _init_scan_engine(self):
+        try:
+            from runtime.scan_interval_engine import get_scan_engine, ScanIntervalEngine  # noqa: F401
+            engine = get_scan_engine()
+            logger.info("ScanIntervalEngine initialised (min=%ds, max=%ds)",
+                        engine._min_interval, engine._max_interval)
+            return engine
+        except Exception as exc:
+            logger.warning("ScanIntervalEngine unavailable: %s", exc)
+            return None
+
+    def _init_weight_scheduler(self):
+        try:
+            from runtime.weight_scheduler import get_weight_scheduler
+            scheduler = get_weight_scheduler(demo_mode=self.state.demo_mode)
+            logger.info("WeightApplicationDaemon initialised (demo=%s)", self.state.demo_mode)
+            return scheduler
+        except Exception as exc:
+            logger.warning("WeightApplicationDaemon unavailable: %s", exc)
+            return None
+
     def _run_startup_reconciliation(self) -> None:
         try:
             from runtime.reconciliation import reconcile_on_startup
@@ -431,6 +474,8 @@ class CryptoComBot:
             self._integrity_monitor.start()
         if self._balance_feed:
             self._balance_feed.start()
+        if self._weight_scheduler:
+            self._weight_scheduler.start()
         logger.info("CryptoComBot started (demo=%s)", self.state.demo_mode)
 
     def stop(self) -> None:
@@ -447,6 +492,8 @@ class CryptoComBot:
             self._integrity_monitor.stop()
         if self._balance_feed:
             self._balance_feed.stop()
+        if self._weight_scheduler:
+            self._weight_scheduler.stop()
         logger.info("CryptoComBot stopped")
 
     def is_running(self) -> bool:

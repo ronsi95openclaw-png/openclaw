@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
 
 logger = logging.getLogger("openclaw.runtime.latency_profiler")
@@ -28,6 +29,7 @@ logger = logging.getLogger("openclaw.runtime.latency_profiler")
 class OperationCategory(str, Enum):
     WEBSOCKET            = "WEBSOCKET"
     REST_API             = "REST_API"
+    EXCHANGE             = "EXCHANGE"
     ORDER_ACKNOWLEDGEMENT = "ORDER_ACKNOWLEDGEMENT"
     FILL_CONFIRMATION    = "FILL_CONFIRMATION"
     RECONCILIATION       = "RECONCILIATION"
@@ -98,14 +100,69 @@ def _percentile(sorted_samples: List[float], pct: float) -> float:
     return sorted_samples[lower] + frac * (sorted_samples[upper] - sorted_samples[lower])
 
 
-def _append_jsonl_atomic(path: str, record: dict) -> None:
-    """Append a single JSON line to a JSONL file using a temp-file + os.replace approach.
+def _rotate_if_needed(path: str, max_lines: int = 10_000) -> bool:
+    """Rotate path to path.1 if line count >= max_lines.
 
+    Steps:
+    1. Count lines in path (quick pre-check without lock).
+    2. If count < max_lines: return False.
+    3. Open path with fcntl.LOCK_EX.
+    4. Recount under lock (TOCTOU guard).
+    5. If still >= max_lines:
+       a. fsync the file.
+       b. os.replace(path, path + ".1")  — atomic rename.
+       c. return True.
+    Returns True if rotation occurred.
+    """
+    try:
+        if not os.path.exists(path):
+            return False
+        # Quick pre-check (no lock — avoids holding lock for large files)
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            pre_count = sum(1 for _ in fh)
+        if pre_count < max_lines:
+            return False
+        # Acquire exclusive lock and recount (TOCTOU guard)
+        with open(path, "a", encoding="utf-8") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                # Recount under lock
+                fh.flush()
+                fh.seek(0)
+            finally:
+                # We will release after the rename; open in read mode for recount
+                pass
+        # Reopen for an accurate locked count + fsync + rename
+        with open(path, "r+b") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                fh.seek(0)
+                locked_count = sum(1 for _ in fh)
+                if locked_count < max_lines:
+                    return False
+                fh.flush()
+                os.fsync(fh.fileno())
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+        os.replace(path, path + ".1")
+        logger.debug("latency_profiler: rotated %s → %s.1 (%d lines)", path, path, locked_count)
+        return True
+    except Exception as exc:
+        logger.debug("latency_profiler: rotation skipped: %s", exc)
+        return False
+
+
+def _append_jsonl_atomic(path: str, record: dict, max_lines: int = 10_000) -> None:
+    """Append a single JSON line to a JSONL file using fcntl.LOCK_EX.
+
+    Rotates path to path.1 atomically when the file reaches max_lines.
     Because JSONL is an append-only log we use fcntl.LOCK_EX on an open of the
     target directly (append mode) — safe for concurrent writers.
     """
     try:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        # Rotate if needed before appending
+        _rotate_if_needed(path, max_lines=max_lines)
         with open(path, "a", encoding="utf-8") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
             try:
@@ -131,11 +188,13 @@ class LatencyProfiler:
         max_samples_per_op: int = 10_000,
         anomaly_multiplier: float = 3.0,
         baselines: Optional[Dict[str, float]] = None,
+        max_lines_rotation: int = 10_000,
     ) -> None:
-        self._analytics_path    = analytics_path
-        self._max_samples       = max_samples_per_op
+        self._analytics_path     = analytics_path
+        self._max_samples        = max_samples_per_op
         self._anomaly_multiplier = anomaly_multiplier
-        self._baselines         = baselines if baselines is not None else dict(_DEFAULT_BASELINES)
+        self._baselines          = baselines if baselines is not None else dict(_DEFAULT_BASELINES)
+        self._max_lines_rotation = max_lines_rotation
 
         # keyed by f"{category.value}:{operation}"
         self._samples: Dict[str, List[float]] = {}
@@ -175,6 +234,7 @@ class LatencyProfiler:
                     "timestamp":   _now_iso(),
                     "tags":        tags or {},
                 },
+                max_lines=self._max_lines_rotation,
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("latency record persist error: %s", exc)
@@ -313,6 +373,24 @@ class LatencyProfiler:
             lines.append(f'{base},quantile="p95"}} {stats.p95_ms:.3f}')
             lines.append(f'{base},quantile="p99"}} {stats.p99_ms:.3f}')
         return "\n".join(lines) + ("\n" if lines else "")
+
+    def get_rotation_status(self) -> dict:
+        """Return rotation diagnostics for the analytics log file."""
+        try:
+            path = Path(self._analytics_path)
+            line_count = sum(1 for ln in path.open(encoding="utf-8", errors="replace")
+                             if ln.strip()) if path.exists() else 0
+            rotated_exists = Path(self._analytics_path + ".1").exists()
+            return {
+                "current_file":        str(path),
+                "line_count":          line_count,
+                "max_lines":           self._max_lines_rotation,
+                "pct_full":            round(line_count / self._max_lines_rotation * 100, 1)
+                                       if self._max_lines_rotation else 0,
+                "rotated_backup_exists": rotated_exists,
+            }
+        except Exception:
+            return {"status": "unavailable"}
 
 
 # ── Module singleton ──────────────────────────────────────────────────────────
