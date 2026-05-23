@@ -107,6 +107,10 @@ class CryptoComBot:
         # Phase 4: WebSocket guardian, exchange metadata registry
         self._ws_guardian     = self._init_ws_guardian()
 
+        # Phase 5: snapshot daemon, integrity monitor
+        self._snapshot_daemon  = self._init_snapshot_daemon()
+        self._integrity_monitor = self._init_integrity_monitor()
+
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _load_state(self) -> None:
@@ -346,6 +350,26 @@ class CryptoComBot:
             logger.warning("WSGuardian unavailable: %s", exc)
             return None
 
+    def _init_snapshot_daemon(self):
+        try:
+            from runtime.snapshot_daemon import get_daemon
+            daemon = get_daemon()
+            logger.info("SnapshotDaemon initialised")
+            return daemon
+        except Exception as exc:
+            logger.warning("SnapshotDaemon unavailable: %s", exc)
+            return None
+
+    def _init_integrity_monitor(self):
+        try:
+            from runtime.integrity_monitor import get_monitor
+            monitor = get_monitor()
+            logger.info("IntegrityMonitor initialised")
+            return monitor
+        except Exception as exc:
+            logger.warning("IntegrityMonitor unavailable: %s", exc)
+            return None
+
     def _run_startup_reconciliation(self) -> None:
         try:
             from runtime.reconciliation import reconcile_on_startup
@@ -385,6 +409,10 @@ class CryptoComBot:
         self._thread.start()
         if self._recon_scheduler:
             self._recon_scheduler.start()
+        if self._snapshot_daemon:
+            self._snapshot_daemon.start()
+        if self._integrity_monitor:
+            self._integrity_monitor.start()
         logger.info("CryptoComBot started (demo=%s)", self.state.demo_mode)
 
     def stop(self) -> None:
@@ -395,6 +423,10 @@ class CryptoComBot:
             self._orchestrator.stop()
         if self._recon_scheduler:
             self._recon_scheduler.stop()
+        if self._snapshot_daemon:
+            self._snapshot_daemon.stop()
+        if self._integrity_monitor:
+            self._integrity_monitor.stop()
         logger.info("CryptoComBot stopped")
 
     def is_running(self) -> bool:

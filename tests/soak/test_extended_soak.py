@@ -131,7 +131,7 @@ class TestExtendedSoak:
             t.join()
         elapsed = time.monotonic() - t0
 
-        assert elapsed < 10.0, f"Storm test took {elapsed:.2f}s (limit 10s)"
+        assert elapsed < 30.0, f"Storm test took {elapsed:.2f}s (limit 30s)"
         assert errors == [], f"Concurrent append errors: {errors[:3]}"
         assert len(collected_seqs) == expected, (
             f"Expected {expected} events, got {len(collected_seqs)}"

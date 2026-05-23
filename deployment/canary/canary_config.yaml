@@ -1,0 +1,92 @@
+# OpenClaw Canary Deployment Configuration
+# ---------------------------------------------------------------------------
+# This manifest governs phased production deployment of the OpenClaw bot.
+# Each phase must pass its required checks before the next phase is entered.
+# Any rollback_trigger condition automatically halts the phase and initiates
+# a controlled rollback via deploy.py.
+#
+# Phases must be executed in order:
+#   replay_only → paper_shadow → limited_capital → supervised_full
+# ---------------------------------------------------------------------------
+
+version: "1.0"
+deployment_id: null  # set at deploy time by CanaryDeployer
+
+phases:
+  - name: replay_only
+    description: "Replay-only mode: no orders, validates event reconstruction"
+    duration_minutes: 30
+    capital_limit_pct: 0
+    position_limit: 0
+    requires:
+      - replay_integrity_ok
+      - event_store_seq_advancing
+    rollback_triggers:
+      - replay_determinism_failed
+      - event_store_corruption
+
+  - name: paper_shadow
+    description: "Paper trading shadow: full bot logic but no real orders"
+    duration_minutes: 120
+    capital_limit_pct: 0
+    position_limit: 5
+    requires:
+      - replay_only_passed
+      - reconciliation_passed
+      - ws_health_score_gt: 0.7
+    rollback_triggers:
+      - reconciliation_instability
+      - drift_events_gt: 3
+      - ws_health_below: 0.4
+
+  - name: limited_capital
+    description: "Limited capital: max 10% of target capital, max 2 positions"
+    duration_minutes: 1440  # 24 hours
+    capital_limit_pct: 10
+    position_limit: 2
+    requires:
+      - paper_shadow_passed
+      - execution_stability_score_gt: 0.7
+      - survivability_score_gt: 70
+    rollback_triggers:
+      - slippage_excess_pct_gt: 2.0
+      - reconciliation_consecutive_fails_gt: 2
+      - execution_failure_rate_gt: 0.1
+      - capital_drawdown_pct_gt: 5
+
+  - name: supervised_full
+    description: "Full supervised deployment: all capital, human monitoring required"
+    duration_minutes: null  # indefinite — human decides when to exit
+    capital_limit_pct: 100
+    position_limit: null  # governed by capital engine
+    requires:
+      - limited_capital_passed
+      - survivability_score_gt: 80
+      - alpha_validation_score_gt: 0.6
+    rollback_triggers:
+      - emergency_halt_triggered
+      - alpha_collapse_detected
+      - survivability_below: 60
+      - replay_corruption_detected
+
+rollback:
+  automatic: true
+  max_rollback_attempts: 3
+  rollback_timeout_seconds: 300
+  preserve_audit_log: true
+  notify_telegram: true
+
+health_checks:
+  interval_seconds: 30
+  consecutive_failures_before_rollback: 3
+  checks:
+    - reconciliation_passed
+    - ws_health_score
+    - drift_events_active
+    - capital_state
+    - survivability_score
+
+audit:
+  deployment_log: data/deployment_audit.jsonl
+  trace_id_required: true
+  immutable: true

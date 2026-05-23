@@ -380,6 +380,15 @@ def _send_halt_release_alert(operator_id: str, reason: str, trace_id: str) -> No
         pass
 
 
+def _get_survivability_score() -> Optional[float]:
+    """Return survivability score (0–100) or None if engine unavailable."""
+    try:
+        from runtime.survivability import get_survivability_engine
+        return get_survivability_engine().compute_score().current_score
+    except Exception:
+        return None
+
+
 # ── Diagnostics ───────────────────────────────────────────────────────────────
 
 @app.get("/api/diagnostics")
@@ -405,6 +414,7 @@ def api_diagnostics(_: None = Depends(_require_local_or_token)) -> Dict[str, Any
             "open_fds":                 report.open_fds,
             "uptime_seconds":           report.uptime_seconds,
             "recent_critical_incidents": report.recent_critical_incidents,
+            "survivability_score": _get_survivability_score(),
             "subsystems": {
                 name: {
                     "status":  h.status.value,
@@ -424,6 +434,137 @@ def api_diagnostics(_: None = Depends(_require_local_or_token)) -> Dict[str, Any
             "open_positions": len(bot.state.open_positions),
             "message": "Full diagnostics module not available",
         }
+
+
+# ── Phase 5 endpoints ────────────────────────────────────────────────────────
+
+@app.get("/api/survivability")
+def api_survivability(_: None = Depends(_require_local_or_token)) -> Dict[str, Any]:
+    """Operational survivability score (0–100) across all subsystems."""
+    try:
+        from runtime.survivability import get_survivability_engine
+        report = get_survivability_engine().compute_score()
+        return {
+            "current_score":        report.current_score,
+            "classification":       report.classification.value,
+            "deployment_ready":     report.deployment_ready,
+            "degradation_trend":    report.degradation_trend,
+            "critical_subsystems":  report.critical_subsystems,
+            "generated_at":         report.generated_at,
+            "subsystems": {
+                name: {
+                    "score":         ss.score,
+                    "weight":        ss.weight,
+                    "status_detail": ss.status_detail,
+                    "last_updated":  ss.last_updated,
+                }
+                for name, ss in report.subsystem_scores.items()
+            },
+        }
+    except ImportError:
+        return {"current_score": None, "classification": "UNKNOWN",
+                "message": "Survivability engine not yet available"}
+    except Exception as exc:
+        raise HTTPException(500, detail=f"Survivability check failed: {exc}")
+
+
+@app.get("/api/integrity")
+def api_integrity(_: None = Depends(_require_local_or_token)) -> Dict[str, Any]:
+    """Run on-demand integrity scan across EventStore, snapshots, and replay."""
+    try:
+        from runtime.integrity_monitor import get_monitor
+        report = get_monitor().run_scan()
+        return {
+            "generated_at":     report.generated_at,
+            "overall_severity": report.overall_severity.value,
+            "events_scanned":   report.events_scanned,
+            "snapshots_checked":report.snapshots_checked,
+            "scan_duration_ms": report.scan_duration_ms,
+            "findings": [
+                {
+                    "finding_id":       f.finding_id,
+                    "severity":         f.severity.value,
+                    "subsystem":        f.subsystem,
+                    "description":      f.description,
+                    "detected_at":      f.detected_at,
+                    "remediation_hint": f.remediation_hint,
+                    "auto_halt":        f.auto_halt,
+                }
+                for f in report.findings
+            ],
+        }
+    except ImportError:
+        return {"overall_severity": "UNKNOWN",
+                "message": "Integrity monitor not yet available"}
+    except Exception as exc:
+        raise HTTPException(500, detail=f"Integrity scan failed: {exc}")
+
+
+@app.get("/api/snapshot-status")
+def api_snapshot_status(_: None = Depends(_require_local_or_token)) -> Dict[str, Any]:
+    """Snapshot daemon health and last snapshot metadata."""
+    try:
+        from runtime.snapshot_daemon import get_daemon
+        return get_daemon().get_status()
+    except ImportError:
+        return {"running": False, "message": "Snapshot daemon not yet available"}
+    except Exception as exc:
+        raise HTTPException(500, detail=f"Snapshot status failed: {exc}")
+
+
+@app.get("/api/execution-analytics")
+def api_execution_analytics(_: None = Depends(_require_local_or_token)) -> Dict[str, Any]:
+    """Execution analytics report (slippage, fill efficiency, latency)."""
+    try:
+        from runtime.execution_analytics import ExecutionAnalyticsEngine
+        eng = ExecutionAnalyticsEngine()
+        try:
+            eng.load_from_file("data/logs/trade_outcomes.jsonl")
+        except Exception:
+            pass
+        report = eng.generate_report()
+        return {k: v for k, v in report.__dict__.items()
+                if not k.startswith("_")} if hasattr(report, "__dict__") else {}
+    except ImportError:
+        return {"message": "Execution analytics not yet available"}
+    except Exception as exc:
+        raise HTTPException(500, detail=f"Analytics failed: {exc}")
+
+
+@app.get("/api/alpha-validation")
+def api_alpha_validation(_: None = Depends(_require_local_or_token)) -> Dict[str, Any]:
+    """Statistical alpha validation report across all strategies."""
+    try:
+        from research.statistics.alpha_validation import AlphaValidationEngine
+        engine = AlphaValidationEngine()
+        engine.load_outcomes()
+        report = engine.generate_report()
+        return {
+            "generated_at":                   report.generated_at,
+            "portfolio_alpha_signal":         report.portfolio_alpha_signal.value,
+            "overall_portfolio_expectancy":   report.overall_portfolio_expectancy,
+            "trades_analyzed":                report.trades_analyzed,
+            "alpha_collapsed_strategies":     report.alpha_collapsed_strategies,
+            "degrading_strategies":           report.degrading_strategies,
+            "insufficient_sample_strategies": report.insufficient_sample_strategies,
+            "strategies": {
+                name: {
+                    "alpha_signal":              m.alpha_signal.value,
+                    "rolling_sharpe":            m.rolling_sharpe,
+                    "rolling_win_rate":          m.rolling_win_rate,
+                    "rolling_expectancy_usd":    m.rolling_expectancy_usd,
+                    "sample_size":               m.sample_size,
+                    "statistical_significance":  m.statistical_significance,
+                    "win_rate_decay_rate":        m.win_rate_decay_rate,
+                }
+                for name, m in report.strategies.items()
+            },
+        }
+    except ImportError:
+        return {"portfolio_alpha_signal": "UNKNOWN",
+                "message": "Alpha validation not yet available"}
+    except Exception as exc:
+        raise HTTPException(500, detail=f"Alpha validation failed: {exc}")
 
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────

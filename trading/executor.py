@@ -76,6 +76,21 @@ def open_position(
             f"Increase balance or raise risk_pct."
         )
 
+    # Advisory execution optimization (never overrides capital/governance gates).
+    # In demo mode optimizer returns passthrough advice (qty unchanged).
+    _demo = True  # executor has no direct demo_mode access; always conservative
+    try:
+        from runtime.execution_optimizer import get_optimizer
+        _advice = get_optimizer().get_advice(
+            symbol=symbol, qty=qty, current_spread_bps=0.0, demo_mode=_demo
+        )
+        if _advice.should_wait:
+            logger.info("ExecutionOptimizer: should_wait=True for %s (%s) — proceeding anyway (demo)",
+                        symbol, _advice.wait_reason)
+        qty = _advice.advised_qty
+    except Exception as _opt_exc:
+        logger.debug("ExecutionOptimizer unavailable (%s) — using raw qty", _opt_exc)
+
     set_leverage(instrument, leverage)
 
     entry_side = "BUY"  if side == "LONG"  else "SELL"
