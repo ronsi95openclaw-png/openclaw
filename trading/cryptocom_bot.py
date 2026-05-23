@@ -111,6 +111,9 @@ class CryptoComBot:
         self._snapshot_daemon  = self._init_snapshot_daemon()
         self._integrity_monitor = self._init_integrity_monitor()
 
+        # Phase 8: real exchange balance feed → LiveBalanceGuardian
+        self._balance_feed     = self._init_balance_feed()
+
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _load_state(self) -> None:
@@ -370,6 +373,19 @@ class CryptoComBot:
             logger.warning("IntegrityMonitor unavailable: %s", exc)
             return None
 
+    def _init_balance_feed(self):
+        try:
+            from runtime.balance_feed import get_balance_feed_daemon
+            daemon = get_balance_feed_daemon(
+                interval_s=30.0,
+                demo_mode=self.state.demo_mode,
+            )
+            logger.info("BalanceFeedDaemon initialised (demo=%s)", self.state.demo_mode)
+            return daemon
+        except Exception as exc:
+            logger.warning("BalanceFeedDaemon unavailable: %s", exc)
+            return None
+
     def _run_startup_reconciliation(self) -> None:
         try:
             from runtime.reconciliation import reconcile_on_startup
@@ -413,6 +429,8 @@ class CryptoComBot:
             self._snapshot_daemon.start()
         if self._integrity_monitor:
             self._integrity_monitor.start()
+        if self._balance_feed:
+            self._balance_feed.start()
         logger.info("CryptoComBot started (demo=%s)", self.state.demo_mode)
 
     def stop(self) -> None:
@@ -427,6 +445,8 @@ class CryptoComBot:
             self._snapshot_daemon.stop()
         if self._integrity_monitor:
             self._integrity_monitor.stop()
+        if self._balance_feed:
+            self._balance_feed.stop()
         logger.info("CryptoComBot stopped")
 
     def is_running(self) -> bool:
