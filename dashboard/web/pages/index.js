@@ -5,6 +5,17 @@ import {
   BarChart, Bar, Cell,
 } from 'recharts'
 
+// Phase 9 operational panels
+import SystemOverview   from '../components/ops/SystemOverview'
+import ExecutionPanel   from '../components/ops/ExecutionPanel'
+import BalancePanel     from '../components/ops/BalancePanel'
+import EventStorePanel  from '../components/ops/EventStorePanel'
+import GovernancePanel  from '../components/ops/GovernancePanel'
+import DeploymentPanel  from '../components/ops/DeploymentPanel'
+import CoordinationPanel from '../components/ops/CoordinationPanel'
+import ChaosPanel       from '../components/ops/ChaosPanel'
+import SecurityPanel    from '../components/ops/SecurityPanel'
+
 const API  = ''   // relative — proxied by Next.js to localhost:8000
 const WS   = process.env.NEXT_PUBLIC_WS_URL || (
   typeof window !== 'undefined'
@@ -445,6 +456,23 @@ export default function Dashboard() {
   const [wsStatus, setWsStatus] = useState('connecting')
   const wsRef = useRef(null)
 
+  // Phase 9 panel state
+  const [panelTab,        setPanelTab]        = useState('overview')
+  const [overviewData,    setOverviewData]    = useState(null)
+  const [executionData,   setExecutionData]   = useState(null)
+  const [balanceData,     setBalanceData]     = useState(null)
+  const [balanceHistory,  setBalanceHistory]  = useState(null)
+  const [eventstoreData,  setEventstoreData]  = useState(null)
+  const [eventstoreRecent,setEventstoreRecent]= useState(null)
+  const [governanceData,  setGovernanceData]  = useState(null)
+  const [deploymentData,  setDeploymentData]  = useState(null)
+  const [deploymentHealth,setDeploymentHealth]= useState(null)
+  const [coordinationData,setCoordinationData]= useState(null)
+  const [chaosData,       setChaosData]       = useState(null)
+  const [chaosEvents,     setChaosEvents]     = useState(null)
+  const [securityData,    setSecurityData]    = useState(null)
+  const [securityApprovals,setSecurityApprovals]=useState(null)
+
   const API_URL = typeof window !== 'undefined'
     ? (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000')
     : 'http://localhost:8000'
@@ -480,6 +508,10 @@ export default function Dashboard() {
           if (type === 'init' || type === 'state_update') setStatus(payload)
           if (type === 'analysis') setAnalysis(payload)
           if (type === 'system_health') setHealth(payload)
+          // Phase 9 telemetry
+          if (type === 'telemetry_balance')       setBalanceData(payload)
+          if (type === 'telemetry_latency')       setExecutionData(payload)
+          if (type === 'telemetry_survivability') setOverviewData(prev => ({ ...prev, ...payload }))
         } catch {}
       }
     }
@@ -490,6 +522,93 @@ export default function Dashboard() {
       ws?.close()
     }
   }, [WS_URL])
+
+  // Phase 9 panel polling (10s interval, switches with active tab)
+  useEffect(() => {
+    const BASE = API_URL
+
+    async function safeFetch(url) {
+      try {
+        const r = await fetch(BASE + url)
+        if (r.ok) return r.json()
+      } catch {}
+      return null
+    }
+
+    async function fetchPanelData() {
+      if (panelTab === 'overview') {
+        const d = await safeFetch('/api/v2/overview')
+        if (d) setOverviewData(d)
+      } else if (panelTab === 'execution') {
+        const d = await safeFetch('/api/v2/execution')
+        if (d) setExecutionData(d)
+      } else if (panelTab === 'balance') {
+        const [d, h] = await Promise.all([
+          safeFetch('/api/v2/balance'),
+          safeFetch('/api/v2/balance/history'),
+        ])
+        if (d) setBalanceData(d)
+        if (h) setBalanceHistory(h)
+      } else if (panelTab === 'eventstore') {
+        const [d, r] = await Promise.all([
+          safeFetch('/api/v2/eventstore'),
+          safeFetch('/api/v2/eventstore/recent'),
+        ])
+        if (d) setEventstoreData(d)
+        if (r) setEventstoreRecent(r)
+      } else if (panelTab === 'governance') {
+        const d = await safeFetch('/api/v2/governance')
+        if (d) setGovernanceData(d)
+      } else if (panelTab === 'deployment') {
+        const [d, h] = await Promise.all([
+          safeFetch('/api/v2/deployment'),
+          safeFetch('/api/v2/deployment/health'),
+        ])
+        if (d) setDeploymentData(d)
+        if (h) setDeploymentHealth(h)
+      } else if (panelTab === 'coordination') {
+        const d = await safeFetch('/api/v2/coordination')
+        if (d) setCoordinationData(d)
+      } else if (panelTab === 'chaos') {
+        const [d, e] = await Promise.all([
+          safeFetch('/api/v2/chaos'),
+          safeFetch('/api/v2/chaos/events'),
+        ])
+        if (d) setChaosData(d)
+        if (e) setChaosEvents(e)
+      } else if (panelTab === 'security') {
+        const [d, a] = await Promise.all([
+          safeFetch('/api/v2/security'),
+          safeFetch('/api/v2/security/approvals'),
+        ])
+        if (d) setSecurityData(d)
+        if (a) setSecurityApprovals(a)
+      }
+    }
+
+    fetchPanelData()
+    const id = setInterval(fetchPanelData, 10000)
+    return () => clearInterval(id)
+  }, [panelTab, API_URL])
+
+  const handleAdvancePhase = async (currentPhase) => {
+    try {
+      await fetch(`${API_URL}/api/v2/deployment/advance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ current_phase: currentPhase }),
+      })
+    } catch {}
+  }
+
+  const handleInjectChaos = async ({ event_type, seed }) => {
+    const r = await fetch(`${API_URL}/api/v2/chaos/inject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_type, seed }),
+    })
+    return r.json()
+  }
 
   const running    = status?.running ?? false
   const trades     = status?.trade_log ?? []
@@ -555,6 +674,66 @@ export default function Dashboard() {
 
         {/* Row 4: Trade Log */}
         <TradeLog trades={trades} />
+
+        {/* ── Phase 9: Operational Panels ─────────────────────────────── */}
+
+        {/* Tab navigation */}
+        <div className="flex gap-2 flex-wrap mt-6 mb-4">
+          {['overview','execution','balance','eventstore','governance',
+            'deployment','coordination','chaos','security'].map(tab => (
+            <button
+              key={tab}
+              onClick={() => setPanelTab(tab)}
+              className={`px-3 py-1 rounded text-xs font-mono border transition ${
+                panelTab === tab
+                  ? 'bg-indigo-700 border-indigo-500 text-white'
+                  : 'border-border text-muted hover:border-accent hover:text-white'
+              }`}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
+
+        {/* Panel content */}
+        {panelTab === 'overview' && (
+          <SystemOverview
+            data={overviewData}
+            wsConnected={wsStatus === 'connected'}
+          />
+        )}
+        {panelTab === 'execution' && (
+          <ExecutionPanel data={executionData} />
+        )}
+        {panelTab === 'balance' && (
+          <BalancePanel data={balanceData} history={balanceHistory} />
+        )}
+        {panelTab === 'eventstore' && (
+          <EventStorePanel data={eventstoreData} recent={eventstoreRecent} />
+        )}
+        {panelTab === 'governance' && (
+          <GovernancePanel data={governanceData} />
+        )}
+        {panelTab === 'deployment' && (
+          <DeploymentPanel
+            data={deploymentData}
+            health={deploymentHealth}
+            onAdvancePhase={handleAdvancePhase}
+          />
+        )}
+        {panelTab === 'coordination' && (
+          <CoordinationPanel data={coordinationData} />
+        )}
+        {panelTab === 'chaos' && (
+          <ChaosPanel
+            data={chaosData}
+            events={chaosEvents}
+            onInjectChaos={handleInjectChaos}
+          />
+        )}
+        {panelTab === 'security' && (
+          <SecurityPanel data={securityData} approvals={securityApprovals} />
+        )}
       </div>
     </>
   )

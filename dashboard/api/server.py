@@ -134,6 +134,18 @@ async def startup():
     bus = get_bus()
     bus.set_loop(asyncio.get_event_loop())
     asyncio.create_task(_poll_bot_state())
+
+    # Phase 9: telemetry polling loop
+    from dashboard.api.telemetry import run_telemetry_loop
+    asyncio.create_task(run_telemetry_loop())
+
+    # Phase 9: include v2 router (lazy import so server still starts if router has issues)
+    try:
+        from dashboard.api.routers.phase9 import router as phase9_router
+        app.include_router(phase9_router)
+    except Exception as _phase9_exc:
+        logger.warning("Phase 9 router failed to load: %s", _phase9_exc)
+
     logger.info("Dashboard API started — WebSocket event bus active")
 
 
