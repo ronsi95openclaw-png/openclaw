@@ -172,6 +172,43 @@ def api_status() -> Dict[str, Any]:
     return get_bot().get_status()
 
 
+@app.get("/api/goal")
+def api_goal() -> Dict[str, Any]:
+    """Return $98 → $50,000 goal progress with milestones and ETA."""
+    bot = get_bot()
+    try:
+        from runtime.goal_tracker import get_goal_tracker
+        tracker = getattr(bot, "_goal_tracker", None) or get_goal_tracker(
+            starting_balance=getattr(bot.state, "starting_balance", 98.0),
+        )
+        balance = bot._refresh_balance()
+        progress = tracker.update(balance)
+        from dataclasses import asdict
+        return asdict(progress)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.get("/api/skill-clock")
+def api_skill_clock() -> Dict[str, Any]:
+    """Return Skill Clock status (last tick, regimes, action)."""
+    bot = get_bot()
+    clock = getattr(bot, "_skill_clock", None)
+    if clock is None:
+        return {"status": "unavailable"}
+    return clock.get_status()
+
+
+@app.get("/api/quin")
+def api_quin() -> Dict[str, Any]:
+    """Return QUIN orchestrator status (last decision, model, source)."""
+    bot = get_bot()
+    quin = getattr(bot, "_quin", None)
+    if quin is None:
+        return {"status": "unavailable"}
+    return quin.get_status()
+
+
 @app.get("/api/positions")
 def api_positions():
     return get_bot().state.open_positions

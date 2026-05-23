@@ -68,19 +68,20 @@ def _next_trade_id(strategy: str) -> str:
 
 @dataclass
 class BotState:
-    running:         bool  = False
-    demo_mode:       bool  = True
-    risk_pct:        float = 1.5
-    scan_interval:   int   = 30
-    balance:         float = 1000.0
-    total_pnl:       float = 0.0
-    trades_today:    int   = 0
-    trades_date:     str   = ""
-    last_scan:       str   = ""
-    last_flush_date: str   = ""
-    status_msg:      str   = "Idle"
-    open_positions:  list  = field(default_factory=list)
-    trade_log:       list  = field(default_factory=list)
+    running:          bool  = False
+    demo_mode:        bool  = True
+    risk_pct:         float = 1.5
+    scan_interval:    int   = 30
+    balance:          float = 98.0
+    starting_balance: float = 98.0    # $98 → $50K goal
+    total_pnl:        float = 0.0
+    trades_today:     int   = 0
+    trades_date:      str   = ""
+    last_scan:        str   = ""
+    last_flush_date:  str   = ""
+    status_msg:       str   = "Idle"
+    open_positions:   list  = field(default_factory=list)
+    trade_log:        list  = field(default_factory=list)
 
 
 class CryptoComBot:
@@ -123,6 +124,11 @@ class CryptoComBot:
         # Phase 10 obj-2: midnight weight application daemon
         self._weight_scheduler = self._init_weight_scheduler()
 
+        # Phase 11: Skill Clock, QUIN orchestrator, Goal Tracker
+        self._skill_clock  = self._init_skill_clock()
+        self._quin         = self._init_quin()
+        self._goal_tracker = self._init_goal_tracker()
+
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _load_state(self) -> None:
@@ -131,15 +137,16 @@ class CryptoComBot:
         try:
             raw = json.loads(_STATE_FILE.read_text())
             s = self.state
-            s.demo_mode      = raw.get("demo_mode",      True)
-            s.risk_pct       = raw.get("risk_pct",       1.5)
-            s.total_pnl      = raw.get("total_pnl",      0.0)
-            s.trades_date    = raw.get("trades_date",    "")
-            s.trades_today   = raw.get("trades_today",   0)
-            s.trade_log      = raw.get("trade_log",      [])
-            s.open_positions  = raw.get("open_positions",  [])
-            s.last_flush_date = raw.get("last_flush_date", "")
-            s.scan_interval   = raw.get("scan_interval",   30)
+            s.demo_mode        = raw.get("demo_mode",        True)
+            s.risk_pct         = raw.get("risk_pct",         1.5)
+            s.starting_balance = raw.get("starting_balance", 98.0)
+            s.total_pnl        = raw.get("total_pnl",        0.0)
+            s.trades_date      = raw.get("trades_date",      "")
+            s.trades_today     = raw.get("trades_today",     0)
+            s.trade_log        = raw.get("trade_log",        [])
+            s.open_positions   = raw.get("open_positions",   [])
+            s.last_flush_date  = raw.get("last_flush_date",  "")
+            s.scan_interval    = raw.get("scan_interval",    30)
             # Drop malformed positions that would crash the scan loop
             required = {"id", "symbol", "strategy", "side", "entry_price", "size", "sl_price", "tp_price"}
             valid = [p for p in s.open_positions if isinstance(p, dict) and required.issubset(p)]
@@ -168,12 +175,13 @@ class CryptoComBot:
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
             raw = {
-                "demo_mode":      self.state.demo_mode,
-                "risk_pct":       self.state.risk_pct,
-                "total_pnl":      self.state.total_pnl,
-                "trades_date":    self.state.trades_date,
-                "trades_today":   self.state.trades_today,
-                "trade_log":      self.state.trade_log[-50:],
+                "demo_mode":       self.state.demo_mode,
+                "risk_pct":        self.state.risk_pct,
+                "starting_balance": self.state.starting_balance,
+                "total_pnl":       self.state.total_pnl,
+                "trades_date":     self.state.trades_date,
+                "trades_today":    self.state.trades_today,
+                "trade_log":       self.state.trade_log[-50:],
                 "open_positions":  self.state.open_positions,
                 "last_flush_date": self.state.last_flush_date,
                 "scan_interval":   self.state.scan_interval,
@@ -284,8 +292,8 @@ class CryptoComBot:
     def _init_orchestrator(self):
         try:
             from runtime.orchestrator import build_orchestrator
-            balance = max(100.0, 1000.0 + self.state.total_pnl) if self.state.demo_mode \
-                      else self.state.balance
+            balance = max(10.0, self.state.starting_balance + self.state.total_pnl) \
+                      if self.state.demo_mode else self.state.balance
             return build_orchestrator(with_governance=True, starting_balance=balance)
         except Exception as exc:
             logger.warning("RuntimeOrchestrator unavailable: %s", exc)
@@ -356,7 +364,7 @@ class CryptoComBot:
             )
             sched.set_state_provider(lambda: (
                 list(self.state.open_positions),
-                max(100.0, min(2000.0, 1000.0 + self.state.total_pnl))
+                max(10.0, self.state.starting_balance + self.state.total_pnl)
                 if self.state.demo_mode else self.state.balance,
             ))
             logger.info("ContinuousReconciliationScheduler initialised (5-min interval)")
@@ -429,11 +437,45 @@ class CryptoComBot:
             logger.warning("WeightApplicationDaemon unavailable: %s", exc)
             return None
 
+    def _init_skill_clock(self):
+        try:
+            from runtime.skill_clock import SkillClock
+            clock = SkillClock()
+            logger.info("SkillClock initialised with %d skills", len(clock._skills))
+            return clock
+        except Exception as exc:
+            logger.warning("SkillClock unavailable: %s", exc)
+            return None
+
+    def _init_quin(self):
+        try:
+            from runtime.quin_orchestrator import QuinOrchestrator
+            quin = QuinOrchestrator()
+            logger.info("QUIN orchestrator initialised (model=%s)", quin._model)
+            return quin
+        except Exception as exc:
+            logger.warning("QUIN unavailable: %s", exc)
+            return None
+
+    def _init_goal_tracker(self):
+        try:
+            from runtime.goal_tracker import get_goal_tracker
+            tracker = get_goal_tracker(
+                starting_balance=self.state.starting_balance,
+                target=50_000.0,
+            )
+            logger.info("GoalTracker initialised: $%.2f → $50,000",
+                        self.state.starting_balance)
+            return tracker
+        except Exception as exc:
+            logger.warning("GoalTracker unavailable: %s", exc)
+            return None
+
     def _run_startup_reconciliation(self) -> None:
         try:
             from runtime.reconciliation import reconcile_on_startup
             balance = (
-                max(100.0, min(2000.0, 1000.0 + self.state.total_pnl))
+                max(10.0, self.state.starting_balance + self.state.total_pnl)
                 if self.state.demo_mode
                 else self.state.balance
             )
@@ -529,7 +571,20 @@ class CryptoComBot:
         _last_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         while not self._stop.is_set():
             try:
+                # Phase 11: run Skill Clock tick (structured 10-skill pipeline)
+                if self._skill_clock is not None:
+                    try:
+                        self._skill_clock.tick(self, self._quin)
+                    except Exception as _sce:
+                        logger.debug("SkillClock tick error (non-fatal): %s", _sce)
                 self._scan()
+                # Phase 11: update goal tracker after each scan
+                if self._goal_tracker is not None:
+                    try:
+                        balance = self._refresh_balance()
+                        self._goal_tracker.update(balance)
+                    except Exception as _gte:
+                        logger.debug("GoalTracker update error (non-fatal): %s", _gte)
             except Exception as e:
                 logger.error("Scan error: %s", e, exc_info=True)
                 self.state.status_msg = f"Error: {str(e)[:80]}"
@@ -722,6 +777,36 @@ class CryptoComBot:
                 except Exception:
                     pass
 
+                # QUIN gate — final decision by local LLM orchestrator
+                if self._quin is not None:
+                    try:
+                        from runtime.skill_clock import SkillContext
+                        _qctx = SkillContext()
+                        _qctx.regimes = {symbol: regime_label}
+                        _qctx.risk_state = {
+                            "capital_state": "SAFE", "halted": False,
+                            "can_open_new": True,
+                        }
+                        _sig_dict = {
+                            "symbol": symbol, "signal": sig.action,
+                            "strategy": sig.strategy, "confidence": eff_conf,
+                            "score": eff_conf * self.weights.stats[sig.strategy].weight
+                                     if sig.strategy in self.weights.stats else eff_conf,
+                            "reason": sig.reason,
+                        }
+                        _qctx.execution_plan = {"action": "TRADE",
+                                                 "selected_signal": _sig_dict}
+                        _qdec = self._quin.decide(_qctx)
+                        if _qdec.get("action") != "TRADE":
+                            logger.info(
+                                "Signal BLOCKED by QUIN [%s/%s]: %s",
+                                symbol, sig.strategy,
+                                _qdec.get("reasoning", "")[:80],
+                            )
+                            continue
+                    except Exception as _qe:
+                        logger.debug("QUIN gate error (non-fatal, proceeding): %s", _qe)
+
                 self._open_position(sig, price, size, regime_label=regime_label,
                                    rsi=current_rsi, balance=balance, mode=mode)
                 fired += 1
@@ -789,8 +874,8 @@ class CryptoComBot:
 
     def _refresh_balance(self) -> float:
         if self.state.demo_mode:
-            # Cap at 2× starting capital so sizing stays realistic after winning sessions
-            return max(100.0, min(2000.0, 1000.0 + self.state.total_pnl))
+            # No artificial cap — let balance compound toward the $50K goal
+            return max(10.0, self.state.starting_balance + self.state.total_pnl)
         try:
             from trading.exchange import get_derivatives_balance
             bal = get_derivatives_balance()
@@ -1176,7 +1261,7 @@ class CryptoComBot:
         # Sheets: log close — include balance, mode, win rate note
         if self._reporter:
             win_rate    = self.weights.stats[pos["strategy"]].win_rate
-            bal_after   = max(100.0, 1000.0 + self.state.total_pnl) \
+            bal_after   = max(10.0, self.state.starting_balance + self.state.total_pnl) \
                           if self.state.demo_mode else self.state.balance
             self._reporter.log_trade_close(
                 symbol=pos["symbol"], strategy=pos["strategy"],
@@ -1193,7 +1278,7 @@ class CryptoComBot:
         # Capital engine update
         if self._orchestrator is not None:
             self._orchestrator.update_capital_state(
-                equity=max(100.0, 1000.0 + self.state.total_pnl),
+                equity=max(10.0, self.state.starting_balance + self.state.total_pnl),
                 trade_pnl=pnl,
             )
             self._orchestrator.record_trade_outcome(
@@ -1272,8 +1357,8 @@ class CryptoComBot:
             trade_log = list(self.state.trade_log[:20])
 
         unreal  = sum((p.get("unrealized_pnl", 0.0) for p in positions), 0.0)
-        balance = max(100.0, 1000.0 + self.state.total_pnl) if self.state.demo_mode \
-                  else self.state.balance
+        balance = max(10.0, self.state.starting_balance + self.state.total_pnl) \
+                  if self.state.demo_mode else self.state.balance
 
         capital_state = "UNKNOWN"
         if self._orchestrator is not None:
