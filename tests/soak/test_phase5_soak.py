@@ -82,12 +82,17 @@ class TestPhase5Soak:
 
     # ── 3. IntegrityMonitor on-demand scan ────────────────────────────────────
 
-    def test_integrity_monitor_scan(self, tmp_path: Path) -> None:
+    def test_integrity_monitor_scan(self, tmp_path: Path, monkeypatch) -> None:
         """run_scan() returns a report with no CRITICAL findings on empty store."""
         try:
             from runtime.integrity_monitor import IntegrityMonitor, IntegritySeverity
         except ImportError:
             pytest.skip("integrity_monitor not available")
+
+        # Isolate from the global data/event_store.jsonl which may have state
+        # from concurrent test writers.  Changing cwd makes relative paths
+        # (data/event_store.jsonl, data/…) resolve inside tmp_path.
+        monkeypatch.chdir(tmp_path)
 
         monitor = IntegrityMonitor(
             scan_interval_seconds=3600,

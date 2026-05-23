@@ -159,6 +159,37 @@ class FillResult:
 
 
 @dataclass
+class MultiLegFillResult:
+    """Outcome of a simulated multi-leg trade (entry + SL + optional TP)."""
+    entry:                    FillResult
+    sl_fill:                  FillResult
+    tp_fill:                  Optional[FillResult]        # None if not triggered
+    trailing_stop_triggered:  bool
+    partial_tp_fills:         List[FillResult]            # for partial TP laddering
+    cascade_chain_length:     int                         # 0 = no cascade
+    net_slippage_bps:         float                       # weighted avg across all legs
+    total_latency_ms:         float                       # entry + worst-case exit
+    maker_taker_entry:        str                         # "MAKER" or "TAKER"
+    maker_taker_exit:         str
+    execution_realism_score:  float                       # 0-100
+
+
+@dataclass
+class MultiLegSimulationConfig:
+    """Configuration for multi-leg order simulation."""
+    sl_distance_pct:           float = 1.0
+    tp_distance_pct:           float = 2.0
+    tp_ladder_levels:          int   = 1
+    tp_ladder_fractions:       List[float] = field(default_factory=lambda: [1.0])
+    trailing_stop_enabled:     bool  = False
+    trailing_stop_distance_pct: float = 0.5
+    # Latency asymmetry: exit orders typically slower due to risk checks
+    exit_latency_multiplier:   float = 1.3
+    # Correlated symbol stress: if True, all legs use same rng state
+    correlated_symbols:        bool  = False
+
+
+@dataclass
 class ExecutionQualityReport:
     """Aggregate statistics over a batch of simulated fills."""
     mode:                    MarketMode
@@ -413,6 +444,235 @@ class MicrostructureSimulator:
         """Run 100 simulations and return the execution_realism_score (0-100)."""
         report = self.run_batch(symbol, "BUY", 1.0, 1.0, mode, n=100)
         return report.execution_realism_score
+
+    # ── Multi-leg simulation ──────────────────────────────────────────────────
+
+    def simulate_multi_leg(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        ref_price: float,
+        mode: Optional[MarketMode] = None,
+        config: Optional[MultiLegSimulationConfig] = None,
+    ) -> MultiLegFillResult:
+        """Simulate a multi-leg trade: entry + stop-loss + optional take-profit.
+
+        All randomness is drawn from self._rng so results are deterministic.
+        Thread-safe: acquires self._lock for the full simulation.
+        """
+        if mode is None:
+            mode = self._default_mode
+        if config is None:
+            config = MultiLegSimulationConfig()
+
+        profile = _PROFILES[mode]
+
+        with self._lock:
+            return self._simulate_multi_leg_unlocked(
+                symbol, side, qty, ref_price, profile, mode, config
+            )
+
+    def _simulate_multi_leg_unlocked(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        ref_price: float,
+        profile: StressProfile,
+        mode: MarketMode,
+        config: MultiLegSimulationConfig,
+    ) -> MultiLegFillResult:
+        """Internal multi-leg simulation.  Caller must hold self._lock."""
+        rng = self._rng
+
+        # ── Step 1: Entry leg ─────────────────────────────────────────────────
+        entry = self._simulate_fill_unlocked(symbol, side, qty, ref_price, profile)
+
+        # ── Step 2: Maker/Taker classification for entry ──────────────────────
+        maker_taker_entry = "MAKER" if entry.latency_ms < 10.0 else "TAKER"
+
+        # ── Step 3: Determine SL and TP prices ───────────────────────────────
+        is_long = side.upper() in ("BUY", "LONG")
+        sl_pct  = config.sl_distance_pct / 100.0
+        tp_pct  = config.tp_distance_pct / 100.0
+
+        if is_long:
+            sl_price = ref_price * (1.0 - sl_pct)
+            tp_price = ref_price * (1.0 + tp_pct)
+        else:
+            sl_price = ref_price * (1.0 + sl_pct)
+            tp_price = ref_price * (1.0 - tp_pct)
+
+        # ── Step 4/5: Partial TP ladder fills ────────────────────────────────
+        levels   = max(1, config.tp_ladder_levels)
+        fracs    = config.tp_ladder_fractions
+        # Pad or trim fractions to match levels
+        if len(fracs) < levels:
+            fracs = list(fracs) + [fracs[-1]] * (levels - len(fracs))
+        fracs = fracs[:levels]
+
+        partial_tp_fills: List[FillResult] = []
+        for frac in fracs:
+            leg_qty = qty * max(0.0, min(1.0, frac))
+            # Simulate TP fill using TP price as reference; exit_latency_multiplier applied
+            tp_fill_leg = self._simulate_fill_unlocked(
+                symbol,
+                "SELL" if is_long else "BUY",
+                leg_qty,
+                tp_price,
+                profile,
+            )
+            # Apply exit latency multiplier
+            tp_fill_leg = FillResult(
+                filled_qty=tp_fill_leg.filled_qty,
+                avg_fill_price=tp_fill_leg.avg_fill_price,
+                slippage_bps=tp_fill_leg.slippage_bps,
+                latency_ms=tp_fill_leg.latency_ms * config.exit_latency_multiplier,
+                queue_position=tp_fill_leg.queue_position,
+                partial_fill=tp_fill_leg.partial_fill,
+                liquidation_cascade=tp_fill_leg.liquidation_cascade,
+                cancel_raced=tp_fill_leg.cancel_raced,
+                ack_delayed=tp_fill_leg.ack_delayed,
+            )
+            partial_tp_fills.append(tp_fill_leg)
+
+        # Single TP fill convenience alias (first leg, or None if no fills)
+        tp_fill: Optional[FillResult] = partial_tp_fills[0] if partial_tp_fills else None
+
+        # ── Step 6: SL fill with worst-case spread ────────────────────────────
+        # Add extra SL slippage: use a higher spread profile for SL (2× spread_bps_base)
+        sl_profile = StressProfile(
+            spread_bps_base=profile.spread_bps_base * 2.0,
+            spread_bps_std=profile.spread_bps_std * 1.5,
+            fill_probability=profile.fill_probability,
+            partial_fill_prob=profile.partial_fill_prob,
+            latency_ms_p50=profile.latency_ms_p50,
+            latency_ms_p99=profile.latency_ms_p99,
+            queue_depth_multiplier=profile.queue_depth_multiplier,
+            liquidation_cascade_prob=profile.liquidation_cascade_prob,
+            ack_delay_ms=profile.ack_delay_ms,
+            precision_rounding_lots=profile.precision_rounding_lots,
+            cancel_race_prob=profile.cancel_race_prob,
+            packet_disorder_prob=profile.packet_disorder_prob,
+        )
+        sl_fill_raw = self._simulate_fill_unlocked(
+            symbol,
+            "SELL" if is_long else "BUY",
+            qty,
+            sl_price,
+            sl_profile,
+        )
+        sl_fill = FillResult(
+            filled_qty=sl_fill_raw.filled_qty,
+            avg_fill_price=sl_fill_raw.avg_fill_price,
+            slippage_bps=sl_fill_raw.slippage_bps,
+            latency_ms=sl_fill_raw.latency_ms * config.exit_latency_multiplier,
+            queue_position=sl_fill_raw.queue_position,
+            partial_fill=sl_fill_raw.partial_fill,
+            liquidation_cascade=sl_fill_raw.liquidation_cascade,
+            cancel_raced=sl_fill_raw.cancel_raced,
+            ack_delayed=sl_fill_raw.ack_delayed,
+        )
+
+        # ── Step 7: Trailing stop simulation ─────────────────────────────────
+        trailing_stop_triggered = False
+        if config.trailing_stop_enabled:
+            # In VOLATILE+ modes, 30% chance trailing stop triggers before TP
+            volatile_modes = {MarketMode.VOLATILE, MarketMode.PANIC,
+                              MarketMode.LIQUIDITY_CRISIS, MarketMode.EXCHANGE_DEGRADED}
+            trigger_prob = 0.30 if mode in volatile_modes else 0.10
+            trailing_stop_triggered = rng.random() < trigger_prob
+
+        # ── Step 8: Cascade chain length ──────────────────────────────────────
+        cascade_chain_length = 0
+        if entry.liquidation_cascade:
+            cascade_chain_length = int(rng.uniform(1, 5))
+
+        # ── Step 9: Maker/Taker for exit ──────────────────────────────────────
+        exit_latency_sample = sl_fill.latency_ms
+        maker_taker_exit = "MAKER" if exit_latency_sample < 10.0 else "TAKER"
+
+        # ── Step 10: Weighted net slippage ────────────────────────────────────
+        # Weight by filled qty across all legs
+        all_legs = [entry, sl_fill] + partial_tp_fills
+        total_filled = sum(leg.filled_qty for leg in all_legs)
+        if total_filled > 0:
+            net_slippage_bps = sum(
+                leg.slippage_bps * leg.filled_qty for leg in all_legs
+            ) / total_filled
+        else:
+            net_slippage_bps = 0.0
+
+        # ── Step 11: Total latency ────────────────────────────────────────────
+        exit_latencies = [sl_fill.latency_ms] + [tp.latency_ms for tp in partial_tp_fills]
+        worst_exit_latency = max(exit_latencies) if exit_latencies else 0.0
+        total_latency_ms = entry.latency_ms + worst_exit_latency
+
+        # ── Step 12: Execution realism score ─────────────────────────────────
+        fill_rate   = entry.filled_qty / qty if qty > 0 else 1.0
+        fill_deg    = 1.0 - fill_rate
+        max_queue   = max(2, int(1.0 / profile.queue_depth_multiplier * 50))
+        queue_score = max(0.0, min(1.0, 1.0 - entry.queue_position / 100.0))
+        realism = 100.0 * (
+            fill_rate * 0.4
+            + (1.0 - fill_deg) * 0.3
+            + queue_score * 0.3
+        )
+        execution_realism_score = max(0.0, min(100.0, realism))
+
+        return MultiLegFillResult(
+            entry=entry,
+            sl_fill=sl_fill,
+            tp_fill=tp_fill,
+            trailing_stop_triggered=trailing_stop_triggered,
+            partial_tp_fills=partial_tp_fills,
+            cascade_chain_length=cascade_chain_length,
+            net_slippage_bps=net_slippage_bps,
+            total_latency_ms=total_latency_ms,
+            maker_taker_entry=maker_taker_entry,
+            maker_taker_exit=maker_taker_exit,
+            execution_realism_score=execution_realism_score,
+        )
+
+    def run_correlated_stress(
+        self,
+        symbols: List[str],
+        side: str,
+        qty: float,
+        prices: Dict[str, float],
+        mode: MarketMode,
+    ) -> List[MultiLegFillResult]:
+        """Simulate correlated multi-leg fills across multiple symbols.
+
+        All symbols share the same rng state sequence (correlated fill events).
+        Returns one MultiLegFillResult per symbol in the order given.
+        Fail-closed: symbols missing from prices are skipped.
+        """
+        results: List[MultiLegFillResult] = []
+        config = MultiLegSimulationConfig(correlated_symbols=True)
+        for sym in symbols:
+            ref_price = prices.get(sym)
+            if ref_price is None or ref_price <= 0:
+                logger.warning(
+                    "run_correlated_stress: skipping symbol %s — no valid price", sym
+                )
+                continue
+            result = self.simulate_multi_leg(sym, side, qty, ref_price, mode, config)
+            results.append(result)
+        return results
+
+    def get_multi_leg_execution_realism_score(
+        self,
+        symbol: str,
+        mode: MarketMode = MarketMode.NORMAL,
+    ) -> float:
+        """Run 100 multi-leg simulations and return avg execution_realism_score."""
+        scores: List[float] = []
+        for _ in range(100):
+            result = self.simulate_multi_leg(symbol, "BUY", 1.0, 1.0, mode)
+            scores.append(result.execution_realism_score)
+        return sum(scores) / len(scores) if scores else 0.0
 
     # ── Persistence ───────────────────────────────────────────────────────────
 

@@ -226,6 +226,246 @@
       "targets": [
         { "expr": "openclaw_critical_incidents_total", "legendFormat": "Incidents" }
       ]
+    },
+    {
+      "id": 99,
+      "type": "row",
+      "title": "Phase 7 — Hardening Metrics",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
+      "collapsed": false
+    },
+    {
+      "id": 100,
+      "type": "gauge",
+      "title": "Balance Divergence",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 27 },
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [
+        {
+          "expr": "openclaw_balance_divergence_pct",
+          "legendFormat": "Divergence %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 20,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true
+      }
+    },
+    {
+      "id": 101,
+      "type": "timeseries",
+      "title": "Balance EWMA Drift",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 27 },
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [
+        {
+          "expr": "openclaw_balance_ewma_divergence_pct",
+          "legendFormat": "EWMA Drift %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 102,
+      "type": "stat",
+      "title": "Replay Divergence Counter",
+      "gridPos": { "h": 6, "w": 4, "x": 12, "y": 27 },
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [
+        {
+          "expr": "openclaw_replay_divergence_total",
+          "legendFormat": "Divergences"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 3 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 103,
+      "type": "text",
+      "title": "Deployment Approval Status",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 27 },
+      "options": {
+        "mode": "markdown",
+        "content": "## Approval Required for STABLE\n\nAll promotions from **CANARY** to **STABLE** require a valid Ed25519 operator signature.\n\n- Signature verified via `security/operator_approval.py`\n- Tampered or unknown-key records are **rejected** (fail-closed)\n- Audit trail written to `data/approval_audit.jsonl`\n\n> Use `security/operator_approval.py sign` to generate a valid approval record."
+      }
+    },
+    {
+      "id": 104,
+      "type": "gauge",
+      "title": "Replay Equivalence Score",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 33 },
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [
+        {
+          "expr": "openclaw_replay_equivalent",
+          "legendFormat": "Equivalent (1=OK, 0=Diverged)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DIVERGED", "color": "red" } } },
+            { "type": "value", "options": { "1": { "text": "EQUIVALENT", "color": "green" } } }
+          ]
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      }
+    },
+    {
+      "id": 105,
+      "type": "table",
+      "title": "Rollback Trigger Ladder",
+      "gridPos": { "h": 6, "w": 10, "x": 6, "y": 33 },
+      "datasource": null,
+      "options": {
+        "footer": { "show": false },
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {}
+        }
+      ],
+      "targets": [],
+      "pluginVersion": "9.0.0",
+      "type": "table",
+      "description": "Static reference: rollback trigger types and their default cooldowns",
+      "options": {
+        "frameIndex": 0,
+        "showHeader": true,
+        "footer": { "show": false, "reducer": ["sum"] }
+      },
+      "datasource": {
+        "type": "grafana",
+        "uid": "-- Mixed --"
+      }
+    },
+    {
+      "id": 106,
+      "type": "timeseries",
+      "title": "Live Survivability Trend",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 33 },
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [
+        {
+          "expr": "openclaw_survivability_score",
+          "legendFormat": "Survivability Score"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 100,
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 50 },
+              { "color": "green", "value": 80 }
+            ]
+          },
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        }
+      }
+    },
+    {
+      "id": 107,
+      "type": "timeseries",
+      "title": "Integrity Drift Trend",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 39 },
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [
+        {
+          "expr": "rate(openclaw_integrity_critical_total[5m])",
+          "legendFormat": "Critical Integrity Events/min"
+        },
+        {
+          "expr": "openclaw_integrity_critical_total",
+          "legendFormat": "Total Critical Integrity Events"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "custom": {
+            "fillOpacity": 5,
+            "lineWidth": 1
+          }
+        }
+      }
     }
   ],
   "refresh": "30s",

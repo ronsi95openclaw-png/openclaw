@@ -76,6 +76,10 @@ class LeaderElection:
         self._become_leader_callbacks: List[Callable] = []
         self._lose_leadership_callbacks: List[Callable] = []
 
+        # Epoch tracking (incremented each time this node becomes leader)
+        self._epoch: int = 0
+        self._epoch_lock = threading.Lock()
+
         # Initialize distributed lock
         self._lock = self._init_lock()
 
@@ -181,7 +185,7 @@ class LeaderElection:
                     if prev_state != LeaderState.LEADER:
                         logger.info("Node %s transitioned to LEADER", self._node_id)
                         self._transition_to(LeaderState.LEADER)
-                        self._fire_become_leader()
+                        self._on_become_leader_with_epoch()
                     else:
                         logger.debug("Node %s renewed leadership", self._node_id)
                 else:
@@ -197,7 +201,7 @@ class LeaderElection:
                     logger.info("Node %s acquired leadership", self._node_id)
                     if prev_state != LeaderState.LEADER:
                         self._transition_to(LeaderState.LEADER)
-                        self._fire_become_leader()
+                        self._on_become_leader_with_epoch()
                 else:
                     # Another node holds the lock
                     if prev_state == LeaderState.LEADER:
@@ -217,6 +221,54 @@ class LeaderElection:
                 self._fire_lose_leadership()
             else:
                 self._transition_to(LeaderState.FOLLOWER)
+
+    # ── Epoch management ──────────────────────────────────────────────────────
+
+    def get_epoch(self) -> int:
+        """Return the current leadership epoch (incremented each time we become leader)."""
+        with self._epoch_lock:
+            return self._epoch
+
+    def _on_become_leader_with_epoch(self) -> None:
+        """Increment epoch and fire the on_become_leader callbacks.
+
+        Called from the election loop whenever this node transitions to LEADER.
+        """
+        with self._epoch_lock:
+            self._epoch += 1
+        self._fire_become_leader()
+
+    # ── Health scoring ────────────────────────────────────────────────────────
+
+    def get_quorum_health_score(self) -> float:
+        """Return 0.0–1.0 quorum health score.
+
+        1.0 = stable leadership (LEADER with epoch > 0)
+        0.7 = first election / unknown prior state (LEADER, epoch == 0)
+        0.5 = FOLLOWER
+        0.3 = CANDIDATE
+        0.0 = UNKNOWN
+        1.0 = single_node_mode (stable by assumption)
+        """
+        if self._single_node_mode:
+            return 1.0
+        state = self.get_state()
+        if state == LeaderState.LEADER:
+            epoch = self.get_epoch()
+            return 1.0 if epoch > 0 else 0.7
+        if state == LeaderState.FOLLOWER:
+            return 0.5
+        if state == LeaderState.CANDIDATE:
+            return 0.3
+        # UNKNOWN or anything else
+        return 0.0
+
+    def get_status_extended(self) -> dict:
+        """Return get_status() extended with epoch and quorum_health_score."""
+        base = self.get_status()
+        base["epoch"] = self.get_epoch()
+        base["quorum_health_score"] = self.get_quorum_health_score()
+        return base
 
     # ── State management ──────────────────────────────────────────────────────
 

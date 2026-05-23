@@ -286,18 +286,24 @@ class DeploymentOrchestrator:
             return record
 
     def advance_phase(
-        self, deployment_id: str, operator_id: str
+        self,
+        deployment_id: str,
+        operator_id: str,
+        approval_record: Optional[dict] = None,
     ) -> DeploymentRecord:
         """Advance a deployment to the next canary phase.
 
         Health is evaluated before each transition.  If the composite score is
         below the phase threshold (minimum 60) an automatic rollback is
-        triggered.  Phase 4 → STABLE requires a non-SYSTEM operator_id.
+        triggered.  Phase 4 → STABLE requires a non-SYSTEM operator_id AND a
+        cryptographically-valid signed approval record.
 
         Parameters
         ----------
-        deployment_id: ID returned by start_deployment().
-        operator_id:   Human or service requesting the advance.
+        deployment_id:   ID returned by start_deployment().
+        operator_id:     Human or service requesting the advance.
+        approval_record: Serialised ApprovalRecord dict (required for
+                         CANARY_PHASE_4 → STABLE transition).
 
         Returns
         -------
@@ -325,6 +331,48 @@ class DeploymentOrchestrator:
                     "Phase 4 → STABLE transition requires an explicit human operator_id"
                 )
 
+            # Phase 4 → STABLE requires a cryptographically-signed approval record
+            if record.state == DeploymentState.CANARY_PHASE_4:
+                if approval_record is None:
+                    reason = "STABLE promotion requires cryptographic approval"
+                    logger.warning(
+                        "Phase 4 → STABLE blocked: no approval_record provided  id=%s",
+                        deployment_id,
+                    )
+                    record.state = DeploymentState.FAILED
+                    record.rollback_reason = reason
+                    record.completed_at = _now_iso()
+                    self._deployments[deployment_id] = record
+                    self._append_audit(
+                        record,
+                        from_state=DeploymentState.CANARY_PHASE_4,
+                        to_state=DeploymentState.FAILED,
+                        health_score=record.health_score,
+                        extra={"rejection_reason": reason},
+                    )
+                    return record
+
+                if not self.require_signed_approval(
+                    approval_record, "CANARY_STABLE_PROMOTION"
+                ):
+                    reason = "STABLE promotion approval failed cryptographic verification"
+                    logger.warning(
+                        "Phase 4 → STABLE blocked: approval verification failed  id=%s",
+                        deployment_id,
+                    )
+                    record.state = DeploymentState.FAILED
+                    record.rollback_reason = reason
+                    record.completed_at = _now_iso()
+                    self._deployments[deployment_id] = record
+                    self._append_audit(
+                        record,
+                        from_state=DeploymentState.CANARY_PHASE_4,
+                        to_state=DeploymentState.FAILED,
+                        health_score=record.health_score,
+                        extra={"rejection_reason": reason},
+                    )
+                    return record
+
             health = self.get_health_score()
             threshold = _PHASE_THRESHOLDS.get(record.state, 60.0)
 
@@ -343,6 +391,64 @@ class DeploymentOrchestrator:
                 return self._do_rollback(record, trigger, reason, operator_id="SYSTEM")
 
             return self._transition_phase(record, operator_id)
+
+    def require_signed_approval(
+        self,
+        approval_record_dict: dict,
+        action_str: str = "CANARY_STABLE_PROMOTION",
+    ) -> bool:
+        """Verify a signed operator approval before allowing privileged phase advancement.
+
+        Returns True if the approval is cryptographically valid, non-expired,
+        non-replayed, and from a trusted operator. Returns False (fail-closed)
+        on any verification failure or if approval system is unavailable.
+
+        SYSTEM operator can NEVER approve privileged actions.
+        """
+        try:
+            from security.operator_approval import (  # type: ignore[import]
+                ApprovalAction,
+                ApprovalPayload,
+                ApprovalRecord,
+                ApprovalStatus,
+                get_approval_system,
+            )
+
+            system = get_approval_system()
+
+            # Reconstruct ApprovalRecord from dict
+            payload_dict = approval_record_dict.get("payload", {})
+            payload = ApprovalPayload(
+                deployment_id=payload_dict.get("deployment_id", ""),
+                release_trace_id=payload_dict.get("release_trace_id", ""),
+                approval_action=ApprovalAction(
+                    payload_dict.get("approval_action", action_str)
+                ),
+                timestamp=payload_dict.get("timestamp", ""),
+                expires_at=payload_dict.get("expires_at", ""),
+                operator_id=payload_dict.get("operator_id", ""),
+                nonce=payload_dict.get("nonce", ""),
+            )
+            record = ApprovalRecord(
+                approval_id=approval_record_dict.get("approval_id", ""),
+                payload=payload,
+                signature_hex=approval_record_dict.get("signature_hex", ""),
+                public_key_hex=approval_record_dict.get("public_key_hex", ""),
+                status=ApprovalStatus.PENDING,
+                verified_at=None,
+                rejected_reason=None,
+            )
+
+            result = system.verify_approval(record)
+            if not result.approved:
+                logger.warning(
+                    "Signed approval rejected: %s", result.rejection_reason
+                )
+            return result.approved
+
+        except Exception as exc:
+            logger.error("require_signed_approval failed (fail-closed): %s", exc)
+            return False
 
     def rollback_deployment(
         self,

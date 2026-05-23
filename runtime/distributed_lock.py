@@ -22,9 +22,10 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger("openclaw.runtime.distributed_lock")
 
@@ -55,6 +56,64 @@ class LockRecord:
     acquired_at:   float  # monotonic time
     ttl_seconds:   int
     resource_name: str
+    fencing_token: int = 0  # monotonically increasing per resource
+
+
+# ── Fencing token store ───────────────────────────────────────────────────────
+
+_FENCING_TOKENS: Dict[str, int] = {}   # resource_name → next token value
+_FENCING_LOCK = threading.Lock()
+
+
+def _get_next_fencing_token(resource_name: str) -> int:
+    """Returns a monotonically increasing token for this resource.
+    Persisted to data/fencing_tokens.json atomically."""
+    with _FENCING_LOCK:
+        token = _FENCING_TOKENS.get(resource_name, 0) + 1
+        _FENCING_TOKENS[resource_name] = token
+        try:
+            _persist_fencing_tokens()
+        except Exception:
+            pass
+        return token
+
+
+def _persist_fencing_tokens() -> None:
+    """Atomically write fencing tokens to disk."""
+    path = Path("data/fencing_tokens.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                json.dump(_FENCING_TOKENS, f)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+
+
+def _load_fencing_tokens() -> None:
+    """Load persisted fencing tokens at startup."""
+    global _FENCING_TOKENS
+    path = Path("data/fencing_tokens.json")
+    if not path.exists():
+        return
+    try:
+        with open(path) as f:
+            fcntl.flock(f, fcntl.LOCK_SH)
+            try:
+                data = json.load(f)
+                _FENCING_TOKENS.update(data)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+    except Exception:
+        pass
 
 
 # ── DistributedLock ───────────────────────────────────────────────────────────
@@ -92,6 +151,7 @@ class DistributedLock:
         self._retry_interval_s = retry_interval_ms / 1000.0
         self._max_retries      = max_retries
         self._thread_lock      = threading.Lock()
+        self._held_fencing_token: Optional[int] = None  # set on acquire_with_fencing
 
         # Ensure lock directory exists
         try:
@@ -202,10 +262,12 @@ class DistributedLock:
             time.sleep(_SPLIT_BRAIN_VERIFY_DELAY_S)
             verify = self._read_lock_file()
             if verify is None or verify.get("holder") != holder_id or verify.get("lock_id") != lock_id:
+                found_lock_id = verify.get("lock_id", "") if verify is not None else ""
                 logger.warning(
                     "Split-brain detected for %s — another process won the race",
                     self._resource_name,
                 )
+                self._append_split_brain_audit(holder_id, lock_id, found_lock_id)
                 return False
 
             logger.debug("Lock acquired: %s by %s", self._resource_name, holder_id)
@@ -219,6 +281,7 @@ class DistributedLock:
         with self._thread_lock:
             existing = self._read_lock_file()
             if existing is None:
+                self._held_fencing_token = None
                 return True  # Already released
             if existing.get("holder") != holder_id:
                 logger.warning(
@@ -228,6 +291,7 @@ class DistributedLock:
                 return False
             try:
                 os.unlink(self._lock_file)
+                self._held_fencing_token = None
                 logger.debug("Lock released: %s by %s", self._resource_name, holder_id)
                 return True
             except OSError as exc:
@@ -343,6 +407,107 @@ class DistributedLock:
             )
             return False
 
+    # ── Fencing token interface ───────────────────────────────────────────────
+
+    def get_fencing_token(self) -> Optional[int]:
+        """Return the fencing token of the currently held lock, or None if not held."""
+        with self._thread_lock:
+            return self._held_fencing_token
+
+    def is_write_safe(self, expected_fencing_token: int) -> bool:
+        """True if this lock is held AND the fencing token matches expected.
+
+        Fail-closed: returns False on any mismatch or if not held.
+        Used by writers to validate they still hold the current epoch before writing.
+        """
+        try:
+            with self._thread_lock:
+                if self._held_fencing_token is None:
+                    return False
+                return self._held_fencing_token == expected_fencing_token
+        except Exception:
+            return False
+
+    def acquire_with_fencing(self, holder: str) -> Tuple[bool, int]:
+        """Acquire the lock and return a monotonically increasing fencing token.
+
+        Returns (True, token) on success, (False, 0) on failure.
+        The fencing token is persisted atomically and is always strictly increasing.
+        """
+        if not holder or not holder.strip():
+            logger.error("acquire_with_fencing(): holder must be non-empty")
+            return (False, 0)
+
+        # Get next fencing token before acquiring (pre-increment ensures monotonicity
+        # even across failed acquisition attempts)
+        token = _get_next_fencing_token(self._resource_name)
+
+        acquired = self.acquire(holder)
+        if not acquired:
+            # Token was incremented but lock not acquired — token is still consumed
+            # to maintain global monotonicity. Do not expose it to caller.
+            with self._thread_lock:
+                self._held_fencing_token = None
+            return (False, 0)
+
+        with self._thread_lock:
+            self._held_fencing_token = token
+
+        # Persist the fencing token in the lock file (best-effort)
+        try:
+            lock_data = self._read_lock_file()
+            if lock_data is not None:
+                lock_data["fencing_token"] = token
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=str(self._lock_dir), suffix=".lock.tmp"
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        fcntl.flock(fh, fcntl.LOCK_EX)
+                        try:
+                            json.dump(lock_data, fh)
+                        finally:
+                            fcntl.flock(fh, fcntl.LOCK_UN)
+                    os.replace(tmp_path, self._lock_file)
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        logger.debug(
+            "acquire_with_fencing: %s acquired by %s (token=%d)",
+            self._resource_name, holder, token,
+        )
+        return (True, token)
+
+    # ── Split-brain audit ─────────────────────────────────────────────────────
+
+    def _append_split_brain_audit(
+        self, holder: str, own_lock_id: str, found_lock_id: str
+    ) -> None:
+        """Persist split-brain detection event to audit log."""
+        try:
+            audit_path = Path("data/split_brain_audit.jsonl")
+            audit_path.parent.mkdir(parents=True, exist_ok=True)
+            entry = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "resource": self._resource_name,
+                "attempted_holder": holder,
+                "own_lock_id": own_lock_id,
+                "found_lock_id": found_lock_id,
+            }
+            with open(audit_path, "a") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                try:
+                    f.write(json.dumps(entry) + "\n")
+                finally:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+        except Exception:
+            pass
+
     # ── Context manager ───────────────────────────────────────────────────────
 
     def __enter__(self) -> "DistributedLock":
@@ -361,3 +526,8 @@ class DistributedLock:
     ) -> bool:
         self.release(holder_id=self._resource_name)
         return False  # Never suppress exceptions
+
+
+# ── Module initialisation ─────────────────────────────────────────────────────
+
+_load_fencing_tokens()
