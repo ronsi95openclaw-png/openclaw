@@ -72,6 +72,9 @@ class RuntimeOrchestrator:
         self._lock      = threading.Lock()
         self._active    = False
 
+        # Phase 3: authoritative event store (additive — does not replace journal)
+        self._event_store = self._init_event_store()
+
         # Lazily load regime compatibility (advisory)
         self._regime_compat = self._load_regime_compat()
 
@@ -89,6 +92,26 @@ class RuntimeOrchestrator:
             "wired" if self._regime_compat else "NOT WIRED",
             "wired" if self._ruflo and self._ruflo.is_available() else "NOT WIRED",
         )
+
+    def _init_event_store(self):
+        try:
+            from runtime.event_store import EventStore
+            return EventStore()
+        except Exception as exc:
+            logger.warning("EventStore unavailable: %s", exc)
+            return None
+
+    def _emit_event(self, event_type_str: str, trace_id: str, payload: dict,
+                    symbol: str = None, strategy: str = None) -> None:
+        if self._event_store is None:
+            return
+        try:
+            from runtime.event_store import EventType
+            et = EventType[event_type_str]
+            self._event_store.append(et, trace_id, payload,
+                                     symbol=symbol, strategy=strategy)
+        except Exception:
+            pass
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -225,6 +248,14 @@ class RuntimeOrchestrator:
             verdict.reason, verdict.risk_scalar, verdict.adjusted_size_pct,
         )
 
+        # Event store: authoritative intent record
+        ev_type = "INTENT_CREATED" if verdict.approved else "INTENT_REJECTED"
+        self._emit_event(ev_type, tid, {
+            "symbol": symbol, "strategy": strategy, "action": action,
+            "confidence": confidence, "approved": verdict.approved,
+            "reason": verdict.reason, "risk_scalar": verdict.risk_scalar,
+        }, symbol=symbol, strategy=strategy)
+
         return verdict
 
     def update_capital_state(self, equity: float,
@@ -261,6 +292,9 @@ class RuntimeOrchestrator:
                 get_registry().update_capital_state(new_state)
             except Exception:
                 pass
+            self._emit_event("CAPITAL_STATE_CHANGED", str(id(self)), {
+                "old_state": old_state, "new_state": new_state, "equity": equity,
+            })
 
     def record_trade_outcome(
         self,

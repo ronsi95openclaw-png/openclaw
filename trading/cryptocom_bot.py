@@ -96,10 +96,13 @@ class CryptoComBot:
         self._orchestrator = self._init_orchestrator()
         self._reporter     = self._init_reporter()
 
-        # Phase 2: portfolio risk engine, metrics, reconciliation
-        self._portfolio_risk = self._init_portfolio_risk()
-        self._metrics        = self._init_metrics()
+        # Phase 2+3: portfolio risk engine, metrics, reconciliation
+        self._portfolio_risk  = self._init_portfolio_risk()
+        self._metrics         = self._init_metrics()
         self._run_startup_reconciliation()
+        self._recon_scheduler = self._init_recon_scheduler()
+        self._drift_detector  = self._init_drift_detector()
+        self._exec_analytics  = self._init_exec_analytics()
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -274,6 +277,49 @@ class CryptoComBot:
             logger.warning("Metrics registry unavailable: %s", exc)
             return None
 
+    def _init_drift_detector(self):
+        try:
+            from runtime.drift_detector import DriftDetector
+            dd = DriftDetector()
+            logger.info("DriftDetector initialised")
+            return dd
+        except Exception as exc:
+            logger.warning("DriftDetector unavailable: %s", exc)
+            return None
+
+    def _init_exec_analytics(self):
+        try:
+            from runtime.execution_analytics import ExecutionAnalyticsEngine
+            eng = ExecutionAnalyticsEngine()
+            try:
+                eng.load_from_file("data/logs/trade_outcomes.jsonl")
+            except Exception:
+                pass
+            logger.info("ExecutionAnalyticsEngine initialised")
+            return eng
+        except Exception as exc:
+            logger.warning("ExecutionAnalyticsEngine unavailable: %s", exc)
+            return None
+
+    def _init_recon_scheduler(self):
+        try:
+            from runtime.reconciliation import ContinuousReconciliationScheduler
+            sched = ContinuousReconciliationScheduler(
+                interval_seconds=300,
+                cooldown_seconds=60,
+                demo_mode=self.state.demo_mode,
+            )
+            sched.set_state_provider(lambda: (
+                list(self.state.open_positions),
+                max(100.0, min(2000.0, 1000.0 + self.state.total_pnl))
+                if self.state.demo_mode else self.state.balance,
+            ))
+            logger.info("ContinuousReconciliationScheduler initialised (5-min interval)")
+            return sched
+        except Exception as exc:
+            logger.warning("ContinuousReconciliationScheduler unavailable: %s", exc)
+            return None
+
     def _run_startup_reconciliation(self) -> None:
         try:
             from runtime.reconciliation import reconcile_on_startup
@@ -311,6 +357,8 @@ class CryptoComBot:
             target=self._loop, daemon=True, name="cryptocom-bot"
         )
         self._thread.start()
+        if self._recon_scheduler:
+            self._recon_scheduler.start()
         logger.info("CryptoComBot started (demo=%s)", self.state.demo_mode)
 
     def stop(self) -> None:
@@ -319,6 +367,8 @@ class CryptoComBot:
         self.state.status_msg = "Stopped"
         if self._orchestrator:
             self._orchestrator.stop()
+        if self._recon_scheduler:
+            self._recon_scheduler.stop()
         logger.info("CryptoComBot stopped")
 
     def is_running(self) -> bool:
@@ -407,6 +457,15 @@ class CryptoComBot:
 
             closes = [c["close"] for c in candles]
             price  = closes[-1]
+
+            # Feed live price into drift detector
+            if self._drift_detector:
+                try:
+                    self._drift_detector.update_price(
+                        symbol, price, int(time.time() * 1000)
+                    )
+                except Exception:
+                    pass
 
             # RSI — used in Sheets logging for analysis
             try:
@@ -636,6 +695,22 @@ class CryptoComBot:
                        regime_label: str = "UNKNOWN",
                        rsi: float = 50.0, balance: float = 0.0,
                        mode: str = "DEMO") -> None:
+        # Drift detection gate: block entries if exchange data is critically stale
+        if self._drift_detector and self._drift_detector.should_halt_entries():
+            logger.warning(
+                "DriftDetector HALT: blocking new position [%s] — critical exchange drift",
+                sig.symbol,
+            )
+            return
+
+        # Continuous reconciliation gate: block entries if unresolved CRITICAL mismatch
+        if self._recon_scheduler and self._recon_scheduler.should_halt_entries():
+            logger.warning(
+                "Reconciliation HALT: blocking new position [%s] — unresolved exchange mismatch",
+                sig.symbol,
+            )
+            return
+
         # Portfolio risk gate: block new positions when exposure limits breached
         if self._portfolio_risk and balance > 0:
             try:

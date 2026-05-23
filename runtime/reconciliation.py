@@ -482,3 +482,203 @@ def reconcile_on_startup(
         local_positions=local_positions,
         local_balance=local_balance,
     )
+
+
+# ── Continuous reconciliation scheduler ───────────────────────────────────────
+
+class ContinuousReconciliationScheduler:
+    """Background daemon thread that reconciles bot state against the exchange
+    every `interval_seconds` (default 300s / 5 min).
+
+    Design rules:
+    - Runs in a daemon thread — never blocks the scan loop.
+    - Cooldown enforced: will not run again within `cooldown_seconds` of the
+      last successful run (prevents hammering the exchange on repeated failures).
+    - On CRITICAL mismatch: sets internal flag; `should_halt_entries()` returns True.
+    - On consecutive failures (exchange unreachable): escalates to WARNING, then CRITICAL.
+    - All results logged to data/reconciliation.jsonl (via ReconciliationEngine).
+    - Thread-safe: uses threading.Lock for all shared state.
+    """
+
+    _CONSECUTIVE_FAIL_WARN  = 3   # warn after N consecutive exchange-unreachable
+    _CONSECUTIVE_FAIL_HALT  = 5   # halt entries after N consecutive failures
+
+    def __init__(
+        self,
+        interval_seconds: int  = 300,
+        cooldown_seconds: int  = 60,
+        demo_mode: bool        = False,
+    ) -> None:
+        self._interval     = interval_seconds
+        self._cooldown     = cooldown_seconds
+        self._demo_mode    = demo_mode
+        self._lock         = threading.Lock()
+        self._stop_event   = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+        # State shared with the bot (read by should_halt_entries())
+        self._halt_entries: bool              = False
+        self._last_run_ts:  float             = 0.0
+        self._last_report:  Optional[ReconciliationReport] = None
+        self._consecutive_failures: int       = 0
+        self._total_runs:   int               = 0
+        self._total_halts:  int               = 0
+
+        # Callback: bot passes a lambda that returns (positions, balance)
+        self._state_provider: Optional[Any]  = None
+
+    def set_state_provider(self, provider) -> None:
+        """Register a callable() → (List[dict], float) that returns current bot state."""
+        self._state_provider = provider
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            daemon=True,
+            name="recon-scheduler",
+        )
+        self._thread.start()
+        logger.info(
+            "ContinuousReconciliationScheduler started — interval=%ds demo=%s",
+            self._interval, self._demo_mode,
+        )
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+        logger.info("ContinuousReconciliationScheduler stopped")
+
+    def should_halt_entries(self) -> bool:
+        """Returns True if the last reconciliation found unresolved CRITICAL mismatches."""
+        with self._lock:
+            return self._halt_entries
+
+    def get_last_report(self) -> Optional[ReconciliationReport]:
+        with self._lock:
+            return self._last_report
+
+    def get_status(self) -> dict:
+        with self._lock:
+            return {
+                "running":               self._thread is not None and self._thread.is_alive(),
+                "halt_entries":          self._halt_entries,
+                "last_run_ts":           self._last_run_ts,
+                "consecutive_failures":  self._consecutive_failures,
+                "total_runs":            self._total_runs,
+                "total_halts":           self._total_halts,
+                "interval_seconds":      self._interval,
+            }
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _run_loop(self) -> None:
+        while not self._stop_event.is_set():
+            # Wait for interval (but wake immediately on first iteration if
+            # it's been more than interval since the last run)
+            now = time.time()
+            with self._lock:
+                since_last = now - self._last_run_ts
+            wait = max(0, self._interval - since_last)
+            self._stop_event.wait(wait)
+            if self._stop_event.is_set():
+                break
+            self._run_one()
+
+    def _run_one(self) -> None:
+        """Execute a single reconciliation cycle."""
+        now = time.time()
+        with self._lock:
+            # Enforce cooldown: never run within cooldown_seconds of last run
+            if now - self._last_run_ts < self._cooldown:
+                return
+
+        positions, balance = self._get_bot_state()
+        engine = ReconciliationEngine(demo_mode=self._demo_mode)
+        report = engine.reconcile(local_positions=positions, local_balance=balance)
+
+        with self._lock:
+            self._last_run_ts = time.time()
+            self._last_report = report
+            self._total_runs += 1
+
+            if not report.exchange_reachable and not self._demo_mode:
+                self._consecutive_failures += 1
+                logger.warning(
+                    "[Reconciliation] Exchange unreachable — consecutive failures: %d",
+                    self._consecutive_failures,
+                )
+                if self._consecutive_failures >= self._CONSECUTIVE_FAIL_HALT:
+                    if not self._halt_entries:
+                        self._halt_entries = True
+                        self._total_halts += 1
+                        logger.critical(
+                            "[Reconciliation] %d consecutive exchange-unreachable — "
+                            "halting new entries",
+                            self._consecutive_failures,
+                        )
+                        self._alert_telegram(
+                            f"RECON HALT: exchange unreachable x{self._consecutive_failures}"
+                        )
+            else:
+                # Successful contact — reset failure counter
+                if self._consecutive_failures > 0:
+                    logger.info(
+                        "[Reconciliation] Exchange reachable again after %d failures",
+                        self._consecutive_failures,
+                    )
+                self._consecutive_failures = 0
+
+                if report.halt_required:
+                    if not self._halt_entries:
+                        self._halt_entries = True
+                        self._total_halts += 1
+                        logger.critical(
+                            "[Reconciliation] HALT required: %s", report.summary()
+                        )
+                        self._alert_telegram(
+                            f"RECON HALT: {report.summary()}"
+                        )
+                elif report.passed:
+                    # Clear halt only if reconciliation fully passes
+                    if self._halt_entries:
+                        logger.info(
+                            "[Reconciliation] Clearing halt — reconciliation passed"
+                        )
+                    self._halt_entries = False
+
+            self._emit_metrics(report)
+        logger.debug("[Reconciliation] cycle complete: %s", report.summary())
+
+    def _get_bot_state(self) -> tuple:
+        """Get current positions and balance from bot state provider."""
+        if self._state_provider is not None:
+            try:
+                result = self._state_provider()
+                if isinstance(result, (list, tuple)) and len(result) == 2:
+                    return result[0], result[1]
+            except Exception as exc:
+                logger.warning("[Reconciliation] state_provider error: %s", exc)
+        return [], 0.0
+
+    def _emit_metrics(self, report: ReconciliationReport) -> None:
+        try:
+            from runtime.metrics import get_registry
+            reg = get_registry()
+            reg.set_reconciliation_mismatches(
+                critical=report.critical_count,
+                warning=report.warning_count,
+            )
+        except Exception:
+            pass
+
+    def _alert_telegram(self, message: str) -> None:
+        try:
+            from runtime.telegram_alerts import send_alert
+            send_alert(f"[OPENCLAW RECON] {message}")
+        except Exception:
+            pass
+

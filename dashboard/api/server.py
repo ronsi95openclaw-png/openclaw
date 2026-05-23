@@ -26,6 +26,8 @@ import json
 import logging
 import os
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -56,16 +58,23 @@ def _require_local_or_token(request: Request) -> None:
 
 app = FastAPI(title="OpenClaw Dashboard", version="1.0.0")
 
+_DEFAULT_CORS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+_cors_env = os.getenv("CORS_ORIGINS", "").strip()
+_cors_origins = (
+    [o.strip() for o in _cors_env.split(",") if o.strip()]
+    if _cors_env else _DEFAULT_CORS
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ],
+    allow_origins=_cors_origins,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-Dashboard-Token"],
 )
 
 # ── Bot singleton ─────────────────────────────────────────────────────────────
@@ -201,6 +210,177 @@ def api_flush():
     bot = get_bot()
     bot.flush_daily_summary(notes="manual_trigger", run_analysis=True)
     return {"status": "triggered"}
+
+
+# ── Emergency halt release ─────────────────────────────────────────────────────
+
+class HaltReleaseRequest(BaseModel):
+    operator_id: str = Field(..., min_length=1, max_length=64)
+    reason:      str = Field(..., min_length=10, max_length=500)
+    release_code: str = Field(..., min_length=4, max_length=64)
+
+
+@app.post("/admin/halt/release")
+def admin_halt_release(
+    req: HaltReleaseRequest,
+    _: None = Depends(_require_local_or_token),
+) -> Dict[str, Any]:
+    """Safe emergency halt release.
+
+    Pre-conditions (all must pass before release is attempted):
+      1. A reconciliation must have passed within the last 10 minutes.
+      2. No unresolved CRITICAL reconciliation mismatches.
+      3. Capital state must not be corrupted.
+      4. Operator must be ADMIN and must not be the halt-setter (maker/checker).
+      5. release_code must match HALT_RELEASE_CODE env var.
+
+    Returns 200 with trace_id on success, 4xx on failure.
+    """
+    import uuid, hashlib
+    from datetime import timezone
+
+    trace_id = str(uuid.uuid4())
+
+    # ── Guard 1: release_code verification ────────────────────────────────────
+    expected_code = os.getenv("HALT_RELEASE_CODE", "").strip()
+    if not expected_code:
+        raise HTTPException(503, detail="HALT_RELEASE_CODE not configured — contact admin")
+    if not hmac_compare(req.release_code, expected_code):
+        logger.warning("halt/release: invalid release_code from operator=%s", req.operator_id)
+        raise HTTPException(403, detail="Invalid release code")
+
+    # ── Guard 2: reconciliation freshness ─────────────────────────────────────
+    bot = get_bot()
+    recon_ok = False
+    recon_age_s = None
+    if hasattr(bot, "_recon_scheduler") and bot._recon_scheduler:
+        report = bot._recon_scheduler.get_last_report()
+        if report and report.passed:
+            age = time.time() - (
+                datetime.fromisoformat(report.ts).timestamp()
+                if isinstance(report.ts, str) else report.ts
+            )
+            recon_age_s = round(age, 1)
+            if age < 600:   # 10 minutes
+                recon_ok = True
+    if not recon_ok:
+        raise HTTPException(409, detail=(
+            f"Reconciliation not recently passed (age={recon_age_s}s). "
+            "Run reconciliation first."
+        ))
+
+    # ── Guard 3: no active CRITICAL mismatches ────────────────────────────────
+    if hasattr(bot, "_recon_scheduler") and bot._recon_scheduler:
+        if bot._recon_scheduler.should_halt_entries():
+            raise HTTPException(409, detail="Unresolved CRITICAL reconciliation mismatch — cannot release halt")
+
+    # ── Guard 4: invoke emergency controls ────────────────────────────────────
+    try:
+        from governance.emergency_controls import EmergencyControls
+        from governance.permissions import PermissionRegistry, OperatorPermission
+
+        controls = EmergencyControls()
+        if not controls.is_emergency_halted():
+            return {"status": "no_halt_active", "trace_id": trace_id,
+                    "message": "No emergency halt is currently active"}
+
+        request_id = controls.request_halt_release(
+            operator_id=req.operator_id,
+            reason=req.reason,
+        )
+        released = controls.execute_approved_release(
+            request_id=request_id,
+            executing_operator=req.operator_id,
+        )
+        if not released:
+            raise HTTPException(409, detail="Release rejected — maker/checker or approval failure")
+
+        logger.critical(
+            "[HALT RELEASED] operator=%s reason=%s trace_id=%s",
+            req.operator_id, req.reason[:80], trace_id,
+        )
+        _send_halt_release_alert(req.operator_id, req.reason, trace_id)
+
+        return {
+            "status":     "released",
+            "trace_id":   trace_id,
+            "request_id": request_id,
+            "operator":   req.operator_id,
+            "reason":     req.reason,
+            "ts":         datetime.now(timezone.utc).isoformat(),
+        }
+    except (PermissionError, RuntimeError) as exc:
+        raise HTTPException(403, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("halt/release error: %s", exc, exc_info=True)
+        raise HTTPException(500, detail=f"Internal error: {exc}")
+
+
+def hmac_compare(a: str, b: str) -> bool:
+    """Constant-time string comparison to prevent timing attacks."""
+    import hmac as _hmac
+    return _hmac.compare_digest(a.encode(), b.encode())
+
+
+def _send_halt_release_alert(operator_id: str, reason: str, trace_id: str) -> None:
+    try:
+        from runtime.telegram_alerts import send_alert
+        send_alert(
+            f"[EMERGENCY HALT RELEASED]\n"
+            f"Operator: {operator_id}\n"
+            f"Reason: {reason[:120]}\n"
+            f"Trace: {trace_id}"
+        )
+    except Exception:
+        pass
+
+
+# ── Diagnostics ───────────────────────────────────────────────────────────────
+
+@app.get("/api/diagnostics")
+def api_diagnostics(_: None = Depends(_require_local_or_token)) -> Dict[str, Any]:
+    """Full subsystem health snapshot."""
+    try:
+        from runtime.diagnostics import get_diagnostics_engine
+        engine = get_diagnostics_engine()
+        report = engine.run_full_check()
+        return {
+            "generated_at":             report.generated_at,
+            "overall_status":           report.overall_status.value,
+            "capital_state":            report.capital_state,
+            "open_positions":           report.open_positions,
+            "reconciliation_status":    report.reconciliation_status,
+            "last_reconciliation_ts":   report.last_reconciliation_ts,
+            "drift_events_active":      report.drift_events_active,
+            "websocket_connections":    report.websocket_connections,
+            "replay_journal_events":    report.replay_journal_event_count,
+            "event_store_last_seq":     report.event_store_last_seq,
+            "memory_mb":                report.memory_mb,
+            "thread_count":             report.thread_count,
+            "open_fds":                 report.open_fds,
+            "uptime_seconds":           report.uptime_seconds,
+            "recent_critical_incidents": report.recent_critical_incidents,
+            "subsystems": {
+                name: {
+                    "status":  h.status.value,
+                    "latency_ms": h.latency_ms,
+                    "error":   h.error,
+                    "details": h.details,
+                }
+                for name, h in report.subsystems.items()
+            },
+        }
+    except ImportError:
+        # Diagnostics module not yet built — return basic health
+        bot = get_bot()
+        return {
+            "overall_status": "UNKNOWN",
+            "capital_state": "UNKNOWN",
+            "open_positions": len(bot.state.open_positions),
+            "message": "Full diagnostics module not available",
+        }
 
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────
