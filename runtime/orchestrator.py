@@ -126,7 +126,8 @@ class RuntimeOrchestrator:
         logger.info("RuntimeOrchestrator: STOPPED")
 
     def is_active(self) -> bool:
-        return self._active
+        with self._lock:
+            return self._active
 
     def process_signal(
         self,
@@ -164,7 +165,7 @@ class RuntimeOrchestrator:
                 adjusted_size_pct=0.0,
             )
 
-        if not self._active:
+        if not self.is_active():
             return IntentVerdict(
                 intent_id=str(uuid.uuid4()),
                 approved=False,

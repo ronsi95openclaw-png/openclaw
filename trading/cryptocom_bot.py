@@ -104,6 +104,9 @@ class CryptoComBot:
         self._drift_detector  = self._init_drift_detector()
         self._exec_analytics  = self._init_exec_analytics()
 
+        # Phase 4: WebSocket guardian, exchange metadata registry
+        self._ws_guardian     = self._init_ws_guardian()
+
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _load_state(self) -> None:
@@ -234,6 +237,19 @@ class CryptoComBot:
         except Exception as exc:
             logger.debug("Opus weight auto-apply skipped: %s", exc)
 
+    def _run_strategy_governance(self) -> None:
+        """Run nightly attribution analysis and apply governance decisions."""
+        try:
+            from runtime.strategy_governance import get_governance_engine
+            gov = get_governance_engine(dry_run=self.state.demo_mode)
+            decisions = gov.run_governance_cycle()
+            if decisions:
+                applied = [(d.strategy, d.action.value) for d in decisions if d.applied]
+                if applied:
+                    logger.info("Strategy governance applied: %s", applied)
+        except Exception as exc:
+            logger.debug("Strategy governance skipped: %s", exc)
+
     # ── Wiring ────────────────────────────────────────────────────────────────
 
     def _init_orchestrator(self):
@@ -318,6 +334,16 @@ class CryptoComBot:
             return sched
         except Exception as exc:
             logger.warning("ContinuousReconciliationScheduler unavailable: %s", exc)
+            return None
+
+    def _init_ws_guardian(self):
+        try:
+            from runtime.ws_guardian import get_guardian
+            guardian = get_guardian()
+            logger.info("WSGuardian initialised")
+            return guardian
+        except Exception as exc:
+            logger.warning("WSGuardian unavailable: %s", exc)
             return None
 
     def _run_startup_reconciliation(self) -> None:
@@ -422,6 +448,11 @@ class CryptoComBot:
                     self._auto_apply_opus_weights()
                 except Exception as _e:
                     logger.debug("Opus weight auto-apply error (non-fatal): %s", _e)
+                # Strategy governance: run attribution and apply decay/quarantine decisions
+                try:
+                    self._run_strategy_governance()
+                except Exception as _e:
+                    logger.debug("Strategy governance error (non-fatal): %s", _e)
 
             self._stop.wait(self.state.scan_interval)
 
@@ -695,6 +726,14 @@ class CryptoComBot:
                        regime_label: str = "UNKNOWN",
                        rsi: float = 50.0, balance: float = 0.0,
                        mode: str = "DEMO") -> None:
+        # WebSocket guardian gate: block entries if WS health is critically degraded
+        if self._ws_guardian and self._ws_guardian.should_halt_entries():
+            logger.warning(
+                "WSGuardian HALT: blocking new position [%s] — WebSocket health degraded",
+                sig.symbol,
+            )
+            return
+
         # Drift detection gate: block entries if exchange data is critically stale
         if self._drift_detector and self._drift_detector.should_halt_entries():
             logger.warning(
@@ -827,6 +866,26 @@ class CryptoComBot:
                 confidence=self.weights.effective_confidence(sig.strategy, sig.confidence),
                 rsi=rsi, mode=mode,
             )
+
+        # Emit POSITION_OPENED event to EventStore
+        try:
+            from runtime.event_store import EventStore, EventType
+            _es = EventStore()
+            _es.append(
+                event_type=EventType.POSITION_OPENED,
+                trace_id=trade_id,
+                payload={
+                    "symbol": sig.symbol, "strategy": sig.strategy,
+                    "side": sig.action, "entry_price": price, "size": initial_size,
+                    "sl_price": round(sl, 6), "tp_price": round(tp, 6),
+                    "regime": regime_label, "demo": self.state.demo_mode,
+                },
+                symbol=sig.symbol,
+                strategy=sig.strategy,
+            )
+        except Exception:
+            pass
+
         self._save_state()
 
     def _check_positions(self) -> None:
@@ -1043,6 +1102,26 @@ class CryptoComBot:
                 pnl=round(pnl, 4), regime=pos.get("regime_label", "UNKNOWN"),
                 action=pos["side"].upper(), win=(outcome == "win"),
             )
+
+        # Emit POSITION_CLOSED event to EventStore
+        try:
+            from runtime.event_store import EventStore, EventType
+            _es = EventStore()
+            _es.append(
+                event_type=EventType.POSITION_CLOSED,
+                trace_id=pos.get("id", ""),
+                payload={
+                    "symbol": pos["symbol"], "strategy": pos["strategy"],
+                    "side": pos["side"], "entry_price": pos["entry_price"],
+                    "exit_price": exit_price, "pnl": round(pnl, 4),
+                    "outcome": outcome, "demo": self.state.demo_mode,
+                },
+                symbol=pos["symbol"],
+                strategy=pos["strategy"],
+            )
+        except Exception:
+            pass
+
         self._save_state()
 
     def _current_price(self, pos: dict) -> float:

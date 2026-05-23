@@ -1,0 +1,122 @@
+groups:
+  - name: openclaw_trading_critical
+    interval: 30s
+    rules:
+
+      - alert: EmergencyHaltActive
+        expr: openclaw_capital_state == 3
+        for: 0m
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "OpenClaw EMERGENCY HALT active"
+          description: "Capital state machine is in EMERGENCY_HALT. All trading suspended. Requires operator intervention via POST /admin/halt/release."
+
+      - alert: ReconciliationFailed
+        expr: openclaw_reconciliation_passed == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "Reconciliation failure detected"
+          description: "OpenClaw reconciliation has been failing for 5+ minutes. Critical mismatches may be present."
+
+      - alert: CriticalDriftDetected
+        expr: openclaw_drift_events_active >= 1
+        for: 2m
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "Exchange drift detected"
+          description: "{{ $value }} active drift event(s). Price staleness or WS desync may be causing bad data entries."
+
+      - alert: WebSocketHealthCritical
+        expr: openclaw_ws_health_score < 0.4
+        for: 1m
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "WebSocket health critically degraded"
+          description: "WS health score {{ $value }} < 0.4. New position entries are being blocked."
+
+  - name: openclaw_trading_high
+    interval: 60s
+    rules:
+
+      - alert: CapitalStateDefensive
+        expr: openclaw_capital_state >= 1
+        for: 10m
+        labels:
+          severity: high
+          team: trading
+        annotations:
+          summary: "Capital engine in DEFENSIVE or worse state"
+          description: "Capital state has been {{ $value }} (>=DEFENSIVE) for 10+ minutes."
+
+      - alert: DrawdownHigh
+        expr: openclaw_drawdown_pct > 15
+        for: 5m
+        labels:
+          severity: high
+          team: trading
+        annotations:
+          summary: "High drawdown detected"
+          description: "Drawdown is {{ $value }}%, approaching CRITICAL threshold."
+
+      - alert: ScanLatencyHigh
+        expr: histogram_quantile(0.95, rate(openclaw_scan_duration_seconds_bucket[5m])) > 25
+        for: 5m
+        labels:
+          severity: high
+          team: trading
+        annotations:
+          summary: "Scan loop P95 latency above 25s"
+          description: "P95 scan latency {{ $value }}s is above 25s threshold. Bot may be lagging on market data."
+
+      - alert: ReconciliationConsecutiveFails
+        expr: openclaw_reconciliation_consecutive_fails >= 3
+        for: 0m
+        labels:
+          severity: high
+          team: trading
+        annotations:
+          summary: "Multiple consecutive reconciliation failures"
+          description: "{{ $value }} consecutive reconciliation failures. Halt will trigger at 5."
+
+  - name: openclaw_trading_medium
+    interval: 300s
+    rules:
+
+      - alert: MemoryGrowthHigh
+        expr: (process_resident_memory_bytes / 1024 / 1024) > 500
+        for: 15m
+        labels:
+          severity: medium
+          team: trading
+        annotations:
+          summary: "OpenClaw memory usage above 500MB"
+          description: "Process RSS is {{ $value }}MB. Check for memory leaks."
+
+      - alert: EventStoreNotGrowing
+        expr: changes(openclaw_event_store_last_seq[30m]) == 0
+        for: 30m
+        labels:
+          severity: medium
+          team: ops
+        annotations:
+          summary: "EventStore sequence not advancing"
+          description: "EventStore seq has not changed in 30 minutes. Bot may have stopped or EventStore is broken."
+
+      - alert: NoTradesInPeriod
+        expr: changes(openclaw_trades_total[6h]) == 0
+        for: 6h
+        labels:
+          severity: medium
+          team: trading
+        annotations:
+          summary: "No trades in 6 hours"
+          description: "Bot has not executed any trades in the last 6 hours. Check if signals are generating."

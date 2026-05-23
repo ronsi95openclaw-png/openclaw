@@ -40,18 +40,34 @@ logger = logging.getLogger("openclaw.runtime.event_store")
 # ── Event type registry ───────────────────────────────────────────────────────
 
 class EventType(str, Enum):
-    SIGNAL_GENERATED        = "SIGNAL_GENERATED"
-    INTENT_CREATED          = "INTENT_CREATED"
-    INTENT_REJECTED         = "INTENT_REJECTED"
-    POSITION_OPENED         = "POSITION_OPENED"
-    POSITION_CLOSED         = "POSITION_CLOSED"
-    CAPITAL_STATE_CHANGED   = "CAPITAL_STATE_CHANGED"
-    EMERGENCY_HALT          = "EMERGENCY_HALT"
-    RECONCILIATION_INCIDENT = "RECONCILIATION_INCIDENT"
-    EXECUTION_FAILURE       = "EXECUTION_FAILURE"
-    STRATEGY_WEIGHT_CHANGED = "STRATEGY_WEIGHT_CHANGED"
-    DRIFT_DETECTED          = "DRIFT_DETECTED"
-    HALT_RELEASED           = "HALT_RELEASED"
+    SIGNAL_GENERATED          = "SIGNAL_GENERATED"
+    INTENT_CREATED            = "INTENT_CREATED"
+    INTENT_REJECTED           = "INTENT_REJECTED"
+    POSITION_OPENED           = "POSITION_OPENED"
+    POSITION_CLOSED           = "POSITION_CLOSED"
+    CAPITAL_STATE_CHANGED     = "CAPITAL_STATE_CHANGED"
+    EMERGENCY_HALT            = "EMERGENCY_HALT"
+    RECONCILIATION_INCIDENT   = "RECONCILIATION_INCIDENT"
+    EXECUTION_FAILURE         = "EXECUTION_FAILURE"
+    STRATEGY_WEIGHT_CHANGED   = "STRATEGY_WEIGHT_CHANGED"
+    DRIFT_DETECTED            = "DRIFT_DETECTED"
+    HALT_RELEASED             = "HALT_RELEASED"
+    # ── Order lifecycle ───────────────────────────────────────────────────────
+    ORDER_SUBMITTED           = "ORDER_SUBMITTED"
+    ORDER_ACKNOWLEDGED        = "ORDER_ACKNOWLEDGED"
+    ORDER_REJECTED            = "ORDER_REJECTED"
+    ORDER_CANCELLED           = "ORDER_CANCELLED"
+    # ── Fill events ───────────────────────────────────────────────────────────
+    POSITION_PARTIALLY_FILLED = "POSITION_PARTIALLY_FILLED"
+    SL_TRIGGERED              = "SL_TRIGGERED"
+    TP_TRIGGERED              = "TP_TRIGGERED"
+    # ── Reconciliation lifecycle ──────────────────────────────────────────────
+    RECONCILIATION_STARTED    = "RECONCILIATION_STARTED"
+    RECONCILIATION_COMPLETED  = "RECONCILIATION_COMPLETED"
+    # ── WebSocket health ──────────────────────────────────────────────────────
+    WEBSOCKET_RECONNECTED     = "WEBSOCKET_RECONNECTED"
+    WEBSOCKET_DESYNC          = "WEBSOCKET_DESYNC"
+    EXECUTION_TIMEOUT         = "EXECUTION_TIMEOUT"
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
@@ -459,3 +475,362 @@ class EventStore:
                         yield line
         except OSError as exc:
             logger.error("EventStore: could not read store file: %s", exc)
+
+
+# ── EventReplayEngine ─────────────────────────────────────────────────────────
+
+class EventReplayEngine:
+    """Reconstructs full portfolio state from event history.
+
+    Reads the EventStore sequentially and replays every event to produce a
+    consistent portfolio snapshot.  The engine never modifies the store —
+    all access is read-only via ``EventStore.read_from()``.
+
+    Thread-safety
+    -------------
+    No additional lock is needed: ``EventStore`` is append-only, so concurrent
+    reads are safe.  The snapshot returned by ``reconstruct_portfolio_state``
+    is a plain dict (not shared state) and therefore safe to pass across
+    threads.
+    """
+
+    _BATCH_SIZE: int = 500
+
+    def __init__(self, store: EventStore) -> None:
+        self._store = store
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def reconstruct_portfolio_state(self, up_to_seq: int = None) -> Dict[str, Any]:
+        """Read all events from the store and reconstruct full portfolio state.
+
+        Parameters
+        ----------
+        up_to_seq:
+            If provided, only events with seq <= up_to_seq are processed.
+            Pass ``None`` to replay the entire store.
+
+        Returns
+        -------
+        dict with keys:
+            capital_state, open_positions, realized_pnl, active_halt,
+            halt_reason, total_trades, exposure, execution_failures,
+            strategy_trade_counts, last_capital_transition,
+            reconstructed_at, events_processed
+        """
+        # ── Mutable reconstruction state ──────────────────────────────────────
+        capital_state: str = "UNKNOWN"
+        open_positions: Dict[str, Dict[str, Any]] = {}
+        realized_pnl: float = 0.0
+        active_halt: bool = False
+        halt_reason: str = ""
+        total_trades: int = 0
+        execution_failures: int = 0
+        strategy_trade_counts: Dict[str, int] = {}
+        last_capital_transition: str = ""
+        order_event_count: int = 0
+        events_processed: int = 0
+
+        # Read events in batches of 500 until EOF or up_to_seq
+        next_seq: int = 0
+        done: bool = False
+
+        while not done:
+            try:
+                batch = self._store.read_from(seq=next_seq, limit=self._BATCH_SIZE)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "EventReplayEngine: read_from(seq=%d) failed: %s", next_seq, exc
+                )
+                break
+
+            if not batch:
+                break
+
+            for ev in batch:
+                # Honour up_to_seq ceiling
+                if up_to_seq is not None and ev.seq > up_to_seq:
+                    done = True
+                    break
+
+                # Pre-declare mutable single-element lists so _apply_event can
+                # mutate scalars via list[0] (Python doesn't have by-ref scalars).
+                capital_state_ref           = [capital_state]
+                realized_pnl_ref            = [realized_pnl]
+                active_halt_ref             = [active_halt]
+                halt_reason_ref             = [halt_reason]
+                total_trades_ref            = [total_trades]
+                execution_failures_ref      = [execution_failures]
+                last_capital_transition_ref = [last_capital_transition]
+                order_event_count_ref       = [order_event_count]
+
+                try:
+                    self._apply_event(
+                        ev,
+                        open_positions=open_positions,
+                        capital_state_ref=capital_state_ref,
+                        realized_pnl_ref=realized_pnl_ref,
+                        active_halt_ref=active_halt_ref,
+                        halt_reason_ref=halt_reason_ref,
+                        total_trades_ref=total_trades_ref,
+                        execution_failures_ref=execution_failures_ref,
+                        strategy_trade_counts=strategy_trade_counts,
+                        last_capital_transition_ref=last_capital_transition_ref,
+                        order_event_count_ref=order_event_count_ref,
+                    )
+                    # Unpack mutated scalars back from their single-element lists
+                    capital_state           = capital_state_ref[0]
+                    realized_pnl            = realized_pnl_ref[0]
+                    active_halt             = active_halt_ref[0]
+                    halt_reason             = halt_reason_ref[0]
+                    total_trades            = total_trades_ref[0]
+                    execution_failures      = execution_failures_ref[0]
+                    last_capital_transition = last_capital_transition_ref[0]
+                    order_event_count       = order_event_count_ref[0]
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "EventReplayEngine: skipping event seq=%d type=%s error=%s",
+                        ev.seq, ev.event_type, exc,
+                    )
+
+                events_processed += 1
+
+            if len(batch) < self._BATCH_SIZE:
+                # Fewer events than requested — we have reached EOF
+                break
+
+            # Advance cursor past the last event we just read
+            next_seq = batch[-1].seq + 1
+
+        exposure = self._compute_exposure(open_positions)
+
+        return {
+            "capital_state":           capital_state,
+            "open_positions":          dict(open_positions),
+            "realized_pnl":            realized_pnl,
+            "active_halt":             active_halt,
+            "halt_reason":             halt_reason,
+            "total_trades":            total_trades,
+            "exposure":                exposure,
+            "execution_failures":      execution_failures,
+            "strategy_trade_counts":   dict(strategy_trade_counts),
+            "last_capital_transition": last_capital_transition,
+            "reconstructed_at":        datetime.now(timezone.utc).isoformat(),
+            "events_processed":        events_processed,
+        }
+
+    def verify_reconstruction(self) -> Tuple[bool, List[str]]:
+        """Verify store integrity: checksums + monotonic sequences + state validity.
+
+        Returns
+        -------
+        (ok, errors)
+            ``ok`` is True when the store passes all checks.
+            ``errors`` is a list of human-readable error strings.
+        """
+        errors: List[str] = []
+
+        # Delegate checksum + monotonicity checks to EventStore
+        store_ok, store_errors = self._store.verify_integrity(start_seq=0)
+        errors.extend(store_errors)
+
+        # Additional state-machine validity: attempt a full reconstruction and
+        # check for obvious invariant violations
+        try:
+            state = self.reconstruct_portfolio_state()
+
+            # Realized PnL must be finite
+            if not (state["realized_pnl"] == state["realized_pnl"]):  # NaN check
+                errors.append("reconstruct_portfolio_state: realized_pnl is NaN")
+
+            # Exposure must be non-negative
+            if state["exposure"] < 0.0:
+                errors.append(
+                    f"reconstruct_portfolio_state: exposure is negative ({state['exposure']})"
+                )
+
+            # Active halt with no reason is suspicious but not fatal
+            if state["active_halt"] and not state["halt_reason"]:
+                errors.append(
+                    "State machine: EMERGENCY_HALT recorded but halt_reason is empty"
+                )
+
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"reconstruct_portfolio_state raised: {exc}")
+
+        ok = len(errors) == 0
+        return ok, errors
+
+    def get_event_throughput(self, window_seconds: int = 60) -> float:
+        """Return events/second over the last *window_seconds*.
+
+        Reads the last 1 000 events, filters to those emitted within the
+        window, and divides the count by the window length.
+
+        Parameters
+        ----------
+        window_seconds:
+            Look-back window in seconds (default 60).
+
+        Returns
+        -------
+        float
+            Events per second; 0.0 if the store is empty or the window
+            contains no events.
+        """
+        import time as _time
+
+        now_ts = _time.time()
+        cutoff = now_ts - window_seconds
+
+        # We don't know the total number of events ahead of time; read the last
+        # 1 000 from the highest known seq.
+        latest_seq = self._store.get_latest_seq()
+        start_seq  = max(0, latest_seq - 999)
+
+        try:
+            events = self._store.read_from(seq=start_seq, limit=1000)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("EventReplayEngine.get_event_throughput read error: %s", exc)
+            return 0.0
+
+        count = 0
+        for ev in events:
+            try:
+                # emitted_at is an ISO-8601 UTC string; parse the Unix epoch
+                ts = datetime.fromisoformat(ev.emitted_at.replace("Z", "+00:00")).timestamp()
+                if ts >= cutoff:
+                    count += 1
+            except Exception:  # noqa: BLE001
+                continue
+
+        if window_seconds <= 0:
+            return 0.0
+        return count / window_seconds
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _apply_event(
+        ev: StoredEvent,
+        *,
+        open_positions: Dict[str, Dict[str, Any]],
+        capital_state_ref: List[str],
+        realized_pnl_ref: List[float],
+        active_halt_ref: List[bool],
+        halt_reason_ref: List[str],
+        total_trades_ref: List[int],
+        execution_failures_ref: List[int],
+        strategy_trade_counts: Dict[str, int],
+        last_capital_transition_ref: List[str],
+        order_event_count_ref: List[int],
+    ) -> None:
+        """Apply a single event to the mutable reconstruction state.
+
+        All scalar state values are passed as single-element lists so that
+        Python's pass-by-object-reference semantics allow mutation without
+        needing a dedicated state class.  Unknown event types are logged and
+        skipped gracefully.
+        """
+        et = ev.event_type
+        p  = ev.payload
+
+        if et is EventType.POSITION_OPENED:
+            open_positions[ev.trace_id] = {
+                "symbol":      p.get("symbol", ev.symbol or ""),
+                "side":        p.get("side", ""),
+                "entry_price": float(p.get("entry_price", 0.0)),
+                "size":        float(p.get("size", 0.0)),
+                "strategy":    p.get("strategy", ev.strategy or ""),
+            }
+
+        elif et is EventType.POSITION_CLOSED:
+            pos = open_positions.pop(ev.trace_id, None)
+            total_trades_ref[0] += 1
+            pnl = float(p.get("pnl", 0.0))
+            realized_pnl_ref[0] += pnl
+            # Increment per-strategy trade counter
+            strategy_name = (
+                p.get("strategy")
+                or (pos.get("strategy") if pos else None)
+                or ev.strategy
+                or "UNKNOWN"
+            )
+            strategy_trade_counts[strategy_name] = (
+                strategy_trade_counts.get(strategy_name, 0) + 1
+            )
+
+        elif et is EventType.CAPITAL_STATE_CHANGED:
+            old_state = capital_state_ref[0]
+            new_state = p.get("new_state", capital_state_ref[0])
+            capital_state_ref[0] = new_state
+            if old_state != new_state:
+                last_capital_transition_ref[0] = f"{old_state}→{new_state}"
+
+        elif et is EventType.EMERGENCY_HALT:
+            active_halt_ref[0] = True
+            halt_reason_ref[0] = (
+                p.get("halt_reason") or p.get("reason") or "unknown"
+            )
+
+        elif et is EventType.HALT_RELEASED:
+            active_halt_ref[0] = False
+            halt_reason_ref[0] = ""
+
+        elif et is EventType.EXECUTION_FAILURE:
+            execution_failures_ref[0] += 1
+
+        elif et in (
+            EventType.ORDER_SUBMITTED,
+            EventType.ORDER_ACKNOWLEDGED,
+            EventType.ORDER_CANCELLED,
+        ):
+            # These order lifecycle events do not change portfolio state but
+            # we track a running counter for diagnostic purposes.
+            order_event_count_ref[0] += 1
+
+        elif et in (
+            EventType.SIGNAL_GENERATED,
+            EventType.INTENT_CREATED,
+            EventType.INTENT_REJECTED,
+            EventType.RECONCILIATION_INCIDENT,
+            EventType.STRATEGY_WEIGHT_CHANGED,
+            EventType.DRIFT_DETECTED,
+            EventType.ORDER_REJECTED,
+            EventType.POSITION_PARTIALLY_FILLED,
+            EventType.SL_TRIGGERED,
+            EventType.TP_TRIGGERED,
+            EventType.RECONCILIATION_STARTED,
+            EventType.RECONCILIATION_COMPLETED,
+            EventType.WEBSOCKET_RECONNECTED,
+            EventType.WEBSOCKET_DESYNC,
+            EventType.EXECUTION_TIMEOUT,
+        ):
+            # Known event types that carry no portfolio-state mutation —
+            # silently accepted without action.
+            pass
+
+        else:
+            logger.debug(
+                "EventReplayEngine: unknown event type %r at seq=%d — skipped",
+                et, ev.seq,
+            )
+
+    @staticmethod
+    def _compute_exposure(open_positions: Dict[str, Dict[str, Any]]) -> float:
+        """Compute total notional exposure across all open positions.
+
+        Uses ``size * entry_price`` when entry_price > 0.  Falls back to a
+        rough proxy of ``size * 50_000`` for BTC-like instruments when price
+        is unavailable.
+        """
+        total = 0.0
+        for pos in open_positions.values():
+            size  = float(pos.get("size", 0.0))
+            price = float(pos.get("entry_price", 0.0))
+            if price > 0.0:
+                total += size * price
+            else:
+                # Proxy: assume ~$50 000 per unit (BTC-range default)
+                total += size * 50_000.0
+        return total

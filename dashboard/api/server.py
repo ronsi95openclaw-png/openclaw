@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -46,6 +47,42 @@ from security.auth import TokenAuth
 
 logger    = logging.getLogger("openclaw.dashboard.server")
 _auth     = TokenAuth()   # reads DASHBOARD_TOKEN from env on startup
+
+
+# ── Per-IP rate limiter (token bucket) ───────────────────────────────────────
+
+class _IPRateLimiter:
+    """Token-bucket rate limiter keyed by IP address.
+
+    Default: 5 tokens, refill at 5/minute.  Fail-closed: if internal state
+    is corrupted, the request is denied.
+    """
+
+    def __init__(self, max_tokens: int = 5, refill_period_s: float = 60.0) -> None:
+        self._max = max_tokens
+        self._period = refill_period_s
+        self._buckets: Dict[str, Dict] = {}
+        self._lock = threading.Lock()
+
+    def is_allowed(self, ip: str) -> bool:
+        try:
+            now = time.monotonic()
+            with self._lock:
+                bucket = self._buckets.setdefault(ip, {"tokens": self._max, "last": now})
+                elapsed = now - bucket["last"]
+                # Refill tokens proportionally to elapsed time
+                refill = elapsed / self._period * self._max
+                bucket["tokens"] = min(self._max, bucket["tokens"] + refill)
+                bucket["last"] = now
+                if bucket["tokens"] >= 1:
+                    bucket["tokens"] -= 1
+                    return True
+                return False
+        except Exception:
+            return False  # fail-closed
+
+
+_halt_rate_limiter = _IPRateLimiter(max_tokens=5, refill_period_s=60.0)
 
 
 def _require_local_or_token(request: Request) -> None:
@@ -223,6 +260,7 @@ class HaltReleaseRequest(BaseModel):
 @app.post("/admin/halt/release")
 def admin_halt_release(
     req: HaltReleaseRequest,
+    request: Request,
     _: None = Depends(_require_local_or_token),
 ) -> Dict[str, Any]:
     """Safe emergency halt release.
@@ -236,6 +274,11 @@ def admin_halt_release(
 
     Returns 200 with trace_id on success, 4xx on failure.
     """
+    # Rate limit: max 5 attempts per minute per IP
+    client_ip = request.client.host if request.client else "unknown"
+    if not _halt_rate_limiter.is_allowed(client_ip):
+        raise HTTPException(429, detail="Rate limit exceeded — max 5 halt release attempts per minute")
+
     import uuid, hashlib
     from datetime import timezone
 

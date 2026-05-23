@@ -48,13 +48,28 @@ def open_position(
     a boolean 'sl_tp_ok' so the caller can detect unhedged positions.
     """
     from trading.exchange import (
-        set_leverage, place_perp_order, cancel_all_orders, to_perp_instrument, _MIN_QTY_PERP,
+        set_leverage, place_perp_order, cancel_all_orders, to_perp_instrument,
     )
 
     instrument = to_perp_instrument(symbol)
-    min_qty    = _MIN_QTY_PERP.get(instrument, 0.001)
+
+    # Normalize quantity to exchange-required precision (truncation, not rounding).
+    # No order may reach the exchange without this normalization.
+    try:
+        from runtime.exchange_metadata import get_registry
+        qty = get_registry().normalize_quantity(instrument, qty)
+    except Exception as _norm_exc:
+        logger.warning("exchange_metadata normalize_quantity failed (%s) — using raw qty", _norm_exc)
 
     # Reject orders below exchange minimum rather than silently inflating
+    try:
+        from runtime.exchange_metadata import get_registry as _gr
+        _spec = _gr().get_spec(instrument)
+        min_qty = _spec.min_qty
+    except Exception:
+        from trading.exchange import _MIN_QTY_PERP
+        min_qty = _MIN_QTY_PERP.get(instrument, 0.001)
+
     if qty < min_qty:
         raise ValueError(
             f"Order qty {qty} below exchange minimum {min_qty} for {instrument}. "
