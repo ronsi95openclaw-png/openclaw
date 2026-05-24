@@ -115,37 +115,56 @@ def _cmd_trades(chat_id, _text, bot_ref) -> None:
         _reply(chat_id, "⚠️ Bot reference not available yet.")
         return
     try:
-        s       = bot_ref.get_status()
-        closed  = s.get("trade_log", [])
-        open_p  = s.get("open_positions", [])
+        from datetime import datetime, timezone
+        s        = bot_ref.get_status()
+        closed   = s.get("trade_log", [])
+        open_p   = s.get("open_positions", [])
+        balance  = s.get("balance", 0)
+        today    = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        lines = [f"📊 <b>Trades</b>"]
+        # Closed today
+        today_closed = [t for t in closed if t.get("closed_at")]
+        # Open positions count as today's trades too
+        all_today = today_closed + open_p
 
-        if open_p:
-            lines.append(f"\n<b>Open positions ({len(open_p)})</b>")
-            for p in open_p:
-                sym  = p.get("symbol", "")
-                side = "🟢 L" if p.get("side") == "long" else "🔴 S"
-                unr  = p.get("unrealized_pnl", 0)
-                sign = "+" if unr >= 0 else ""
-                lines.append(f"  {side} {sym}  {sign}${unr:.2f}  [{p.get('strategy','')}]")
+        wins   = [t for t in today_closed if t.get("outcome") == "win"]
+        losses = [t for t in today_closed if t.get("outcome") == "loss"]
+        day_pnl = sum(t.get("pnl", 0) for t in today_closed)
+        wr = (len(wins) / len(today_closed) * 100) if today_closed else 0.0
+
+        lines = [f"📊 <b>TODAY'S TRADES — {today}</b>", "──"]
+
+        if not all_today:
+            lines.append("\n—\nNo trades yet today")
         else:
-            lines.append("\nNo open positions")
-
-        today_closed = [t for t in closed
-                        if t.get("closed_at") or t.get("opened_at")][:5]
-        if today_closed:
-            lines.append(f"\n<b>Recent closed ({len(today_closed)})</b>")
-            for t in today_closed:
-                sym    = t.get("symbol", "")
-                out    = "✅" if t.get("outcome") == "win" else "❌"
+            lines.append("")
+            # Closed trades numbered
+            for i, t in enumerate(today_closed, 1):
+                icon   = "✅" if t.get("outcome") == "win" else "❌"
+                strat  = t.get("strategy", "").replace("_", "")
+                sym    = t.get("symbol", "").replace("_USDT", "")
+                side   = t.get("side", "").upper()
+                entry  = t.get("entry_price", 0)
                 pnl    = t.get("pnl", 0)
                 sign   = "+" if pnl >= 0 else ""
-                strat  = t.get("strategy", "")
-                lines.append(f"  {out} {sym} {sign}${pnl:.2f} [{strat}]")
-        else:
-            lines.append("\nNo recent closed trades")
+                lines.append(f"{i}. {icon} <i>{strat} {sym} {side} @ ${entry:,.2f}</i>\n→ ${sign}{pnl:,.2f}")
+            # Open positions
+            for i, p in enumerate(open_p, len(today_closed) + 1):
+                strat  = p.get("strategy", "").replace("_", "")
+                sym    = p.get("symbol", "").replace("_USDT", "")
+                side   = p.get("side", "").upper()
+                entry  = p.get("entry_price", 0)
+                unr    = p.get("unrealized_pnl", 0)
+                sign   = "+" if unr >= 0 else ""
+                lines.append(f"{i}. 🔵 <i>{strat} {sym} {side} @ ${entry:,.2f}</i>\n→ {sign}${unr:,.2f} (open)")
 
+        day_sign = "+" if day_pnl >= 0 else ""
+        lines += [
+            "──", "",
+            f"📊 Win Rate: {wr:.1f}% ({len(wins)}W/{len(losses)}L)",
+            f"💰 Day P&amp;L: {day_sign}${day_pnl:,.2f}",
+            f"💳 Balance: ${balance:,.2f}",
+        ]
         _reply(chat_id, "\n".join(lines))
     except Exception as exc:
         _reply(chat_id, f"⚠️ Trades error: {exc}")
