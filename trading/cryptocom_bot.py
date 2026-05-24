@@ -129,6 +129,9 @@ class CryptoComBot:
         self._quin         = self._init_quin()
         self._goal_tracker = self._init_goal_tracker()
 
+        # Telegram two-way command bot (Phase 11)
+        self._tg_cmd_bot   = self._init_tg_cmd_bot()
+
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _load_state(self) -> None:
@@ -471,6 +474,16 @@ class CryptoComBot:
             logger.warning("GoalTracker unavailable: %s", exc)
             return None
 
+    def _init_tg_cmd_bot(self):
+        try:
+            from runtime.telegram_bot import get_command_bot
+            bot = get_command_bot(bot_ref=self)
+            logger.info("TelegramCommandBot initialised")
+            return bot
+        except Exception as exc:
+            logger.warning("TelegramCommandBot unavailable: %s", exc)
+            return None
+
     def _run_startup_reconciliation(self) -> None:
         try:
             from runtime.reconciliation import reconcile_on_startup
@@ -518,6 +531,15 @@ class CryptoComBot:
             self._balance_feed.start()
         if self._weight_scheduler:
             self._weight_scheduler.start()
+        if self._tg_cmd_bot:
+            self._tg_cmd_bot.start()
+        # Alert Telegram that the bot started
+        try:
+            from runtime.telegram_alerts import alert_bot_started
+            alert_bot_started(demo=self.state.demo_mode,
+                              balance=self._refresh_balance())
+        except Exception:
+            pass
         logger.info("CryptoComBot started (demo=%s)", self.state.demo_mode)
 
     def stop(self) -> None:
@@ -536,6 +558,8 @@ class CryptoComBot:
             self._balance_feed.stop()
         if self._weight_scheduler:
             self._weight_scheduler.stop()
+        if self._tg_cmd_bot:
+            self._tg_cmd_bot.stop(timeout=3.0)
         logger.info("CryptoComBot stopped")
 
     def is_running(self) -> bool:
@@ -582,7 +606,19 @@ class CryptoComBot:
                 if self._goal_tracker is not None:
                     try:
                         balance = self._refresh_balance()
-                        self._goal_tracker.update(balance)
+                        _prev_ms = set(self._goal_tracker._milestones_hit)
+                        _prog = self._goal_tracker.update(balance)
+                        _new_ms = set(_prog.milestones_hit) - _prev_ms
+                        for _ms in _new_ms:
+                            try:
+                                from runtime.telegram_alerts import alert_milestone_hit
+                                alert_milestone_hit(
+                                    milestone=_ms, balance=_prog.current_balance,
+                                    days=_prog.days_running,
+                                    demo=self.state.demo_mode,
+                                )
+                            except Exception:
+                                pass
                     except Exception as _gte:
                         logger.debug("GoalTracker update error (non-fatal): %s", _gte)
             except Exception as e:
@@ -1032,11 +1068,15 @@ class CryptoComBot:
 
         try:
             from runtime.telegram_alerts import alert_trade_opened
+            _tg_balance = max(10.0, self.state.starting_balance + self.state.total_pnl) \
+                          if self.state.demo_mode else self.state.balance
             alert_trade_opened(
                 symbol=sig.symbol, side=sig.action, strategy=sig.strategy,
                 entry=price, sl=sl, tp=tp, size=initial_size,
                 confidence=self.weights.effective_confidence(sig.strategy, sig.confidence),
                 regime=regime_label, demo=self.state.demo_mode,
+                balance=_tg_balance,
+                quin_source="rule-based" if self._quin else "",
             )
         except Exception:
             pass
@@ -1250,10 +1290,12 @@ class CryptoComBot:
 
         try:
             from runtime.telegram_alerts import alert_trade_closed
+            _tg_bal_close = max(10.0, self.state.starting_balance + self.state.total_pnl) \
+                            if self.state.demo_mode else self.state.balance
             alert_trade_closed(
                 symbol=pos["symbol"], outcome=outcome, pnl=pnl,
                 total_pnl=self.state.total_pnl, strategy=pos["strategy"],
-                demo=self.state.demo_mode,
+                demo=self.state.demo_mode, balance=_tg_bal_close,
             )
         except Exception:
             pass
@@ -1441,10 +1483,27 @@ class CryptoComBot:
 
         try:
             from runtime.telegram_alerts import alert_daily_summary
+            # Best strategy by PnL today
+            best_strat = max(strategy_stats, key=lambda k: strategy_stats[k]["pnl"],
+                             default="") if strategy_stats else ""
+            # Goal progress
+            goal_bal = 0.0
+            if self._goal_tracker:
+                try:
+                    goal_bal = self._goal_tracker.get_progress().current_balance
+                except Exception:
+                    pass
             alert_daily_summary(
-                date=report_date, total_pnl=s["total_pnl"],
-                trades=s["trades_today"], wins=wins, losses=losses,
+                date=report_date,
+                total_pnl=s["total_pnl"],
+                trades=s["trades_today"],
+                wins=wins,
+                losses=losses,
                 demo=self.state.demo_mode,
+                balance=s["balance"],
+                best_strategy=best_strat,
+                goal_balance=goal_bal,
+                goal_target=50_000.0,
             )
         except Exception:
             pass
