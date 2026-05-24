@@ -40,11 +40,12 @@ STRATEGY_REGIME_COMPATIBILITY: Dict[str, Dict[str, List[str]]] = {
         "forbidden": ["TRENDING_BULL", "TRENDING_BEAR", "PANIC", "LIQUIDATION_CASCADE", "UNKNOWN"],
     },
     "TREND_FOLLOW": {
-        # Note: MOMENTUM_BEAR is not returned by current RegimeClassifier; removed from supported.
-        "supported": ["TRENDING_BULL", "TRENDING_BEAR", "MOMENTUM_BULL"],
-        # Historically 0% WR in UNKNOWN regime; also dangerous in crisis/reversal regimes
+        # TRENDING_BULL removed from supported — 0% WR (4 trades), entries are late
+        # after EMA stack aligns. Only trade in confirmed bear trends or momentum bull.
+        "supported": ["TRENDING_BEAR", "MOMENTUM_BULL"],
+        # Historically 0% WR in UNKNOWN and TRENDING_BULL; also dangerous in crisis/reversal regimes
         "forbidden": ["RANGING", "MEAN_REVERTING", "VOL_COMPRESSION", "PANIC",
-                      "LIQUIDATION_CASCADE", "LIQUIDITY_DROUGHT", "UNKNOWN"],
+                      "LIQUIDATION_CASCADE", "LIQUIDITY_DROUGHT", "UNKNOWN", "TRENDING_BULL"],
     },
     "FUNDING_ARB": {
         "supported": ["FUNDING_RATE_EXTREME", "RANGING", "MEAN_REVERTING"],

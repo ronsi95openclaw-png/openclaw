@@ -359,7 +359,7 @@ def trend_follow_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
     ema50 = _ema(closes, 50)
     price = closes[-1]
     atr   = _atr(candles[-20:], 14)
-    sl    = max(1.3, _atr_sl_pct(atr, price) * 2.0)
+    sl    = min(5.0, max(1.3, _atr_sl_pct(atr, price) * 2.0))  # hard cap 5% — prevent runaway SL
     tp    = sl * 3.0   # 3:1 for trend trades
 
     e9, e21, e50 = ema9[-1], ema21[-1], ema50[-1]
@@ -372,19 +372,18 @@ def trend_follow_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
     # Bullish: full triple alignment, price above all EMAs, MACD positive, RSI 45-72
     if e9 > e21 > e50 and price > e9 and hist > 0 and 45 < rsi < 72 and vol_ok:
         gap_pct = (e9 - e50) / e50 * 100
-        if gap_pct < 0.10:
-            return _hold(f"Trend too early — EMA gap only {gap_pct:.2f}%", sl, tp)
-        conf   = 0.82 if rsi > 57 and hist > 0 else 0.70  # +2pt buffer vs 55
+        if gap_pct < 2.0:  # raised from 0.10% — require established trend, not just alignment
+            return _hold(f"Trend too weak — EMA gap only {gap_pct:.2f}% (need 2%)", sl, tp)
+        conf   = 0.82 if rsi > 57 and hist > 0 else 0.70
         reason = (f"Triple EMA bull | gap {gap_pct:.2f}% | "
                   f"MACD hist {hist:.4f} | RSI {rsi:.1f}")
         return StrategySignal("TREND_FOLLOW", symbol, "long",  conf, reason, sl, tp)
 
     # Bearish: full triple alignment down, price below all EMAs, MACD negative, RSI 28-53
-    # (rsi < 53 instead of < 55 adds 2-point buffer to reduce near-threshold jitter)
     if e9 < e21 < e50 and price < e9 and hist < 0 and 28 < rsi < 53 and vol_ok:
         gap_pct = (e50 - e9) / e50 * 100
-        if gap_pct < 0.10:
-            return _hold(f"Trend too early — EMA gap only {gap_pct:.2f}%", sl, tp)
+        if gap_pct < 2.0:  # raised from 0.10% — require established trend
+            return _hold(f"Trend too weak — EMA gap only {gap_pct:.2f}% (need 2%)", sl, tp)
         conf   = 0.82 if rsi < 45 and hist < 0 else 0.70
         reason = (f"Triple EMA bear | gap {gap_pct:.2f}% | "
                   f"MACD hist {hist:.4f} | RSI {rsi:.1f}")
