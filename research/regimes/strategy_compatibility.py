@@ -52,6 +52,12 @@ STRATEGY_REGIME_COMPATIBILITY: Dict[str, Dict[str, List[str]]] = {
         # Requires liquid markets; thin/illiquid conditions cause adverse slippage
         "forbidden": ["PANIC", "LIQUIDATION_CASCADE", "NEWS_SPIKE", "LIQUIDITY_DROUGHT"],
     },
+    "DCA": {
+        # DCA thrives on dips — best in ranging/mean-reverting and bear trends
+        "supported": ["RANGING", "MEAN_REVERTING", "TRENDING_BEAR", "VOL_EXPANSION", "MOMENTUM_BULL"],
+        # Don't DCA into panic or liquidity drought — no floor in those regimes
+        "forbidden": ["PANIC", "LIQUIDATION_CASCADE", "LIQUIDITY_DROUGHT"],
+    },
 }
 
 

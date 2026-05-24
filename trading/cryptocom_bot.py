@@ -650,7 +650,7 @@ class CryptoComBot:
         from trading.strategies import (
             ema_cross_strategy, rsi_mean_revert_strategy,
             breakout_strategy, bollinger_band_strategy, trend_follow_strategy,
-            _rsi, _atr,
+            dca_strategy, _rsi, _atr,
         )
 
         _scan_start = time.monotonic()
@@ -715,6 +715,7 @@ class CryptoComBot:
                 breakout_strategy(symbol, candles),
                 bollinger_band_strategy(symbol, candles),
                 trend_follow_strategy(symbol, candles),
+                dca_strategy(symbol, candles),
             ]
 
             for sig in signals:

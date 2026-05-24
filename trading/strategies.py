@@ -22,7 +22,7 @@ logger = logging.getLogger("openclaw.trading.strategies")
 
 _WEIGHTS_FILE = Path(__file__).parent.parent / "data" / "strategy_weights.json"
 
-STRATEGIES = ["EMA_CROSS", "RSI_MEAN_REVERT", "BREAKOUT", "BOLLINGER_BAND", "TREND_FOLLOW"]
+STRATEGIES = ["EMA_CROSS", "RSI_MEAN_REVERT", "BREAKOUT", "BOLLINGER_BAND", "TREND_FOLLOW", "DCA"]
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
@@ -219,12 +219,13 @@ def rsi_mean_revert_strategy(symbol: str, candles: list[dict]) -> StrategySignal
     bullish_body = closes[-1] >= candles[-1]["open"]   # green candle = bounce starting
     bearish_body = closes[-1] <= candles[-1]["open"]   # red candle = reversal starting
 
-    if rsi < 27 and bullish_body:
-        conf = 0.88 if rsi < 22 else 0.74
+    # Thresholds: 32/68 (active) — aligns with proven RSI_MEAN signal history
+    if rsi < 32 and bullish_body:
+        conf = 0.88 if rsi < 27 else 0.74
         return StrategySignal("RSI_MEAN_REVERT", symbol, "long", conf,
                               f"RSI oversold {rsi:.1f} + bullish candle | spread {spread:.2f}%", sl, tp)
-    if rsi > 73 and bearish_body:
-        conf = 0.88 if rsi > 78 else 0.74
+    if rsi > 68 and bearish_body:
+        conf = 0.88 if rsi > 73 else 0.74
         return StrategySignal("RSI_MEAN_REVERT", symbol, "short", conf,
                               f"RSI overbought {rsi:.1f} + bearish candle | spread {spread:.2f}%", sl, tp)
 
@@ -390,6 +391,55 @@ def trend_follow_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
         return StrategySignal("TREND_FOLLOW", symbol, "short", conf, reason, sl, tp)
 
     return _hold(f"No triple alignment | RSI {rsi:.1f} | MACD {hist:.4f}", sl, tp)
+
+
+def dca_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
+    """Dollar-cost averaging dip buyer — enters longs at 20-period session lows.
+
+    Strongest signal on red-day dips (>2% down). Weight 1.7× in the engine.
+    Only goes LONG — captures mean reversion after sharp selloffs.
+    2:1 R:R with tight SL since entries are near structural support.
+    """
+    closes = [c["close"] for c in candles]
+    _hold  = lambda r, sl=1.5, tp=3.0: StrategySignal("DCA", symbol, "hold", 0.0, r, sl, tp)
+
+    if len(closes) < 22:
+        return _hold("Insufficient data")
+
+    price  = closes[-1]
+    atr    = _atr(candles[-20:], 14)
+    sl     = min(4.0, max(1.0, _atr_sl_pct(atr, price) * 1.5))
+    tp     = sl * 2.0
+
+    highs  = [c["high"]  for c in candles[-20:]]
+    lows   = [c["low"]   for c in candles[-20:]]
+    l20    = min(lows)
+    h20    = max(highs)
+
+    avg_vol   = sum(c["volume"] for c in candles[-20:]) / 20
+    cur_vol   = candles[-1]["volume"]
+    vol_mult  = cur_vol / avg_vol if avg_vol > 0 else 1.0
+
+    # Price at or near 20-period low (within 0.5%)
+    at_low    = price <= l20 * 1.005
+    if not at_low:
+        return _hold(f"Not at session low (price ${price:,.2f} vs low ${l20:,.2f})", sl, tp)
+
+    # Estimate day change from first candle open vs current close
+    day_open  = candles[0]["open"] if candles else price
+    chg_pct   = (price - day_open) / day_open * 100 if day_open > 0 else 0.0
+
+    if chg_pct < -2.0:
+        # Strong red day dip — high-confidence DCA entry
+        conf   = min(0.90, 0.75 + vol_mult * 0.05)
+        reason = f"DCA red day {chg_pct:.1f}% at 20-period low | vol {vol_mult:.1f}×"
+        return StrategySignal("DCA", symbol, "long", conf, reason, sl, tp)
+    elif chg_pct < 0:
+        # Mild down day at lows — moderate confidence
+        reason = f"DCA at 20-period low | day {chg_pct:.1f}% | vol {vol_mult:.1f}×"
+        return StrategySignal("DCA", symbol, "long", 0.65, reason, sl, tp)
+
+    return _hold(f"At low but not red day ({chg_pct:+.1f}%) — skip DCA", sl, tp)
 
 
 # ── Self-learning weight engine ───────────────────────────────────────────────
