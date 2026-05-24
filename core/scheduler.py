@@ -297,6 +297,11 @@ def get_autotrade_status() -> dict:
     return _load_autotrade()
 
 
+async def run_autotrade_now() -> None:
+    """Public entry point to trigger the auto-trade scan immediately."""
+    await _run_autotrade()
+
+
 def reload_autotrade() -> None:
     """Re-register auto-trade job after restart if it was enabled."""
     cfg = _load_autotrade()

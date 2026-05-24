@@ -424,7 +424,7 @@ async def cmd_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as exc:
             return str(exc), 1
 
-    loop   = asyncio.get_event_loop()
+    loop   = asyncio.get_running_loop()
     output, rc = await loop.run_in_executor(None, _execute)
 
     # Truncate if too long for Telegram (4096 char limit)
@@ -476,7 +476,7 @@ async def cmd_py(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as exc:
             return str(exc), 1
 
-    loop   = asyncio.get_event_loop()
+    loop   = asyncio.get_running_loop()
     output, rc = await loop.run_in_executor(None, _execute)
 
     if len(output) > 3500:
@@ -731,9 +731,8 @@ async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
     elif arg == "now":
-        # Manual trigger for testing
         await update.message.reply_text("<i>Running auto-trade scan now...</i>", parse_mode="HTML")
-        await sched._run_autotrade()  # type: ignore[attr-defined]
+        await sched.run_autotrade_now()
 
     else:
         cfg    = sched.get_autotrade_status()
@@ -793,10 +792,9 @@ async def cmd_trades(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             # Format: "TRADE_DECISION | timestamp | {json}"
             _, ts, payload = raw.split(" | ", 2)
             data = _json.loads(payload)
-            action = data.get("action", "?")
-            coin   = data.get("coin", "?")
-            status = data.get("status", "?")
-            mode   = data.get("mode", "?")
+            action   = data.get("action", "?")
+            coin     = data.get("coin", "?")
+            status   = data.get("status", "?")
             ts_short = ts[:16]  # "2025-05-24T08:00"
 
             if status == "demo":
@@ -886,6 +884,11 @@ def main() -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN is not set in .env")
+
+    if not os.getenv("ALLOWED_CHAT_ID", "").strip():
+        print("⚠️  WARNING: ALLOWED_CHAT_ID is not set in .env")
+        print("   The bot will start but will silently ignore ALL messages.")
+        print("   Get your chat ID from @userinfobot, then add it to .env")
 
     sched.set_send_fn(_scheduler_send)
     sched.start_scheduler()
