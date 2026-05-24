@@ -1,9 +1,14 @@
 """Hybrid AI brain for OpenClaw / ClawBot.
 
 Routes requests automatically between:
-  - Local Ollama (free, fast) for simple tasks
+  - Local Ollama (free, fast) for simple tasks when available
+  - OpenRouter API (cheap open-source models) when Ollama is offline
   - Claude Haiku API (smart) for complex tasks
-  - Falls back to Ollama if Claude API is unavailable or key is missing
+  - Falls back down the chain if any layer is unavailable
+
+Routing priority:
+  SIMPLE  → Ollama → OpenRouter → Claude
+  COMPLEX → Claude → OpenRouter → Ollama
 
 Complexity detection:
   SIMPLE  — short prompts, casual chat, captions, quick questions
@@ -34,15 +39,22 @@ try:
 except ImportError:
     _OLLAMA_IMPORTABLE = False
 
+try:
+    from openai import OpenAI as _OpenAIClient
+    _OPENAI_IMPORTABLE = True
+except ImportError:
+    _OPENAI_IMPORTABLE = False
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
-DEFAULT_OLLAMA_MODEL = "qwen2.5:14b"
-CLAUDE_MODEL         = "claude-haiku-4-5"   # user-specified: Haiku for complex tasks
-MAX_TOKENS           = int(os.getenv("MAX_TOKENS_PER_RESPONSE", "500"))
-COMPLEXITY_THRESHOLD = int(os.getenv("COMPLEXITY_THRESHOLD", "50"))   # word count
-CACHE_TTL_SECONDS    = 3600   # 1 hour
+DEFAULT_OLLAMA_MODEL      = "qwen2.5:14b"
+DEFAULT_OPENROUTER_MODEL  = "meta-llama/llama-3.1-8b-instruct"
+CLAUDE_MODEL              = "claude-haiku-4-5"
+MAX_TOKENS                = int(os.getenv("MAX_TOKENS_PER_RESPONSE", "500"))
+COMPLEXITY_THRESHOLD      = int(os.getenv("COMPLEXITY_THRESHOLD", "50"))
+CACHE_TTL_SECONDS         = 3600   # 1 hour
 
 _DATA_DIR   = Path(__file__).parent.parent / "data"
 _CACHE_FILE = _DATA_DIR / "response_cache.json"
@@ -67,6 +79,11 @@ def _ollama_online() -> bool:
     except Exception:
         _OLLAMA_STATUS.update({"ok": False, "ts": now})
         return False
+
+
+def _openrouter_available() -> bool:
+    """Return True if an OpenRouter API key is configured."""
+    return _OPENAI_IMPORTABLE and bool(os.getenv("OPENROUTER_API_KEY", "").strip())
 
 
 _COMPLEX_KEYWORDS = {
@@ -167,6 +184,7 @@ def _track_usage(
 
     day = stats.setdefault(today, {
         "ollama_calls": 0,
+        "openrouter_calls": 0,
         "claude_calls": 0,
         "claude_input_tokens": 0,
         "claude_output_tokens": 0,
@@ -179,6 +197,8 @@ def _track_usage(
         day["claude_calls"] += 1
         day["claude_input_tokens"] += input_tokens
         day["claude_output_tokens"] += output_tokens
+    elif model == "openrouter":
+        day["openrouter_calls"] += 1
     else:
         day["ollama_calls"] += 1
 
@@ -202,19 +222,12 @@ def get_usage_today() -> dict:
 # ---------------------------------------------------------------------------
 
 def classify_complexity(prompt: str) -> str:
-    """Return 'simple' or 'complex' based on prompt content.
-
-    In cloud mode (Ollama offline) everything routes to Claude.
-    """
+    """Return 'simple' or 'complex' based on prompt content."""
     has_claude = bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
+    has_any_llm = _ollama_online() or _openrouter_available() or has_claude
 
-    # No Claude key and no Ollama → we'll error later; keep simple to be safe
-    if not has_claude and not _ollama_online():
+    if not has_any_llm:
         return "simple"
-
-    # Ollama offline → route everything to Claude
-    if not _ollama_online():
-        return "complex" if has_claude else "simple"
 
     if not os.getenv("USE_CLAUDE_API", "true").lower() == "true":
         return "simple"
@@ -295,6 +308,49 @@ def _ollama_importable_and_online() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# OpenRouter (simple tasks on cloud / Ollama fallback)
+# ---------------------------------------------------------------------------
+
+def ask_openrouter(
+    prompt: str,
+    model: Optional[str] = None,
+    system: Optional[str] = None,
+    history: Optional[List[dict]] = None,
+) -> str:
+    """Ask a model via OpenRouter's OpenAI-compatible API."""
+    if not _openrouter_available():
+        raise RuntimeError("OpenRouter API key not configured")
+
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    model = model or os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL)
+
+    client = _OpenAIClient(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
+
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    if history:
+        messages.extend(_compress_history(history))
+    messages.append({"role": "user", "content": _compress(prompt)})
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=MAX_TOKENS,
+            extra_headers={"HTTP-Referer": "https://openclaw.app", "X-Title": "ClawBot"},
+        )
+        result = response.choices[0].message.content.strip()
+        _track_usage(model="openrouter")
+        return result
+    except Exception as exc:
+        raise RuntimeError(f"OpenRouter failed: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
 # Claude Haiku (complex tasks)
 # ---------------------------------------------------------------------------
 
@@ -363,18 +419,33 @@ def ask_hybrid(
     if cached:
         return cached, "cache"
 
-    # Cloud mode: Ollama offline → route everything to Claude
-    if not _ollama_importable_and_online():
-        result = ask_claude(prompt, system=system, history=history)
-        brain = "claude"
-    else:
-        complexity = force or classify_complexity(prompt)
-        if complexity == "complex":
+    complexity = force or classify_complexity(prompt)
+
+    if complexity == "complex":
+        # Complex: Claude → OpenRouter → Ollama
+        try:
             result = ask_claude(prompt, system=system, history=history)
             brain = "claude"
-        else:
+        except Exception:
+            if _openrouter_available():
+                result = ask_openrouter(prompt, system=system, history=history)
+                brain = "openrouter"
+            elif _ollama_importable_and_online():
+                result = ask_llm(prompt, system=system, history=history)
+                brain = "ollama"
+            else:
+                raise
+    else:
+        # Simple: Ollama → OpenRouter → Claude
+        if _ollama_importable_and_online():
             result = ask_llm(prompt, system=system, history=history)
             brain = "ollama"
+        elif _openrouter_available():
+            result = ask_openrouter(prompt, system=system, history=history)
+            brain = "openrouter"
+        else:
+            result = ask_claude(prompt, system=system, history=history)
+            brain = "claude"
 
     _set_cached(prompt, result)
     return result, brain

@@ -10,6 +10,7 @@ httpcore==1.0.9
 httpx==0.28.1
 idna==3.11
 ollama==0.6.1           # optional — only needed when running Ollama locally
+openai>=1.30.0          # used for OpenRouter API (OpenAI-compatible)
 openai-whisper           # optional — only needed for video caption pipeline
 pydantic==2.12.5
 pydantic_core==2.41.5
