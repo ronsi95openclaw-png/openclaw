@@ -39,6 +39,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env", override=False)
+except ImportError:
+    pass  # python-dotenv not installed — env must be set externally
+
 logger = logging.getLogger("openclaw.trading.cryptocom_bot")
 
 # Imported lazily inside methods to avoid circular-import issues at module load

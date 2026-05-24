@@ -255,6 +255,20 @@ def _cmd_weights(chat_id, _text, bot_ref) -> None:
         _reply(chat_id, f"⚠️ Weights error: {exc}")
 
 
+def _cmd_restart(chat_id, _text, bot_ref) -> None:
+    if bot_ref is None:
+        _reply(chat_id, "⚠️ Bot reference not available.")
+        return
+    try:
+        _reply(chat_id, "🔄 Restarting scan loop...")
+        bot_ref.stop()
+        time.sleep(2)
+        bot_ref.start()
+        _reply(chat_id, "✅ Bot restarted — scan loop is live again.")
+    except Exception as exc:
+        _reply(chat_id, f"⚠️ Restart failed: {exc}")
+
+
 _COMMANDS = {
     "/help":    _cmd_help,
     "/start":   _cmd_help,
@@ -263,6 +277,7 @@ _COMMANDS = {
     "/goal":    _cmd_goal,
     "/balance": _cmd_balance,
     "/weights": _cmd_weights,
+    "/restart": _cmd_restart,
 }
 
 
@@ -313,8 +328,28 @@ class TelegramCommandBot:
 
     # ── Internal ───────────────────────────────────────────────────────────────
 
+    def _skip_stale_updates(self) -> None:
+        """Advance offset past any queued messages so we only respond to new ones."""
+        tok = _token()
+        if not tok:
+            return
+        url = f"https://api.telegram.org/bot{tok}/getUpdates"
+        payload = json.dumps({"offset": -1, "timeout": 0}).encode()
+        req = urllib.request.Request(url, data=payload,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                data = json.loads(r.read().decode())
+            for upd in data.get("result", []):
+                self._offset = upd["update_id"] + 1
+            if self._offset:
+                logger.info("TelegramCommandBot: skipped stale messages, offset=%d", self._offset)
+        except Exception as exc:
+            logger.debug("Skip stale updates error: %s", exc)
+
     def _run(self) -> None:
         logger.debug("TelegramCommandBot poll loop starting")
+        self._skip_stale_updates()
         while not self._stop.is_set():
             tok = _token()
             cid = _chat_id()
