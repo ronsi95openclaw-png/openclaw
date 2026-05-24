@@ -27,7 +27,12 @@ from pathlib import Path
 from typing import List, Optional
 
 import anthropic
-from ollama import chat as ollama_chat
+
+try:
+    from ollama import chat as ollama_chat
+    _OLLAMA_IMPORTABLE = True
+except ImportError:
+    _OLLAMA_IMPORTABLE = False
 
 # ---------------------------------------------------------------------------
 # Config
@@ -42,6 +47,27 @@ CACHE_TTL_SECONDS    = 3600   # 1 hour
 _DATA_DIR   = Path(__file__).parent.parent / "data"
 _CACHE_FILE = _DATA_DIR / "response_cache.json"
 _USAGE_FILE = _DATA_DIR / "usage_stats.json"
+
+_OLLAMA_STATUS: dict = {"ok": None, "ts": 0.0}
+_OLLAMA_CACHE_TTL = 60  # recheck every 60 seconds
+
+
+def _ollama_online() -> bool:
+    """Return True if the local Ollama daemon is reachable. Cached for 60s."""
+    if not _OLLAMA_IMPORTABLE:
+        return False
+    now = time.time()
+    if now - _OLLAMA_STATUS["ts"] < _OLLAMA_CACHE_TTL and _OLLAMA_STATUS["ok"] is not None:
+        return bool(_OLLAMA_STATUS["ok"])
+    try:
+        from ollama import list as _ol_list
+        _ol_list()
+        _OLLAMA_STATUS.update({"ok": True, "ts": now})
+        return True
+    except Exception:
+        _OLLAMA_STATUS.update({"ok": False, "ts": now})
+        return False
+
 
 _COMPLEX_KEYWORDS = {
     "plan", "analyse", "analyze", "strategy", "research", "breakdown",
@@ -176,17 +202,28 @@ def get_usage_today() -> dict:
 # ---------------------------------------------------------------------------
 
 def classify_complexity(prompt: str) -> str:
-    """Return 'simple' or 'complex' based on prompt content."""
+    """Return 'simple' or 'complex' based on prompt content.
+
+    In cloud mode (Ollama offline) everything routes to Claude.
+    """
+    has_claude = bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
+
+    # No Claude key and no Ollama → we'll error later; keep simple to be safe
+    if not has_claude and not _ollama_online():
+        return "simple"
+
+    # Ollama offline → route everything to Claude
+    if not _ollama_online():
+        return "complex" if has_claude else "simple"
+
     if not os.getenv("USE_CLAUDE_API", "true").lower() == "true":
         return "simple"
-    if not os.getenv("ANTHROPIC_API_KEY", "").strip():
+    if not has_claude:
         return "simple"
 
     words = prompt.lower().split()
-    # Long prompts are complex
     if len(words) >= COMPLEXITY_THRESHOLD:
         return "complex"
-    # Keyword match
     text = prompt.lower()
     for kw in _COMPLEX_KEYWORDS:
         if kw in text:
@@ -228,7 +265,10 @@ def ask_llm(
     system: Optional[str] = None,
     history: Optional[List[dict]] = None,
 ) -> str:
-    """Ask local Ollama. Used for simple tasks and as fallback."""
+    """Ask local Ollama. Falls back to Claude if Ollama is offline."""
+    if not _ollama_importable_and_online():
+        return ask_claude(prompt, system=system, history=history)
+
     model = model or os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
     messages = []
     if system:
@@ -243,7 +283,15 @@ def ask_llm(
         _track_usage(model=model)
         return result
     except Exception as exc:
-        raise RuntimeError(f"Ollama generation failed: {exc}") from exc
+        # Ollama failed mid-request — try Claude
+        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if api_key:
+            return ask_claude(prompt, system=system, history=history)
+        raise RuntimeError(f"Ollama generation failed (and no Claude key): {exc}") from exc
+
+
+def _ollama_importable_and_online() -> bool:
+    return _OLLAMA_IMPORTABLE and _ollama_online()
 
 
 # ---------------------------------------------------------------------------
@@ -283,13 +331,16 @@ def ask_claude(
         )
         return result
     except anthropic.AuthenticationError:
-        return ask_llm(prompt, system=system, history=history)
-    except Exception as exc:
-        # Fallback to Ollama on any Claude API error
-        try:
+        if _ollama_importable_and_online():
             return ask_llm(prompt, system=system, history=history)
-        except Exception:
-            raise RuntimeError(f"Both Claude and Ollama failed: {exc}") from exc
+        raise
+    except Exception as exc:
+        if _ollama_importable_and_online():
+            try:
+                return ask_llm(prompt, system=system, history=history)
+            except Exception:
+                pass
+        raise RuntimeError(f"Claude API failed: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -312,14 +363,18 @@ def ask_hybrid(
     if cached:
         return cached, "cache"
 
-    complexity = force or classify_complexity(prompt)
-
-    if complexity == "complex":
+    # Cloud mode: Ollama offline → route everything to Claude
+    if not _ollama_importable_and_online():
         result = ask_claude(prompt, system=system, history=history)
         brain = "claude"
     else:
-        result = ask_llm(prompt, system=system, history=history)
-        brain = "ollama"
+        complexity = force or classify_complexity(prompt)
+        if complexity == "complex":
+            result = ask_claude(prompt, system=system, history=history)
+            brain = "claude"
+        else:
+            result = ask_llm(prompt, system=system, history=history)
+            brain = "ollama"
 
     _set_cached(prompt, result)
     return result, brain

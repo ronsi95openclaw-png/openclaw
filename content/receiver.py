@@ -458,7 +458,8 @@ async def cmd_py(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     def _execute():
         try:
-            python = str(Path(__file__).resolve().parent.parent / ".venv" / "Scripts" / "python.exe")
+            import sys as _sys
+            python = _sys.executable  # use the same interpreter running the bot
             result = subprocess.run(
                 [python, "-c", code],
                 capture_output=True,

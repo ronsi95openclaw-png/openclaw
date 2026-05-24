@@ -9,8 +9,8 @@ h11==0.16.0
 httpcore==1.0.9
 httpx==0.28.1
 idna==3.11
-ollama==0.6.1
-openai-whisper
+ollama==0.6.1           # optional — only needed when running Ollama locally
+openai-whisper           # optional — only needed for video caption pipeline
 pydantic==2.12.5
 pydantic_core==2.41.5
 python-dotenv==1.2.2

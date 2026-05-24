@@ -377,5 +377,6 @@ if __name__ == "__main__":
     import sys
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    print("OpenClaw Dashboard running at http://localhost:8080")
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    port = int(os.getenv("PORT", 8080))
+    print(f"OpenClaw Dashboard running at http://0.0.0.0:{port}")
+    app.run(host="0.0.0.0", port=port, debug=False)
