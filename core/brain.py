@@ -27,7 +27,10 @@ from pathlib import Path
 from typing import List, Optional
 
 import anthropic
-from ollama import chat as ollama_chat
+try:
+    from ollama import chat as ollama_chat
+except ImportError:
+    ollama_chat = None  # Ollama not installed — OpenRouter/Claude fallback will be used
 
 # ---------------------------------------------------------------------------
 # Config
@@ -357,15 +360,16 @@ def ask_llm(
         chain = [model] + chain
 
     last_exc: Exception = RuntimeError("No models attempted")
-    for candidate in chain:
-        try:
-            response = ollama_chat(model=candidate, messages=messages)
-            result = response.message.content.strip()
-            _track_usage(model=candidate)
-            return result
-        except Exception as exc:
-            last_exc = exc
-            continue
+    if ollama_chat is not None:
+        for candidate in chain:
+            try:
+                response = ollama_chat(model=candidate, messages=messages)
+                result = response.message.content.strip()
+                _track_usage(model=candidate)
+                return result
+            except Exception as exc:
+                last_exc = exc
+                continue
 
     # Ollama unavailable (cloud env) — try OpenRouter
     if _openrouter_available():

@@ -50,9 +50,9 @@ def main() -> None:
     time.sleep(3)
 
     # ── Trading bot (foreground) ─────────────────────────────────────────────
-    from trading.cryptocom_bot import get_bot
+    from trading.cryptocom_bot import CryptoComBot
 
-    bot = get_bot()
+    bot = CryptoComBot()
     bot.start()
     logger.info("OpenClaw bot started — scanning every %ds", bot.state.scan_interval)
 
