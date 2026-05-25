@@ -673,10 +673,11 @@ async def websocket_endpoint(websocket: WebSocket):
 if __name__ == "__main__":
     import uvicorn
     logging.basicConfig(level=logging.INFO)
+    port = int(os.getenv("PORT", "8000"))  # Railway injects PORT automatically
     uvicorn.run(
         "dashboard.api.server:app",
         host="0.0.0.0",
-        port=8000,
+        port=port,
         reload=False,
         log_level="info",
     )

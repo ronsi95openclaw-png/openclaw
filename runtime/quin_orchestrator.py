@@ -104,8 +104,17 @@ class QuinOrchestrator:
                 self._record(decision)
                 return asdict(decision)
             except Exception as exc:
-                logger.debug("QUIN Ollama failed, falling back to rule-based: %s", exc)
+                logger.debug("QUIN Ollama failed: %s", exc)
                 self._ollama_ok = False
+
+        # Try OpenRouter (cloud fallback when Ollama is unavailable)
+        if os.getenv("OPENROUTER_API_KEY", "").strip():
+            try:
+                decision = self._openrouter_decide(signal, ctx)
+                self._record(decision)
+                return asdict(decision)
+            except Exception as exc:
+                logger.debug("QUIN OpenRouter failed, falling back to rule-based: %s", exc)
 
         # Rule-based fallback
         decision = self._rule_based_decide(signal, ctx)
@@ -198,6 +207,34 @@ class QuinOrchestrator:
             f"Respond with JSON only: "
             f'{{\"action\": \"TRADE\"|\"HOLD\", \"confidence\": 0.0-1.0, \"reasoning\": \"...\"}}'
         )
+
+    def _openrouter_decide(self, signal: dict, ctx: Any) -> QuinDecision:
+        """Call OpenRouter API as cloud replacement for Ollama."""
+        import urllib.request
+        prompt     = self._build_prompt(signal, ctx)
+        api_key    = os.getenv("OPENROUTER_API_KEY", "")
+        or_model   = os.getenv("QUIN_OPENROUTER_MODEL", "qwen/qwen-2.5-14b-instruct")
+        payload    = json.dumps({
+            "model":    or_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 200,
+        }).encode()
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/chat/completions",
+            data=payload,
+            headers={
+                "Content-Type":  "application/json",
+                "Authorization": f"Bearer {api_key}",
+                "HTTP-Referer":  os.getenv("OPENROUTER_SITE_URL", "https://openclaw.app"),
+                "X-Title":       "OpenClaw",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=_QUIN_TIMEOUT_S) as resp:
+            body = json.loads(resp.read().decode())
+        raw = body["choices"][0]["message"]["content"].strip()
+        dec = self._parse_ollama_response(raw, signal, ctx)
+        dec.source = "openrouter"
+        return dec
 
     def _parse_ollama_response(self, raw: str, signal: dict,
                                 ctx: Any) -> QuinDecision:

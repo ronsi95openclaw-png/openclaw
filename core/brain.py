@@ -39,6 +39,22 @@ MAX_TOKENS           = int(os.getenv("MAX_TOKENS_PER_RESPONSE", "500"))
 COMPLEXITY_THRESHOLD = int(os.getenv("COMPLEXITY_THRESHOLD", "50"))   # word count
 CACHE_TTL_SECONDS    = 3600   # 1 hour
 
+# OpenRouter config — used in Railway/cloud where Ollama is unavailable
+# Set OPENROUTER_API_KEY in Railway env vars to enable
+OPENROUTER_API_KEY  = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "https://openclaw.app")
+OPENROUTER_SITE_NAME = os.getenv("OPENROUTER_SITE_NAME", "OpenClaw")
+
+# Maps local Ollama model names → OpenRouter model IDs
+OPENROUTER_MODEL_MAP: dict[str, str] = {
+    "qwen3":           "qwen/qwen3-14b",
+    "qwen2.5:14b":     "qwen/qwen-2.5-14b-instruct",
+    "deepseek-coder":  "deepseek/deepseek-coder",
+    "gemma3":          "google/gemma-3-12b-it",
+    "qwen2.5:7b":      "qwen/qwen-2.5-7b-instruct",
+}
+
 # ── Model registry — task-based routing ──────────────────────────────────────
 # Models available after local Ollama install on Ronnie's machine:
 #   qwen2.5:14b  — trade compression, general chat (existing)
@@ -254,6 +270,60 @@ def _compress_history(history: List[dict], max_turns: int = 6) -> List[dict]:
 
 
 # ---------------------------------------------------------------------------
+# OpenRouter (cloud LLM — active in Railway when OPENROUTER_API_KEY is set)
+# ---------------------------------------------------------------------------
+
+def _ask_openrouter(
+    prompt: str,
+    model_name: str,
+    system: Optional[str] = None,
+    history: Optional[List[dict]] = None,
+) -> str:
+    """Call OpenRouter API (OpenAI-compatible). Returns response text."""
+    import urllib.request
+    import urllib.error
+
+    or_model = OPENROUTER_MODEL_MAP.get(model_name, f"qwen/qwen-2.5-14b-instruct")
+    messages: list[dict] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    if history:
+        messages.extend(_compress_history(history))
+    messages.append({"role": "user", "content": prompt})
+
+    payload = json.dumps({
+        "model":      or_model,
+        "messages":   messages,
+        "max_tokens": MAX_TOKENS,
+    }).encode()
+    req = urllib.request.Request(
+        OPENROUTER_BASE_URL,
+        data=payload,
+        headers={
+            "Content-Type":  "application/json",
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "HTTP-Referer":  OPENROUTER_SITE_URL,
+            "X-Title":       OPENROUTER_SITE_NAME,
+        },
+    )
+    with urllib.request.urlopen(req, timeout=20) as r:
+        resp = json.loads(r.read().decode())
+
+    text = resp["choices"][0]["message"]["content"].strip()
+    usage = resp.get("usage", {})
+    _track_usage(
+        input_tokens=usage.get("prompt_tokens", 0),
+        output_tokens=usage.get("completion_tokens", 0),
+        model=f"openrouter/{or_model}",
+    )
+    return text
+
+
+def _openrouter_available() -> bool:
+    return bool(OPENROUTER_API_KEY)
+
+
+# ---------------------------------------------------------------------------
 # Ollama (simple tasks / fallback)
 # ---------------------------------------------------------------------------
 
@@ -264,7 +334,13 @@ def ask_llm(
     history: Optional[List[dict]] = None,
     task: Optional[str] = None,
 ) -> str:
-    """Ask local Ollama. Supports task-based model selection with fallback chain."""
+    """Ask local Ollama with OpenRouter cloud fallback.
+
+    Priority:
+      1. Ollama (local, free) — used on local machine
+      2. OpenRouter (cloud)   — used in Railway when OPENROUTER_API_KEY is set
+      3. Raises if both unavailable
+    """
     if model is None:
         model = model_for(task) if task else os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
 
@@ -275,7 +351,7 @@ def ask_llm(
         messages.extend(_compress_history(history))
     messages.append({"role": "user", "content": prompt})
 
-    # Try primary model, then fallback chain
+    # Try primary model, then fallback chain via Ollama
     chain = fallback_chain(task) if task else [model]
     if model not in chain:
         chain = [model] + chain
@@ -290,7 +366,16 @@ def ask_llm(
         except Exception as exc:
             last_exc = exc
             continue
-    raise RuntimeError(f"Ollama generation failed (all models tried): {last_exc}") from last_exc
+
+    # Ollama unavailable (cloud env) — try OpenRouter
+    if _openrouter_available():
+        try:
+            primary = chain[0] if chain else model
+            return _ask_openrouter(prompt, primary, system=system, history=history)
+        except Exception as exc:
+            last_exc = exc
+
+    raise RuntimeError(f"Ollama + OpenRouter both failed: {last_exc}") from last_exc
 
 
 def ask_structured(
@@ -343,11 +428,16 @@ def ask_claude(
     except anthropic.AuthenticationError:
         return ask_llm(prompt, system=system, history=history)
     except Exception as exc:
-        # Fallback to Ollama on any Claude API error
+        # Fallback: Ollama → OpenRouter → raise
         try:
             return ask_llm(prompt, system=system, history=history)
         except Exception:
-            raise RuntimeError(f"Both Claude and Ollama failed: {exc}") from exc
+            if _openrouter_available():
+                try:
+                    return _ask_openrouter(prompt, DEFAULT_OLLAMA_MODEL, system=system, history=history)
+                except Exception:
+                    pass
+            raise RuntimeError(f"Claude + Ollama + OpenRouter all failed: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
