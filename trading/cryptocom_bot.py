@@ -86,8 +86,9 @@ class BotState:
     last_scan:        str   = ""
     last_flush_date:  str   = ""
     status_msg:       str   = "Idle"
-    open_positions:   list  = field(default_factory=list)
-    trade_log:        list  = field(default_factory=list)
+    open_positions:    list  = field(default_factory=list)
+    trade_log:         list  = field(default_factory=list)
+    execution_paused:  bool  = False
 
 
 class CryptoComBot:
@@ -667,6 +668,10 @@ class CryptoComBot:
         balance = self._refresh_balance()
         mode    = "DEMO" if self.state.demo_mode else "LIVE"
         fired   = 0
+
+        if self.state.execution_paused:
+            self.state.status_msg = "⏸ Execution paused"
+            return
 
         for symbol in SYMBOLS:
             if self._stop.is_set():
@@ -1431,9 +1436,10 @@ class CryptoComBot:
             "open_positions":   positions,
             "trade_log":        trade_log,
             "strategy_weights": self.weights.summary(),
-            "sheets_connected": bool(self._reporter and self._reporter.is_connected()),
-            "telegram_ok":      __import__("runtime.telegram_alerts",
-                                           fromlist=["is_configured"]).is_configured(),
+            "sheets_connected":    bool(self._reporter and self._reporter.is_connected()),
+            "telegram_ok":         __import__("runtime.telegram_alerts",
+                                              fromlist=["is_configured"]).is_configured(),
+            "execution_paused":    self.state.execution_paused,
         }
 
     def flush_daily_summary(self, notes: str = "", run_analysis: bool = True) -> None:

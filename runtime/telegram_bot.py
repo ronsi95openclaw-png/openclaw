@@ -75,6 +75,10 @@ def _cmd_help(chat_id, _text, bot_ref) -> None:
         "/goal     — $98 → $50K progress\n"
         "/balance  — current balance &amp; PnL\n"
         "/weights  — strategy weights &amp; win rates\n"
+        "/restart  — restart the scan loop\n"
+        "/pause    — pause trade execution\n"
+        "/resume   — resume trade execution\n"
+        "/halt     — capital halt status &amp; release info\n"
         "/help     — this message\n"
         "──────────────────────\n"
         "Daily report at midnight UTC 📊"
@@ -88,6 +92,7 @@ def _cmd_status(chat_id, _text, bot_ref) -> None:
     try:
         s = bot_ref.get_status()
         running   = "🟢 Running" if s["running"] else "🔴 Stopped"
+        paused    = " ⏸ PAUSED" if s.get("execution_paused") else ""
         demo      = "📝 PAPER" if s["demo_mode"] else "💰 LIVE"
         cap       = s.get("capital_state", "UNKNOWN")
         cap_icon  = {"SAFE": "🟢", "DEFENSIVE": "🟡",
@@ -98,7 +103,7 @@ def _cmd_status(chat_id, _text, bot_ref) -> None:
         _reply(chat_id,
             f"📡 <b>Bot Status</b>\n"
             f"──────────────────────\n"
-            f"State:      {running}\n"
+            f"State:      {running}{paused}\n"
             f"Mode:       {demo}\n"
             f"Capital:    {cap_icon} {cap}\n"
             f"Scan:       every {scan_int}s\n"
@@ -255,6 +260,84 @@ def _cmd_weights(chat_id, _text, bot_ref) -> None:
         _reply(chat_id, f"⚠️ Weights error: {exc}")
 
 
+def _cmd_pause(chat_id, _text, bot_ref) -> None:
+    if bot_ref is None:
+        _reply(chat_id, "⚠️ Bot reference not available.")
+        return
+    try:
+        if getattr(bot_ref.state, "execution_paused", False):
+            _reply(chat_id, "⏸ Trade execution is already paused.\nSend /resume to re-enable.")
+            return
+        bot_ref.state.execution_paused = True
+        mode = "📝 PAPER" if bot_ref.state.demo_mode else "💰 LIVE"
+        _reply(chat_id,
+            f"⏸ <b>Trade execution paused</b>\n"
+            f"Mode: {mode}\n"
+            f"The scan loop continues but no new positions will be opened.\n"
+            f"Send /resume to re-enable."
+        )
+    except Exception as exc:
+        _reply(chat_id, f"⚠️ Pause error: {exc}")
+
+
+def _cmd_resume(chat_id, _text, bot_ref) -> None:
+    if bot_ref is None:
+        _reply(chat_id, "⚠️ Bot reference not available.")
+        return
+    try:
+        if not getattr(bot_ref.state, "execution_paused", False):
+            _reply(chat_id, "▶️ Trade execution is already active.")
+            return
+        bot_ref.state.execution_paused = False
+        _reply(chat_id, "▶️ <b>Trade execution resumed</b>\nNew positions can be opened on the next scan.")
+    except Exception as exc:
+        _reply(chat_id, f"⚠️ Resume error: {exc}")
+
+
+def _cmd_halt(chat_id, _text, bot_ref) -> None:
+    if bot_ref is None:
+        _reply(chat_id, "⚠️ Bot reference not available.")
+        return
+    try:
+        import os
+        from pathlib import Path
+        s           = bot_ref.get_status()
+        cap_state   = s.get("capital_state", "UNKNOWN")
+        cap_icon    = {"SAFE": "🟢", "DEFENSIVE": "🟡",
+                       "CRITICAL": "🔴", "EMERGENCY_HALT": "🚨"}.get(cap_state, "⚪")
+
+        halt_marker = Path("data/BALANCE_HALT_MARKER")
+        halt_file   = Path("data/HALT_MARKER")
+        active_halts = []
+        if halt_marker.exists():
+            active_halts.append("BALANCE_HALT_MARKER")
+        if halt_file.exists():
+            active_halts.append("HALT_MARKER")
+
+        if active_halts:
+            halt_str = "\n".join(f"  🚨 {h}" for h in active_halts)
+            _reply(chat_id,
+                f"🚨 <b>EMERGENCY HALT ACTIVE</b>\n"
+                f"──────────────────────\n"
+                f"Capital state: {cap_icon} {cap_state}\n"
+                f"Active markers:\n{halt_str}\n"
+                f"──────────────────────\n"
+                f"To release:\n"
+                f"  POST /admin/halt/release on the dashboard API\n"
+                f"  or delete the marker file(s) and /restart"
+            )
+        else:
+            _reply(chat_id,
+                f"✅ <b>No Halt Active</b>\n"
+                f"──────────────────────\n"
+                f"Capital state: {cap_icon} {cap_state}\n"
+                f"No halt markers present.\n"
+                f"System is operating normally."
+            )
+    except Exception as exc:
+        _reply(chat_id, f"⚠️ Halt status error: {exc}")
+
+
 def _cmd_restart(chat_id, _text, bot_ref) -> None:
     if bot_ref is None:
         _reply(chat_id, "⚠️ Bot reference not available.")
@@ -277,6 +360,9 @@ _COMMANDS = {
     "/goal":    _cmd_goal,
     "/balance": _cmd_balance,
     "/weights": _cmd_weights,
+    "/pause":   _cmd_pause,
+    "/resume":  _cmd_resume,
+    "/halt":    _cmd_halt,
     "/restart": _cmd_restart,
 }
 
