@@ -673,9 +673,9 @@ async def websocket_endpoint(websocket: WebSocket):
 if __name__ == "__main__":
     import uvicorn
     logging.basicConfig(level=logging.INFO)
-    port = int(os.getenv("PORT", "8000"))  # Railway injects PORT automatically
+    port = int(os.getenv("PORT", "8000"))
     uvicorn.run(
-        "dashboard.api.server:app",
+        app,                 # pass object directly — works regardless of cwd
         host="0.0.0.0",
         port=port,
         reload=False,
