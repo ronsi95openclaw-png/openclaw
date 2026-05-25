@@ -225,6 +225,7 @@ def api_weights():
     return get_bot().weights.summary()
 
 
+@app.get("/health")
 @app.get("/api/health")
 def api_health():
     from runtime.capability_matrix import assess
