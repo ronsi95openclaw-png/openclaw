@@ -28,6 +28,9 @@ flask>=3.0
 # Telegram
 python-telegram-bot>=21.10
 
+# Cloud state persistence
+supabase>=2.3.0
+
 # HTTP / serialization
 httpx==0.28.1
 pydantic>=2.0

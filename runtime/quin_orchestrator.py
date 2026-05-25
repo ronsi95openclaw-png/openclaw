@@ -335,12 +335,16 @@ class QuinOrchestrator:
             self._last_decision  = decision
             self._decision_count += 1
         try:
-            path = Path(self._decisions_path)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(asdict(decision)) + "\n")
+            from infra.state_store import append_quin_decision
+            append_quin_decision(asdict(decision))
         except Exception:
-            pass
+            try:
+                path = Path(self._decisions_path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(asdict(decision)) + "\n")
+            except Exception:
+                pass
 
 
 # ── Module singleton ──────────────────────────────────────────────────────────

@@ -146,7 +146,34 @@ async def startup():
     except Exception as _phase9_exc:
         logger.warning("Phase 9 router failed to load: %s", _phase9_exc)
 
+    # Register Telegram webhook if RAILWAY_PUBLIC_URL is set
+    _register_telegram_webhook()
+
     logger.info("Dashboard API started — WebSocket event bus active")
+
+
+def _register_telegram_webhook() -> None:
+    """Set Telegram webhook to this Railway deployment's public URL."""
+    import urllib.request
+    railway_url = os.getenv("RAILWAY_PUBLIC_URL", "").rstrip("/")
+    tok         = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    if not railway_url or not tok:
+        return
+    webhook_url = f"{railway_url}/telegram/webhook"
+    api_url     = f"https://api.telegram.org/bot{tok}/setWebhook"
+    payload     = json.dumps({"url": webhook_url, "allowed_updates": ["message"]}).encode()
+    req         = urllib.request.Request(
+        api_url, data=payload, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            result = json.loads(r.read().decode())
+        if result.get("ok"):
+            logger.info("Telegram webhook registered → %s", webhook_url)
+        else:
+            logger.warning("Telegram webhook registration failed: %s", result)
+    except Exception as exc:
+        logger.warning("Telegram webhook registration error: %s", exc)
 
 
 async def _poll_bot_state():
@@ -297,6 +324,41 @@ def api_flush():
     bot = get_bot()
     bot.flush_daily_summary(notes="manual_trigger", run_analysis=True)
     return {"status": "triggered"}
+
+
+# ── Telegram webhook (cloud mode) ─────────────────────────────────────────────
+
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+    """Receive Telegram updates via webhook (used in Railway cloud deployment)."""
+    try:
+        update = await request.json()
+    except Exception:
+        return {"ok": False}
+
+    # Audit store (fire-and-forget)
+    try:
+        from infra.state_store import store_telegram_update
+        store_telegram_update(update)
+    except Exception:
+        pass
+
+    # Dispatch the command using the existing TelegramCommandBot._dispatch logic
+    try:
+        from runtime.telegram_bot import _COMMANDS, _reply
+        msg     = update.get("message", {})
+        chat_id = msg.get("chat", {}).get("id")
+        text    = (msg.get("text") or "").strip()
+        if chat_id and text.startswith("/"):
+            cmd     = text.split()[0].split("@")[0].lower()
+            handler = _COMMANDS.get(cmd)
+            if handler:
+                bot_ref = get_bot() if "get_bot" in dir() else None
+                handler(chat_id, text, bot_ref)
+    except Exception as exc:
+        logger.warning("Telegram webhook dispatch error: %s", exc)
+
+    return {"ok": True}
 
 
 # ── Emergency halt release ─────────────────────────────────────────────────────

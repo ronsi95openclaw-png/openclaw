@@ -304,6 +304,11 @@ class ClaudeAnalyst:
         data["_meta"] = {"ts": ts, "source": source_file, "model": self._model}
         path.write_text(json.dumps(data, indent=2))
         logger.info("Analysis saved → %s", path)
+        try:
+            from infra.state_store import save_analysis_report
+            save_analysis_report(data, ts)
+        except Exception:
+            pass
         return str(path)
 
     def _build_report(self, data: Dict, n: int, saved_path: str) -> AnalysisReport:

@@ -142,10 +142,14 @@ class CryptoComBot:
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _load_state(self) -> None:
-        if not _STATE_FILE.exists():
+        try:
+            from infra.state_store import load_bot_state
+            raw = load_bot_state()
+        except Exception:
+            raw = None
+        if raw is None:
             return
         try:
-            raw = json.loads(_STATE_FILE.read_text())
             s = self.state
             s.demo_mode        = raw.get("demo_mode",        True)
             s.risk_pct         = raw.get("risk_pct",         1.5)
@@ -182,21 +186,30 @@ class CryptoComBot:
             logger.warning("State load failed: %s", e)
 
     def _save_state(self) -> None:
-        _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
             raw = {
-                "demo_mode":       self.state.demo_mode,
-                "risk_pct":        self.state.risk_pct,
+                "demo_mode":        self.state.demo_mode,
+                "risk_pct":         self.state.risk_pct,
                 "starting_balance": self.state.starting_balance,
-                "total_pnl":       self.state.total_pnl,
-                "trades_date":     self.state.trades_date,
-                "trades_today":    self.state.trades_today,
-                "trade_log":       self.state.trade_log[-50:],
-                "open_positions":  self.state.open_positions,
-                "last_flush_date": self.state.last_flush_date,
-                "scan_interval":   self.state.scan_interval,
+                "total_pnl":        self.state.total_pnl,
+                "trades_date":      self.state.trades_date,
+                "trades_today":     self.state.trades_today,
+                "trade_log":        self.state.trade_log[-50:],
+                "open_positions":   self.state.open_positions,
+                "last_flush_date":  self.state.last_flush_date,
+                "scan_interval":    self.state.scan_interval,
             }
-        _STATE_FILE.write_text(json.dumps(raw, indent=2))
+        try:
+            from infra.state_store import save_bot_state
+            save_bot_state(raw)
+        except Exception as exc:
+            logger.debug("save_bot_state failed: %s", exc)
+            # Hard fallback
+            try:
+                _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                _STATE_FILE.write_text(json.dumps(raw, indent=2))
+            except Exception:
+                pass
 
     def _append_log(self, record: dict) -> None:
         _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1273,8 +1286,17 @@ class CryptoComBot:
             except Exception:
                 outcome_record["qwen_lesson"] = ""
 
-            with open(_OUTCOMES_FILE, "a", encoding="utf-8") as _f:
-                _f.write(json.dumps(outcome_record) + "\n")
+            try:
+                from infra.state_store import append_trade_outcome
+                append_trade_outcome(outcome_record)
+            except Exception:
+                # Hard fallback: direct JSONL write
+                try:
+                    _OUTCOMES_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    with open(_OUTCOMES_FILE, "a", encoding="utf-8") as _f:
+                        _f.write(json.dumps(outcome_record) + "\n")
+                except Exception:
+                    pass
 
             # Obsidian knowledge vault — trade journal entry
             try:
