@@ -1,57 +1,131 @@
 version: "3.9"
 
+# OpenClaw VPS Production Stack
+#
+# Services:
+#   openclaw-bot    — Python trading bot + FastAPI dashboard API (port 8000)
+#   openclaw-web    — Next.js dashboard UI (port 3000)
+#   ollama          — Local LLM inference for QUIN (qwen2.5:14b)
+#   prometheus      — Metrics scraping (port 9091)
+#
+# Start:  docker compose up -d
+# Logs:   docker compose logs -f openclaw-bot
+# Status: docker compose ps
+
+networks:
+  openclaw-net:
+    driver: bridge
+
+volumes:
+  data:
+  ollama-models:
+  prometheus-data:
+
 services:
-  openclaw:
-    build: .
+
+  # ── Ollama — local LLM inference ─────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: openclaw-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+    networks:
+      - openclaw-net
+    expose:
+      - "11434"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    # GPU support (uncomment if VPS has NVIDIA GPU):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # ── Trading bot + API ─────────────────────────────────────────────────────────
+  openclaw-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openclaw-bot:latest
     container_name: openclaw-bot
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - SUPABASE_URL=${SUPABASE_URL:-https://gotdcwcdcampwysydbzg.supabase.co}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
     ports:
       - "8000:8000"
-      - "9090:9090"
     volumes:
-      - ./data:/app/data          # state, logs, optimization — persisted
+      - data:/app/data
       - ./credentials.json:/app/credentials.json:ro
+    networks:
+      - openclaw-net
+    depends_on:
+      ollama:
+        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 30s
     logging:
       driver: "json-file"
       options:
         max-size: "50m"
         max-file: "5"
 
-  dashboard:
+  # ── Next.js dashboard UI ──────────────────────────────────────────────────────
+  openclaw-web:
     build:
       context: ./dashboard/web
       dockerfile: Dockerfile.web
-    container_name: openclaw-dashboard
+    image: openclaw-web:latest
+    container_name: openclaw-web
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://openclaw:8000
+      - NEXT_PUBLIC_API_URL=http://openclaw-bot:8000
+    networks:
+      - openclaw-net
     depends_on:
-      openclaw:
+      openclaw-bot:
         condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
+  # ── Prometheus metrics ────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.52.0
     container_name: openclaw-prometheus
     restart: unless-stopped
     ports:
-      - "9091:9090"
+      - "127.0.0.1:9091:9090"
     volumes:
-      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - openclaw-net
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=30d"
-
-volumes:
-  prometheus_data:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

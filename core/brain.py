@@ -28,7 +28,11 @@ from typing import List, Optional
 
 import anthropic
 try:
-    from ollama import chat as ollama_chat
+    import ollama as _ollama_lib
+    _OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    _ollama_client = _ollama_lib.Client(host=_OLLAMA_HOST)
+    def ollama_chat(model, messages, **kwargs):
+        return _ollama_client.chat(model=model, messages=messages, **kwargs)
 except ImportError:
     ollama_chat = None  # Ollama not installed — OpenRouter/Claude fallback will be used
 

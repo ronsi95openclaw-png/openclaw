@@ -33,7 +33,7 @@ from typing import Any, Optional
 logger = logging.getLogger("openclaw.runtime.quin_orchestrator")
 
 _DECISIONS_PATH = "data/quin_decisions.jsonl"
-_OLLAMA_URL     = os.getenv("OLLAMA_URL", "http://localhost:11434")
+_OLLAMA_URL     = os.getenv("OLLAMA_HOST", os.getenv("OLLAMA_URL", "http://localhost:11434"))
 _QUIN_MODEL     = os.getenv("QUIN_MODEL", "qwen2.5:14b")
 _QUIN_TIMEOUT_S = 10.0   # max time to wait for Ollama response
 
