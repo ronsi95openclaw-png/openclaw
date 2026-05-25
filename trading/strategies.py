@@ -510,9 +510,6 @@ class StrategyWeightEngine:
         )
         # Obsidian: record weight change if significant
         try:
-            import sys
-            from pathlib import Path
-            sys.path.insert(0, str(Path.home() / "ai-system"))
             from obsidian.strategy_writer import write_strategy_evolution
             write_strategy_evolution(
                 strategy=strategy, old_weight=old_weight, new_weight=s.weight,

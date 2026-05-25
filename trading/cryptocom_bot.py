@@ -1278,8 +1278,6 @@ class CryptoComBot:
 
             # Obsidian knowledge vault — trade journal entry
             try:
-                import sys
-                sys.path.insert(0, str(Path.home() / "ai-system"))
                 from obsidian.trade_journal_writer import write_trade
                 write_trade(outcome_record)
             except Exception:
@@ -1523,8 +1521,6 @@ class CryptoComBot:
 
         # Obsidian knowledge vault — daily note + strategy performance snapshot
         try:
-            import sys
-            sys.path.insert(0, str(Path.home() / "ai-system"))
             from obsidian.vault_manager import write_daily_note
             from obsidian.optimization_writer import write_strategy_performance
             write_daily_note(report_date, s["total_pnl"], s["trades_today"],
