@@ -4,7 +4,7 @@ WORKDIR /app
 
 # System deps (for cryptography, numpy, scipy wheels)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libffi-dev libssl-dev \
+    build-essential libffi-dev libssl-dev python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python deps first (layer cache)
