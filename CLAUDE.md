@@ -3,13 +3,15 @@
 ## What this project is
 Crypto trading bot running on Crypto.com perpetual futures (BTCUSD-PERP, ETHUSD-PERP, SOLUSD-PERP) with 3× leverage. Currently in **paper/demo mode only**. Owner: Ronnie Irizarry.
 
-## Current status (last updated 2026-05-24)
+## Current status (last updated 2026-05-25)
 - DEMO_MODE=true — paper trading, no real orders
-- Bot running 24/7, scanning every 60s
+- Bot running 24/7 on Railway (cloud) — `cryptobot-production-18e1.up.railway.app`
 - Starting balance: $98.00 | Current balance: ~$295.30 | Return: +201%
 - Goal: $98 → $50,000 (8 milestones)
 - IP 166.198.250.23 whitelisted on Crypto.com API key
 - **Cloud environment cannot reach api.crypto.com or api.telegram.org** — network blocked. Bot runs with real data only on local machine.
+- Railway deployment: ACTIVE on branch `claude/blofin-trading-bot-dashboard-TUJBC`
+- OpenRouter configured as cloud LLM fallback (Railway env var: OPENROUTER_API_KEY)
 
 ## Architecture (top → bottom)
 ```
@@ -128,11 +130,12 @@ cd ~/haulyall && python bot.py
 3. ~~DCA strategy from cryptobot~~ ✅ DONE
 4. ~~GoalTracker $98→$50K~~ ✅ DONE
 5. ~~Skill Clock 10-skill pipeline~~ ✅ DONE
-6. Auto-apply Claude Opus weight_adjustments to strategy_weights.json at midnight
-7. Auto-disable strategies with weight < 0.3 for 20+ trades
-8. Feed real Crypto.com balance into CapitalPreservationEngine
-9. Add /restart command to Telegram bot
-10. Dashboard GoalTracker component (dashboard/web/components/goal/GoalTracker.js) ✅
+6. ~~Auto-apply Claude Opus weight_adjustments to strategy_weights.json at midnight~~ ✅ DONE (runtime/weight_scheduler.py — WeightApplicationDaemon)
+7. ~~Auto-disable strategies with weight < 0.3 for 20+ trades~~ ✅ DONE (_auto_disable_weak_strategies in cryptocom_bot.py)
+8. ~~Feed real Crypto.com balance into CapitalPreservationEngine~~ ✅ DONE (runtime/balance_feed.py + live_balance_guardian.py; advisory in DEMO_MODE)
+9. ~~Add /restart command to Telegram bot~~ ✅ DONE (runtime/telegram_bot.py)
+10. ~~Dashboard GoalTracker component~~ ✅ DONE
+11. Railway deployment — single-process main.py, DOCKERFILE builder, OpenRouter LLM fallback ✅ DONE
 
 ---
 
