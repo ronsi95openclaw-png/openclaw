@@ -895,6 +895,13 @@ class CryptoComBot:
 
     # ── Market data ───────────────────────────────────────────────────────────
 
+    # Binance symbol map (public API — no key needed, not blocked on Railway)
+    _BINANCE_SYMBOLS = {
+        "BTC_USDT": "BTCUSDT",
+        "ETH_USDT": "ETHUSDT",
+        "SOL_USDT": "SOLUSDT",
+    }
+
     def _fetch_market_data(self, symbol: str) -> tuple[list[dict] | None, float]:
         # Always try real market data — demo_mode only blocks order execution, not data
         try:
@@ -909,9 +916,44 @@ class CryptoComBot:
                     funding = 0.0
                 return candles, funding
         except Exception as e:
-            logger.warning("Market data fetch failed [%s]: %s — using simulation", symbol, e)
-        # Simulation fallback: only reached if REST and cache both unavailable
+            logger.debug("Crypto.com market data unavailable [%s]: %s", symbol, e)
+
+        # Binance public API fallback — real prices, no auth, works on Railway
+        try:
+            candles = self._fetch_binance_candles(symbol)
+            if candles and self._validate_candles(symbol, candles):
+                logger.debug("Using Binance candles for %s", symbol)
+                return candles, 0.0
+        except Exception as e:
+            logger.debug("Binance fallback failed [%s]: %s", symbol, e)
+
+        # Last resort: simulation
+        logger.warning("All market data sources failed [%s] — using simulation", symbol)
         return self._fake_candles(symbol), random.uniform(-0.0003, 0.0003)
+
+    def _fetch_binance_candles(self, symbol: str) -> list[dict]:
+        """Fetch 15m candles from Binance public API (no API key required)."""
+        import urllib.request
+        bin_sym = self._BINANCE_SYMBOLS.get(symbol)
+        if not bin_sym:
+            raise ValueError(f"No Binance symbol for {symbol}")
+        url = (f"https://api.binance.com/api/v3/klines"
+               f"?symbol={bin_sym}&interval=15m&limit=100")
+        req = urllib.request.Request(url, headers={"User-Agent": "OpenClaw/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode())
+        # Binance kline format: [open_time, open, high, low, close, volume, ...]
+        return [
+            {
+                "ts":     int(row[0]) // 1000,
+                "open":   float(row[1]),
+                "high":   float(row[2]),
+                "low":    float(row[3]),
+                "close":  float(row[4]),
+                "volume": float(row[5]),
+            }
+            for row in data
+        ]
 
     def _validate_candles(self, symbol: str, candles: list) -> bool:
         """Reject candle sets with bad data before any strategy runs on them."""
