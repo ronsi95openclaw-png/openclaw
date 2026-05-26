@@ -353,8 +353,13 @@ async def telegram_webhook(request: Request):
             cmd     = text.split()[0].split("@")[0].lower()
             handler = _COMMANDS.get(cmd)
             if handler:
-                bot_ref = get_bot() if "get_bot" in dir() else None
+                try:
+                    bot_ref = get_bot()
+                except Exception:
+                    bot_ref = None
                 handler(chat_id, text, bot_ref)
+            else:
+                _reply(chat_id, f"Unknown command: {cmd}\nType /help for available commands.")
     except Exception as exc:
         logger.warning("Telegram webhook dispatch error: %s", exc)
 
