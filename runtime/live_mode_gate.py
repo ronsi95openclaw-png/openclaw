@@ -73,6 +73,14 @@ def _pbar(current: float, total: float, width: int = 8) -> str:
     return f"[{'█' * filled}{'░' * (width - filled)}] {done}"
 
 
+def _wr_bar(win_rate: float, target: float, width: int = 8) -> str:
+    """Progress bar for win rate — label shows actual WR, not % toward goal."""
+    ratio  = min(win_rate / target, 1.0) if target > 0 else 0.0
+    filled = int(width * ratio)
+    label  = "✅" if win_rate >= target else f"{win_rate:.0%}"
+    return f"[{'█' * filled}{'░' * (width - filled)}] {label}"
+
+
 def format_eligibility_report() -> str:
     """Returns a Telegram-formatted eligibility report with progress bars."""
     from settings import LIVE_ACTIVATION_PASSPHRASE
@@ -101,7 +109,7 @@ def format_eligibility_report() -> str:
         header,
         "──────────────────────",
         f"Trades: {_pbar(paper_count, reqs.min_paper_trades)} {paper_count}/{reqs.min_paper_trades}",
-        f"WR:     {_pbar(win_rate * 100, reqs.min_win_rate * 100)} {win_rate:.1%}/{reqs.min_win_rate:.0%}",
+        f"WR:     {_wr_bar(win_rate, reqs.min_win_rate)} (need {reqs.min_win_rate:.0%})",
         f"Capital:{_pbar(1 if cap_state == 'SAFE' else 0, 1)} {cap_state}",
         f"Slip:   {_pbar(1 if slip_ok else 0, 1)} {'Active' if slip_ok else 'Off'}",
         "──────────────────────",

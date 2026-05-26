@@ -120,8 +120,24 @@ _bot = None
 
 
 def get_bot():
+    """Return the running CryptoComBot.
+
+    Prefers the bot already started by main.py (found via the
+    TelegramCommandBot singleton) to avoid creating a duplicate instance that
+    would write conflicting events to the shared event store.
+    Falls back to creating a new instance only when running API-only (no main.py).
+    """
     global _bot
     if _bot is None:
+        # First choice: get the bot_ref already wired into the cmd singleton
+        try:
+            from runtime.telegram_bot import _cmd_bot  # module-level singleton
+            if _cmd_bot is not None and getattr(_cmd_bot, "_bot_ref", None) is not None:
+                _bot = _cmd_bot._bot_ref
+                return _bot
+        except Exception:
+            pass
+        # Fallback: API-only mode (no main.py running)
         from trading.cryptocom_bot import CryptoComBot
         _bot = CryptoComBot()
     return _bot
@@ -388,23 +404,26 @@ async def telegram_webhook(request: Request):
     except Exception:
         pass
 
-    # Dispatch the command using the existing TelegramCommandBot._dispatch logic
+    # Dispatch through the TelegramCommandBot singleton — same bot_ref as
+    # long-poll mode so /status reads the actual running bot, not a stale copy.
+    # Run in a background thread so we return {"ok": True} immediately
+    # (Telegram retries after 5s if the handler blocks the response).
     try:
-        from runtime.telegram_bot import _COMMANDS, _reply
-        msg     = update.get("message", {})
-        chat_id = msg.get("chat", {}).get("id")
-        text    = (msg.get("text") or "").strip()
-        if chat_id and text.startswith("/"):
-            cmd     = text.split()[0].split("@")[0].lower()
-            handler = _COMMANDS.get(cmd)
-            if handler:
-                try:
-                    bot_ref = get_bot()
-                except Exception:
-                    bot_ref = None
-                handler(chat_id, text, bot_ref)
-            else:
-                _reply(chat_id, f"Unknown command: {cmd}\nType /help for available commands.")
+        import asyncio
+        from runtime.telegram_bot import get_command_bot
+        cmd_bot = get_command_bot()
+        if cmd_bot:
+            asyncio.create_task(asyncio.to_thread(cmd_bot._dispatch, update))
+        else:
+            from runtime.telegram_bot import _COMMANDS, _reply
+            msg     = update.get("message", {})
+            chat_id = msg.get("chat", {}).get("id")
+            text    = (msg.get("text") or "").strip()
+            if chat_id and text.startswith("/"):
+                cmd     = text.split()[0].split("@")[0].lower()
+                handler = _COMMANDS.get(cmd)
+                if handler:
+                    asyncio.create_task(asyncio.to_thread(handler, chat_id, text, None))
     except Exception as exc:
         logger.warning("Telegram webhook dispatch error: %s", exc)
 
