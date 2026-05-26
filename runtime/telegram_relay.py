@@ -154,3 +154,29 @@ def get_relay() -> TelegramRelayDaemon:
     if _relay is None:
         _relay = TelegramRelayDaemon()
     return _relay
+
+
+if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+    # Allow running from repo root: python runtime/telegram_relay.py
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).parent.parent / ".env", override=False)
+    except ImportError:
+        pass
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    relay = get_relay()
+    relay.start()
+    logger.info("Relay running — Ctrl+C to stop")
+    try:
+        while True:
+            time.sleep(5)
+    except (KeyboardInterrupt, SystemExit):
+        relay.stop()
+        logger.info("Relay stopped")
