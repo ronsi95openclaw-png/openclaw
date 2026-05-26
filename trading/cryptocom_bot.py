@@ -189,6 +189,7 @@ class CryptoComBot:
         with self._lock:
             raw = {
                 "demo_mode":        self.state.demo_mode,
+                "running":          self.state.running,
                 "risk_pct":         self.state.risk_pct,
                 "starting_balance": self.state.starting_balance,
                 "total_pnl":        self.state.total_pnl,
@@ -198,6 +199,7 @@ class CryptoComBot:
                 "open_positions":   self.state.open_positions,
                 "last_flush_date":  self.state.last_flush_date,
                 "scan_interval":    self.state.scan_interval,
+                "execution_paused": self.state.execution_paused,
             }
         try:
             from infra.state_store import save_bot_state
