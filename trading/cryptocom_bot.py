@@ -88,6 +88,7 @@ class BotState:
     status_msg:       str   = "Idle"
     open_positions:    list  = field(default_factory=list)
     trade_log:         list  = field(default_factory=list)
+    balance_history:   list  = field(default_factory=list)  # [{ts,balance,pnl,label}] last 500 ticks
     execution_paused:  bool  = False
 
 
@@ -138,6 +139,9 @@ class CryptoComBot:
 
         # Telegram two-way command bot (Phase 11)
         self._tg_cmd_bot   = self._init_tg_cmd_bot()
+
+        # Ruflo HNSW memory advisory
+        self._ruflo = self._init_ruflo()
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -506,6 +510,16 @@ class CryptoComBot:
             logger.warning("TelegramCommandBot unavailable: %s", exc)
             return None
 
+    def _init_ruflo(self):
+        try:
+            from runtime.ruflo_agent import get_advisor
+            advisor = get_advisor()
+            advisor.start()
+            return advisor
+        except Exception as exc:
+            logger.debug("Ruflo init failed (non-fatal): %s", exc)
+            return None
+
     def _run_startup_reconciliation(self) -> None:
         try:
             from runtime.reconciliation import reconcile_on_startup
@@ -643,6 +657,20 @@ class CryptoComBot:
                                 pass
                     except Exception as _gte:
                         logger.debug("GoalTracker update error (non-fatal): %s", _gte)
+
+                # Balance history snapshot — feeds the dashboard chart
+                try:
+                    _bal = self._refresh_balance()
+                    _snap = {
+                        "ts":      datetime.now(timezone.utc).isoformat(),
+                        "balance": round(_bal, 2),
+                        "pnl":     round(self.state.total_pnl, 2),
+                        "label":   datetime.now(timezone.utc).strftime("%H:%M"),
+                    }
+                    self.state.balance_history.append(_snap)
+                    self.state.balance_history = self.state.balance_history[-500:]
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error("Scan error: %s", e, exc_info=True)
                 self.state.status_msg = f"Error: {str(e)[:80]}"
@@ -1055,6 +1083,23 @@ class CryptoComBot:
             except Exception as _pre:
                 logger.debug("Portfolio risk check error (non-fatal): %s", _pre)
 
+        # Ruflo pre-trade advisory — non-blocking HNSW memory lookup
+        if self._ruflo and self._ruflo.is_available():
+            try:
+                _adv = self._ruflo.pre_trade_advice(
+                    symbol=sig.symbol, strategy=sig.strategy,
+                    action=sig.action, confidence=sig.confidence,
+                    regime=regime_label,
+                )
+                logger.info(
+                    "Ruflo [%s/%s]: %dW/%dL similar  adj=%+.2f  latency=%.0fms",
+                    sig.symbol, sig.strategy,
+                    _adv.similar_wins, _adv.similar_losses,
+                    _adv.confidence_adj, _adv.latency_ms,
+                )
+            except Exception:
+                pass
+
         sl = price * (1 - sig.sl_pct / 100) if sig.action == "long" else price * (1 + sig.sl_pct / 100)
         tp = price * (1 + sig.tp_pct / 100) if sig.action == "long" else price * (1 - sig.tp_pct / 100)
         trade_id = _next_trade_id(sig.strategy)
@@ -1348,6 +1393,24 @@ class CryptoComBot:
                 write_trade(outcome_record)
             except Exception:
                 pass
+
+            # Ruflo HNSW memory — store outcome for future advisory lookups
+            if self._ruflo and self._ruflo.is_available():
+                try:
+                    self._ruflo.record_outcome(
+                        symbol=pos["symbol"],
+                        strategy=pos["strategy"],
+                        pnl=pnl,
+                        regime=pos.get("regime_label", "UNKNOWN"),
+                        action=pos["side"],
+                        win=(outcome == "win"),
+                        metadata={
+                            "signal_reason": pos.get("reason", ""),
+                            "narrative":     outcome_record.get("qwen_lesson", ""),
+                        },
+                    )
+                except Exception:
+                    pass
         except Exception as _e:
             logger.debug("Outcome JSONL write failed (non-fatal): %s", _e)
 

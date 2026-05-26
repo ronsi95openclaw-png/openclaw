@@ -294,6 +294,43 @@ function PnlChart({ trades }) {
   )
 }
 
+function BalanceChart({ data, startingBalance = 98 }) {
+  if (!data?.length)
+    return (
+      <Card title="Balance Curve">
+        <p className="text-xs text-muted">Collecting data — appears after the first scan tick…</p>
+      </Card>
+    )
+
+  const last  = data[data.length - 1]?.balance ?? startingBalance
+  const min   = Math.min(...data.map(d => d.balance), startingBalance)
+  const max   = Math.max(...data.map(d => d.balance), startingBalance)
+  const color = last >= startingBalance ? '#22c55e' : '#ef4444'
+  const diff  = last - startingBalance
+  const sign  = diff >= 0 ? '+' : ''
+
+  return (
+    <Card title={`Balance Curve  •  $${last.toFixed(2)}  (${sign}$${diff.toFixed(2)} all-time)`}>
+      <ResponsiveContainer width="100%" height={160}>
+        <LineChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: 8 }}>
+          <XAxis dataKey="label" tick={{ fontSize: 9, fill: '#6b7280' }} interval="preserveStartEnd" />
+          <YAxis
+            domain={[Math.max(0, min * 0.98), max * 1.02]}
+            tick={{ fontSize: 9, fill: '#6b7280' }}
+            tickFormatter={v => `$${v.toFixed(0)}`}
+          />
+          <Tooltip
+            contentStyle={{ background: '#1a1d27', border: '1px solid #2a2d3a', fontSize: 11 }}
+            formatter={(v) => [`$${Number(v).toFixed(2)}`, 'Balance']}
+            labelFormatter={l => `Time: ${l}`}
+          />
+          <Line type="monotone" dataKey="balance" dot={false} strokeWidth={2} stroke={color} />
+        </LineChart>
+      </ResponsiveContainer>
+    </Card>
+  )
+}
+
 function TradeLog({ trades }) {
   if (!trades?.length)
     return <Card title="Trade Log" className="col-span-full"><p className="text-xs text-muted">No trades yet</p></Card>
@@ -450,10 +487,11 @@ function Controls({ status, onConfigure, onFlush }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
-  const [status,   setStatus]   = useState(null)
-  const [health,   setHealth]   = useState(null)
-  const [analysis, setAnalysis] = useState(null)
-  const [wsStatus, setWsStatus] = useState('connecting')
+  const [status,       setStatus]       = useState(null)
+  const [health,       setHealth]       = useState(null)
+  const [analysis,     setAnalysis]     = useState(null)
+  const [wsStatus,     setWsStatus]     = useState('connecting')
+  const [balChartData, setBalChartData] = useState([])
   const wsRef = useRef(null)
 
   // Phase 9 panel state
@@ -484,6 +522,18 @@ export default function Dashboard() {
   useEffect(() => {
     fetch(`${API_URL}/api/health`).then(r => r.json()).then(setHealth).catch(() => {})
     fetch(`${API_URL}/api/analysis`).then(r => r.json()).then(setAnalysis).catch(() => {})
+  }, [API_URL])
+
+  // Balance chart — poll every 30s (matches bot scan interval)
+  useEffect(() => {
+    const load = () =>
+      fetch(`${API_URL}/api/balance-history`)
+        .then(r => r.json())
+        .then(d => Array.isArray(d) && d.length && setBalChartData(d))
+        .catch(() => {})
+    load()
+    const id = setInterval(load, 30000)
+    return () => clearInterval(id)
   }, [API_URL])
 
   // WebSocket for live state
@@ -669,10 +719,13 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Row 3: Analysis */}
+        {/* Row 3: Balance Chart */}
+        <BalanceChart data={balChartData} startingBalance={status?.starting_balance ?? 98} />
+
+        {/* Row 4: Analysis */}
         <AnalysisCard analysis={analysis} />
 
-        {/* Row 4: Trade Log */}
+        {/* Row 5: Trade Log */}
         <TradeLog trades={trades} />
 
         {/* ── Phase 9: Operational Panels ─────────────────────────────── */}

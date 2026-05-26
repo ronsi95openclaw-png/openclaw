@@ -252,6 +252,13 @@ def api_weights():
     return get_bot().weights.summary()
 
 
+@app.get("/api/balance-history")
+def api_balance_history(limit: int = 200):
+    """Balance snapshots for the dashboard chart — last N scan ticks."""
+    history = getattr(get_bot().state, "balance_history", [])
+    return history[-min(limit, 500):]
+
+
 @app.get("/health")
 @app.get("/api/health")
 def api_health():
