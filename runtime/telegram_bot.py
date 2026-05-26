@@ -605,7 +605,24 @@ class TelegramCommandBot:
             return
 
         if not data.get("ok"):
-            logger.debug("getUpdates not ok: %s", data)
+            err_code = data.get("error_code", 0)
+            if err_code == 409:
+                # Webhook is still registered — delete it so polling can take over
+                logger.warning("getUpdates: 409 webhook conflict — auto-deleting webhook")
+                try:
+                    del_req = urllib.request.Request(
+                        f"https://api.telegram.org/bot{tok}/deleteWebhook",
+                        data=b'{"drop_pending_updates":false}',
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(del_req, timeout=5) as dr:
+                        logger.info("Webhook deleted: %s", json.loads(dr.read().decode()))
+                except Exception as de:
+                    logger.warning("Auto-deleteWebhook failed: %s", de)
+                self._stop.wait(2)
+            else:
+                logger.warning("getUpdates not ok (code %s): %s", err_code, data)
+                self._stop.wait(_RETRY_SLEEP)
             return
 
         for update in data.get("result", []):
