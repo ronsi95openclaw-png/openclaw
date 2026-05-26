@@ -5,8 +5,10 @@ version: "3.9"
 # Services:
 #   openclaw-bot    — Python trading bot + FastAPI dashboard API (port 8000)
 #   openclaw-web    — Next.js dashboard UI (port 3000)
-#   ollama          — Local LLM inference for QUIN (qwen2.5:14b)
-#   prometheus      — Metrics scraping (port 9091)
+#   prometheus      — Metrics scraping (port 9091, localhost only)
+#
+# LLM inference: OpenRouter API (OPENROUTER_API_KEY in .env) — no GPU/Ollama needed.
+# Optional local Ollama: uncomment the ollama service below if you want free inference.
 #
 # Start:  docker compose up -d
 # Logs:   docker compose logs -f openclaw-bot
@@ -18,8 +20,100 @@ networks:
 
 volumes:
   data:
-  ollama-models:
   prometheus-data:
+
+services:
+
+  # ── Trading bot + API ─────────────────────────────────────────────────────────
+  openclaw-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openclaw-bot:latest
+    container_name: openclaw-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL:-https://gotdcwcdcampwysydbzg.supabase.co}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+    ports:
+      - "8000:8000"
+    volumes:
+      - data:/app/data
+      - ./credentials.json:/app/credentials.json:ro
+    networks:
+      - openclaw-net
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ── Next.js dashboard UI ──────────────────────────────────────────────────────
+  openclaw-web:
+    build:
+      context: ./dashboard/web
+      dockerfile: Dockerfile.web
+    image: openclaw-web:latest
+    container_name: openclaw-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://openclaw-bot:8000
+    networks:
+      - openclaw-net
+    depends_on:
+      openclaw-bot:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Prometheus metrics ────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: openclaw-prometheus
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9091:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - openclaw-net
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Optional: local Ollama (free inference, needs 16GB RAM) ──────────────────
+  # Uncomment if your VPS has enough RAM and you want zero inference cost.
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: openclaw-ollama
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ollama-models:/root/.ollama
+  #   networks:
+  #     - openclaw-net
+  #   expose:
+  #     - "11434"
+  # Then set in .env:  OLLAMA_HOST=http://ollama:11434
 
 services:
 

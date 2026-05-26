@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # OpenClaw VPS Setup — run once as root on a fresh Ubuntu 22.04/24.04 server
+# LLM inference runs via OpenRouter API — no GPU, no Ollama needed.
+# Recommended VPS: Hetzner CX22 (2 vCPU, 4GB RAM, €4.35/mo) or any $5-6/mo VPS.
 # Usage: curl -fsSL https://raw.githubusercontent.com/ronsi95openclaw-png/openclaw/claude/blofin-trading-bot-dashboard-TUJBC/deploy/setup_vps.sh | bash
 set -euo pipefail
 
@@ -98,19 +100,7 @@ else
 fi
 chmod 600 "$ENV_FILE"
 
-# ── 7. Pull Ollama models ─────────────────────────────────────────────────────
-section "Pull Ollama models (this takes 5-15 min on first run)"
-cd "$INSTALL_DIR"
-
-# Start Ollama container first to pull models into the volume
-docker compose up -d ollama
-info "Waiting for Ollama to start..."
-sleep 10
-
-docker compose exec ollama ollama pull qwen2.5:14b  || warn "qwen2.5:14b pull failed — retry with: docker compose exec ollama ollama pull qwen2.5:14b"
-docker compose exec ollama ollama pull qwen3        || warn "qwen3 pull failed"
-
-# ── 8. Start everything ───────────────────────────────────────────────────────
+# ── 7. Start everything ──────────────────────────────────────────────────────
 section "Starting OpenClaw stack"
 cd "$INSTALL_DIR"
 docker compose build --pull
@@ -199,8 +189,12 @@ echo "  Bot API     : http://$PUBLIC_IP:8000/api/status"
 echo ""
 echo "  Next steps:"
 echo "  1. Fill in API keys:  nano $ENV_FILE"
-echo "  2. Add your server IP to Crypto.com API key whitelist"
+echo "     Required: ANTHROPIC_API_KEY, OPENROUTER_API_KEY, TELEGRAM_BOT_TOKEN"
+echo "  2. Add this server IP ($PUBLIC_IP) to Crypto.com API key whitelist"
 echo "  3. Restart:           cd $INSTALL_DIR && docker compose restart"
 echo "  4. View logs:         docker compose logs -f openclaw-bot"
 echo ""
 warn "DEMO_MODE=true in .env — set to false only after Ronnie explicitly approves"
+echo ""
+echo "  LLM routing: OpenRouter handles all AI (QUIN, Opus analysis, Haiku)"
+echo "  No GPU or Ollama needed — any \$5-6/mo VPS (Hetzner CX22) works fine"
