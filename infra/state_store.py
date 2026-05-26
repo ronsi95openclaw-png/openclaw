@@ -76,15 +76,21 @@ def save_bot_state(raw: dict) -> None:
 
 
 def load_bot_state() -> Optional[dict]:
-    """Load bot state — Supabase first, local file fallback."""
+    """Load bot state — pick whichever source has higher total_pnl (most up-to-date).
+
+    When local PnL > Supabase PnL we also sync local → Supabase so Railway
+    starts with the correct balance on the next boot.
+    """
+    supabase_state: Optional[dict] = None
+    local_state:    Optional[dict] = None
+
     sb = _sb()
     if sb is not None:
         try:
             res = sb.table("bot_state").select("*").eq("id", _SINGLETON_ID).single().execute()
             if res.data:
                 r = res.data
-                logger.info("bot_state loaded from Supabase")
-                return {
+                supabase_state = {
                     "demo_mode":        r.get("demo_mode", True),
                     "running":          r.get("running", False),
                     "balance":          float(r.get("balance") or 98.0),
@@ -98,14 +104,40 @@ def load_bot_state() -> Optional[dict]:
                     "trade_log":        r.get("trade_log") or [],
                     "execution_paused": r.get("execution_paused", False),
                 }
+                logger.info(
+                    "bot_state Supabase: balance=%.2f  pnl=%.2f",
+                    supabase_state["balance"], supabase_state["total_pnl"],
+                )
         except Exception as exc:
             logger.debug("bot_state supabase read failed: %s", exc)
 
     if _STATE_FILE.exists():
         try:
-            return json.loads(_STATE_FILE.read_text())
+            local_state = json.loads(_STATE_FILE.read_text())
+            logger.info(
+                "bot_state local: balance=%.2f  pnl=%.2f",
+                float(local_state.get("balance") or 0),
+                float(local_state.get("total_pnl") or 0),
+            )
         except Exception:
             pass
+
+    if supabase_state and local_state:
+        sb_pnl    = float(supabase_state.get("total_pnl", 0))
+        local_pnl = float(local_state.get("total_pnl", 0))
+        if local_pnl > sb_pnl:
+            logger.info(
+                "bot_state: local pnl=%.2f > supabase pnl=%.2f — using local, syncing Supabase",
+                local_pnl, sb_pnl,
+            )
+            save_bot_state(local_state)  # push correct state to cloud
+            return local_state
+        logger.info("bot_state: using Supabase (pnl=%.2f)", sb_pnl)
+        return supabase_state
+    elif supabase_state:
+        return supabase_state
+    elif local_state:
+        return local_state
     return None
 
 
@@ -362,7 +394,9 @@ def startup_integrity_check() -> dict:
             f"STATE DRIFT: {len(missing_from_supabase)} trade(s) in local JSONL "
             f"missing from Supabase: {list(missing_from_supabase)[:5]}"
         )
-    if missing_from_local and supabase_count > 0:
+    # Only flag Supabase→local drift when the local file actually exists.
+    # Ephemeral envs (Railway) have no local JSONL by design — that is NOT drift.
+    if missing_from_local and supabase_count > 0 and _OUTCOMES_FILE.exists():
         issues.append(
             f"STATE DRIFT: {len(missing_from_local)} trade(s) in Supabase "
             f"missing from local JSONL: {list(missing_from_local)[:5]}"

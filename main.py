@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import sys
 import threading
 import time
@@ -31,6 +32,23 @@ logging.basicConfig(
 logger = logging.getLogger("openclaw.main")
 
 
+def _tg_alert(msg: str) -> None:
+    """Last-ditch Telegram alert using raw requests — no bot framework dependency."""
+    try:
+        import requests as _req
+        token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID", "6082698835")
+        if not token:
+            return
+        _req.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+            timeout=5,
+        )
+    except Exception:
+        pass  # never crash because of an alert
+
+
 def _start_api_server() -> None:
     """Start uvicorn in a background daemon thread."""
     import uvicorn
@@ -42,6 +60,14 @@ def _start_api_server() -> None:
 
 
 def main() -> None:
+    # ── SIGTERM handler (Railway sends this on deploy/restart) ───────────────
+    def _handle_sigterm(signum, frame):
+        logger.info("SIGTERM received — shutting down gracefully")
+        _tg_alert("🛑 <b>OpenClaw shutdown</b> — SIGTERM received (Railway deploy/restart)")
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
     # ── API server (background thread) ──────────────────────────────────────
     api_thread = threading.Thread(target=_start_api_server, name="api-server", daemon=True)
     api_thread.start()
@@ -74,13 +100,21 @@ def main() -> None:
         integrity = {"ok": True}  # non-fatal — proceed
 
     # ── Trading bot (foreground) ─────────────────────────────────────────────
-    from trading.cryptocom_bot import CryptoComBot
-
-    bot = CryptoComBot()
-    if not integrity.get("ok", True):
-        bot.state.execution_paused = True
-    bot.start()
-    logger.info("OpenClaw bot started — scanning every %ds", bot.state.scan_interval)
+    try:
+        from trading.cryptocom_bot import CryptoComBot
+        bot = CryptoComBot()
+        if not integrity.get("ok", True):
+            bot.state.execution_paused = True
+        bot.start()
+        logger.info("OpenClaw bot started — scanning every %ds", bot.state.scan_interval)
+    except Exception as exc:
+        logger.critical("FATAL: CryptoComBot failed to start: %s", exc, exc_info=True)
+        _tg_alert(
+            f"🚨 <b>OPENCLAW CRASH — BOT FAILED TO START</b>\n\n"
+            f"<code>{type(exc).__name__}: {exc}</code>\n\n"
+            f"Railway will restart. Check deploy logs."
+        )
+        raise  # let Railway see the non-zero exit and restart
 
     # Keep the main thread alive; bot scan loop runs in its own thread
     try:
@@ -88,11 +122,25 @@ def main() -> None:
             time.sleep(60)
             if not bot.is_running():
                 logger.warning("Bot stopped unexpectedly — restarting")
-                bot.start()
+                try:
+                    bot.start()
+                except Exception as exc:
+                    logger.critical("Bot restart failed: %s", exc, exc_info=True)
+                    _tg_alert(
+                        f"🚨 <b>OPENCLAW BOT RESTART FAILED</b>\n"
+                        f"<code>{type(exc).__name__}: {exc}</code>"
+                    )
     except (KeyboardInterrupt, SystemExit):
         logger.info("Shutting down")
         bot.stop()
         sys.exit(0)
+    except Exception as exc:
+        logger.critical("FATAL: main loop crashed: %s", exc, exc_info=True)
+        _tg_alert(
+            f"🚨 <b>OPENCLAW MAIN LOOP CRASH</b>\n\n"
+            f"<code>{type(exc).__name__}: {exc}</code>\n\nRailway will restart."
+        )
+        raise
 
 
 if __name__ == "__main__":
