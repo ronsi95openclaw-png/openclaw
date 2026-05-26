@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -338,6 +338,12 @@ def api_flush():
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
     """Receive Telegram updates via webhook (used in Railway cloud deployment)."""
+    secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+    if secret:
+        header_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if header_token != secret:
+            return Response(status_code=401)
+
     try:
         update = await request.json()
     except Exception:

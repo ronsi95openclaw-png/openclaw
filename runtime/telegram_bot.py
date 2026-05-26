@@ -75,12 +75,14 @@ def _cmd_help(chat_id, _text, bot_ref) -> None:
         "/goal     — $98 → $50K progress\n"
         "/balance  — current balance &amp; PnL\n"
         "/weights  — strategy weights &amp; win rates\n"
+        "/briefing — send morning briefing now\n"
         "/restart  — restart the scan loop\n"
         "/pause    — pause trade execution\n"
         "/resume   — resume trade execution\n"
         "/halt     — capital halt status &amp; release info\n"
         "/help     — this message\n"
         "──────────────────────\n"
+        "Morning briefing at 08:00 UTC ☀️\n"
         "Daily report at midnight UTC 📊"
     )
 
@@ -352,18 +354,32 @@ def _cmd_restart(chat_id, _text, bot_ref) -> None:
         _reply(chat_id, f"⚠️ Restart failed: {exc}")
 
 
+def _cmd_briefing(chat_id, _text, bot_ref) -> None:
+    if bot_ref is None:
+        _reply(chat_id, "⚠️ Bot not running.")
+        return
+    try:
+        from runtime.morning_briefing import get_morning_briefing
+        daemon = get_morning_briefing(bot_ref)
+        daemon.send_now()
+        _reply(chat_id, "☀️ Morning briefing sent!")
+    except Exception as exc:
+        _reply(chat_id, f"⚠️ Briefing error: {exc}")
+
+
 _COMMANDS = {
-    "/help":    _cmd_help,
-    "/start":   _cmd_help,
-    "/status":  _cmd_status,
-    "/trades":  _cmd_trades,
-    "/goal":    _cmd_goal,
-    "/balance": _cmd_balance,
-    "/weights": _cmd_weights,
-    "/pause":   _cmd_pause,
-    "/resume":  _cmd_resume,
-    "/halt":    _cmd_halt,
-    "/restart": _cmd_restart,
+    "/help":     _cmd_help,
+    "/start":    _cmd_help,
+    "/status":   _cmd_status,
+    "/trades":   _cmd_trades,
+    "/goal":     _cmd_goal,
+    "/balance":  _cmd_balance,
+    "/weights":  _cmd_weights,
+    "/briefing": _cmd_briefing,
+    "/pause":    _cmd_pause,
+    "/resume":   _cmd_resume,
+    "/halt":     _cmd_halt,
+    "/restart":  _cmd_restart,
 }
 
 

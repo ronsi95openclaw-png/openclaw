@@ -8,3 +8,4 @@ restartPolicyMaxRetries = 3
 
 [variables]
 PYTHONPATH = "/app"
+RUFLO_ENABLED = "false"

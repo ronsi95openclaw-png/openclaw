@@ -143,6 +143,9 @@ class CryptoComBot:
         # Ruflo HNSW memory advisory
         self._ruflo = self._init_ruflo()
 
+        # Daily 8am UTC morning briefing
+        self._morning_briefing = self._init_morning_briefing()
+
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _load_state(self) -> None:
@@ -520,6 +523,14 @@ class CryptoComBot:
             logger.debug("Ruflo init failed (non-fatal): %s", exc)
             return None
 
+    def _init_morning_briefing(self):
+        try:
+            from runtime.morning_briefing import get_morning_briefing
+            return get_morning_briefing(self)
+        except Exception as exc:
+            logger.debug("MorningBriefing init failed (non-fatal): %s", exc)
+            return None
+
     def _run_startup_reconciliation(self) -> None:
         try:
             from runtime.reconciliation import reconcile_on_startup
@@ -569,6 +580,8 @@ class CryptoComBot:
             self._weight_scheduler.start()
         if self._tg_cmd_bot:
             self._tg_cmd_bot.start()
+        if self._morning_briefing:
+            self._morning_briefing.start()
         # Alert Telegram that the bot started
         try:
             from runtime.telegram_alerts import alert_bot_started
@@ -596,6 +609,8 @@ class CryptoComBot:
             self._weight_scheduler.stop()
         if self._tg_cmd_bot:
             self._tg_cmd_bot.stop(timeout=3.0)
+        if self._morning_briefing:
+            self._morning_briefing.stop()
         logger.info("CryptoComBot stopped")
 
     def is_running(self) -> bool:
@@ -700,7 +715,7 @@ class CryptoComBot:
         from trading.strategies import (
             ema_cross_strategy, rsi_mean_revert_strategy,
             breakout_strategy, bollinger_band_strategy, trend_follow_strategy,
-            dca_strategy, _rsi, _atr,
+            dca_strategy, vwap_strategy, _rsi, _atr,
         )
 
         _scan_start = time.monotonic()
@@ -770,6 +785,7 @@ class CryptoComBot:
                 bollinger_band_strategy(symbol, candles),
                 trend_follow_strategy(symbol, candles),
                 dca_strategy(symbol, candles),
+                vwap_strategy(symbol, candles),
             ]
 
             for sig in signals:

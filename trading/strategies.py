@@ -22,7 +22,7 @@ logger = logging.getLogger("openclaw.trading.strategies")
 
 _WEIGHTS_FILE = Path(__file__).parent.parent / "data" / "strategy_weights.json"
 
-STRATEGIES = ["EMA_CROSS", "RSI_MEAN_REVERT", "BREAKOUT", "BOLLINGER_BAND", "TREND_FOLLOW", "DCA"]
+STRATEGIES = ["EMA_CROSS", "RSI_MEAN_REVERT", "BREAKOUT", "BOLLINGER_BAND", "TREND_FOLLOW", "DCA", "VWAP"]
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
@@ -440,6 +440,54 @@ def dca_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
         return StrategySignal("DCA", symbol, "long", 0.65, reason, sl, tp)
 
     return _hold(f"At low but not red day ({chg_pct:+.1f}%) — skip DCA", sl, tp)
+
+
+def vwap_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
+    """VWAP mean-reversion — enter when price deviates >0.5% from session VWAP.
+
+    Computes session VWAP from all provided candles (typical price × volume).
+    Only fires in ranging markets (EMA20/50 spread < 0.4%) to avoid fighting
+    strong trends. Requires RSI exhaustion confirmation.
+    2:1 R:R — tight entries near a statistically meaningful anchor.
+    """
+    closes = [c["close"] for c in candles]
+    _hold  = lambda r, sl=1.2, tp=2.4: StrategySignal("VWAP", symbol, "hold", 0.0, r, sl, tp)
+
+    if len(candles) < 20:
+        return _hold("Insufficient data")
+
+    total_v = sum(c["volume"] for c in candles)
+    if total_v <= 0:
+        return _hold("Zero volume")
+
+    vwap  = sum((c["high"] + c["low"] + c["close"]) / 3 * c["volume"] for c in candles) / total_v
+    price = closes[-1]
+    dev   = (price - vwap) / vwap * 100  # % deviation from VWAP
+
+    atr = _atr(candles[-20:], 14)
+    sl  = max(1.0, _atr_sl_pct(atr, price) * 1.5)
+    tp  = sl * 2.0
+
+    ema20  = _ema(closes, 20)
+    ema50  = _ema(closes, 50) if len(closes) >= 50 else _ema(closes, max(10, len(closes) // 2))
+    spread = abs(ema20[-1] - ema50[-1]) / ema50[-1] * 100
+
+    if spread > 0.4:
+        return _hold(f"Trending (EMA spread {spread:.2f}%) — skip VWAP revert", sl, tp)
+
+    rsi = _rsi(closes, 14)
+
+    if dev < -0.5 and rsi < 45:
+        conf   = 0.85 if dev < -1.0 else 0.72
+        reason = f"Price {dev:.2f}% below VWAP ${vwap:,.4f} | RSI {rsi:.1f} | spread {spread:.2f}%"
+        return StrategySignal("VWAP", symbol, "long",  conf, reason, sl, tp)
+
+    if dev > 0.5 and rsi > 55:
+        conf   = 0.85 if dev > 1.0 else 0.72
+        reason = f"Price +{dev:.2f}% above VWAP ${vwap:,.4f} | RSI {rsi:.1f} | spread {spread:.2f}%"
+        return StrategySignal("VWAP", symbol, "short", conf, reason, sl, tp)
+
+    return _hold(f"VWAP deviation {dev:+.2f}% — not enough | RSI {rsi:.1f}", sl, tp)
 
 
 # ── Self-learning weight engine ───────────────────────────────────────────────
