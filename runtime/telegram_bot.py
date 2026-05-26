@@ -42,6 +42,25 @@ def _api(method: str, params: dict, timeout: int = 10) -> Optional[dict]:
     tok = _token()
     if not tok:
         return None
+
+    # In Railway/webhook mode (TELEGRAM_OUTBOX_MODE=supabase), outbound calls to
+    # api.telegram.org are blocked by Telegram's IP allowlist.  Route sendMessage
+    # through the Supabase outbox so the local relay daemon can send it instead.
+    if method == "sendMessage" and os.getenv("TELEGRAM_OUTBOX_MODE") == "supabase":
+        try:
+            from infra.supabase_client import get_client
+            sb = get_client()
+            if sb:
+                sb.table("telegram_outbox").insert({
+                    "chat_id":    str(params.get("chat_id", "")),
+                    "text":       str(params.get("text", "")),
+                    "parse_mode": str(params.get("parse_mode", "HTML")),
+                }).execute()
+                return {"ok": True, "via": "outbox"}
+        except Exception as exc:
+            logger.warning("Telegram outbox write failed: %s", exc)
+        return None
+
     url     = f"https://api.telegram.org/bot{tok}/{method}"
     payload = json.dumps(params).encode()
     req     = urllib.request.Request(

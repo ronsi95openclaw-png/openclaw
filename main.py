@@ -72,6 +72,18 @@ def main() -> None:
     api_thread = threading.Thread(target=_start_api_server, name="api-server", daemon=True)
     api_thread.start()
 
+    # ── Telegram reply relay (local mode only) ────────────────────────────────
+    # On Railway, TELEGRAM_OUTBOX_MODE=supabase routes replies through Supabase.
+    # The relay daemon running here on the local machine picks them up and sends
+    # them via api.telegram.org (local IP is in Telegram's allowlist; Railway's isn't).
+    if not os.getenv("RAILWAY_PUBLIC_URL"):
+        try:
+            from runtime.telegram_relay import get_relay
+            _relay = get_relay()
+            _relay.start()
+        except Exception as exc:
+            logger.warning("Telegram relay daemon failed to start: %s", exc)
+
     # Give uvicorn a moment to bind before the bot floods logs
     time.sleep(3)
 
