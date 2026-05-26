@@ -66,30 +66,56 @@ def check_live_mode_eligibility() -> Tuple[bool, List[str]]:
     return len(failures) == 0, failures
 
 
+def _pbar(current: float, total: float, width: int = 8) -> str:
+    ratio  = min(current / total, 1.0) if total > 0 else 0.0
+    filled = int(width * ratio)
+    done   = "✅" if ratio >= 1.0 else f"{int(ratio*100)}%"
+    return f"[{'█' * filled}{'░' * (width - filled)}] {done}"
+
+
 def format_eligibility_report() -> str:
-    """Returns a Telegram-formatted eligibility report."""
+    """Returns a Telegram-formatted eligibility report with progress bars."""
     from settings import LIVE_ACTIVATION_PASSPHRASE
+    reqs     = LiveModeRequirements()
     eligible, failures = check_live_mode_eligibility()
 
-    paper_count = len(_load_paper_trades())
+    trades      = _load_paper_trades()
+    paper_count = len(trades)
+    wins        = sum(1 for t in trades if t.get("outcome") == "win")
+    win_rate    = wins / paper_count if paper_count else 0.0
 
+    try:
+        from infra.state_store import load_capital_state
+        cap_state = (load_capital_state() or {}).get("state", "UNKNOWN")
+    except Exception:
+        cap_state = "UNKNOWN"
+
+    try:
+        from settings import DEMO_SLIPPAGE_PCT
+        slip_ok = DEMO_SLIPPAGE_PCT > 0
+    except Exception:
+        slip_ok = False
+
+    header = "✅ <b>LIVE MODE READY</b>" if eligible else "🚫 <b>LIVE MODE NOT READY</b>"
+    lines = [
+        header,
+        "──────────────────────",
+        f"Trades: {_pbar(paper_count, reqs.min_paper_trades)} {paper_count}/{reqs.min_paper_trades}",
+        f"WR:     {_pbar(win_rate * 100, reqs.min_win_rate * 100)} {win_rate:.1%}/{reqs.min_win_rate:.0%}",
+        f"Capital:{_pbar(1 if cap_state == 'SAFE' else 0, 1)} {cap_state}",
+        f"Slip:   {_pbar(1 if slip_ok else 0, 1)} {'Active' if slip_ok else 'Off'}",
+        "──────────────────────",
+    ]
     if eligible:
-        return (
-            "✅ <b>ALL LIVE MODE REQUIREMENTS MET</b>\n\n"
-            f"Paper trades: {paper_count}\n\n"
-            "To activate live trading, send:\n"
-            f"<code>/golive {LIVE_ACTIVATION_PASSPHRASE}</code>\n\n"
-            "⚠️ <b>This will use REAL money.</b> "
-            "Double-check your API keys and risk settings first."
-        )
+        lines.append("To go live:\n"
+                     f"<code>/golive {LIVE_ACTIVATION_PASSPHRASE}</code>\n"
+                     "⚠️ Real money at risk — verify API keys first.")
     else:
-        return (
-            "🚫 <b>LIVE MODE NOT READY</b>\n\n"
-            f"Paper trades so far: {paper_count}\n\n"
-            "Failed requirements:\n"
-            + "\n".join(failures)
-            + "\n\nContinue paper trading until all requirements are met."
-        )
+        needed = reqs.min_paper_trades - paper_count
+        if needed > 0:
+            lines.append(f"Need {needed} more paper trades to qualify.")
+        lines.append("Continue paper trading until all bars are green.")
+    return "\n".join(lines)
 
 
 def _load_paper_trades() -> list:

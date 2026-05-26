@@ -58,16 +58,53 @@ def is_configured() -> bool:
 
 # ── Outbound alerts ───────────────────────────────────────────────────────────
 
+def _pbar(current: float, total: float, width: int = 8) -> str:
+    """ASCII progress bar: [████░░░░] 60%"""
+    ratio  = min(current / total, 1.0) if total > 0 else 0.0
+    filled = int(width * ratio)
+    pct    = int(ratio * 100)
+    done   = "✅" if ratio >= 1.0 else f"{pct}%"
+    return f"[{'█' * filled}{'░' * (width - filled)}] {done}"
+
+
 def alert_bot_started(demo: bool, balance: float) -> None:
     mode = "📝 PAPER TRADING" if demo else "💰 LIVE TRADING"
+    # Live gate progress
+    paper_count = 0
+    win_rate    = 0.0
+    try:
+        from runtime.live_mode_gate import _load_paper_trades
+        trades      = _load_paper_trades()
+        paper_count = len(trades)
+        wins        = sum(1 for t in trades if t.get("outcome") == "win")
+        win_rate    = wins / paper_count if paper_count else 0.0
+    except Exception:
+        pass
     _send(
         f"🚀 <b>OpenClaw Bot Started</b>\n"
+        f"──────────────────────\n"
         f"Mode:      {mode}\n"
         f"Balance:   <b>${balance:,.2f}</b>\n"
         f"Goal:      $98 → $50,000\n"
         f"──────────────────────\n"
-        f"Daily report at midnight UTC 📊\n"
-        f"Type /help for commands"
+        f"📊 Live Gate Progress\n"
+        f"Trades: {_pbar(paper_count, 30)} {paper_count}/30\n"
+        f"WR:     {_pbar(win_rate * 100, 54)} {win_rate:.0%}/54%\n"
+        f"──────────────────────\n"
+        f"Midnight report UTC 📊 | /help for commands"
+    )
+
+
+def alert_execution_resumed(balance: float = 0.0) -> None:
+    bal = f"  Balance: ${balance:,.2f}" if balance else ""
+    _send(f"▶️ <b>Trade execution resumed</b>{bal}")
+
+
+def alert_capital_recovered(old_state: str, balance: float) -> None:
+    _send(
+        f"🟢 <b>Capital state → SAFE</b>\n"
+        f"Recovered from: {old_state}\n"
+        f"Balance: ${balance:,.2f}"
     )
 
 

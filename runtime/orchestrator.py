@@ -280,11 +280,15 @@ class RuntimeOrchestrator:
                 old_state, new_state, equity,
             )
             try:
-                from runtime.telegram_alerts import alert_capital_state, alert_emergency_halt
+                from runtime.telegram_alerts import (
+                    alert_capital_state, alert_emergency_halt, alert_capital_recovered
+                )
                 dd = self._capital.daily_drawdown()
                 alert_capital_state(old_state, new_state, equity, dd)
                 if new_state == "EMERGENCY_HALT":
                     alert_emergency_halt("Drawdown limit breached", equity)
+                elif new_state == "SAFE" and old_state in ("DEFENSIVE", "CRITICAL", "EMERGENCY_HALT"):
+                    alert_capital_recovered(old_state, equity)
             except Exception:
                 pass
             try:

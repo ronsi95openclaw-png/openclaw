@@ -172,6 +172,9 @@ class CryptoComBot:
 
         # Daily 8am UTC morning briefing
         self._morning_briefing = self._init_morning_briefing()
+        # Midnight daily summary + 4-hour heartbeat
+        self._midnight_report  = self._init_midnight_report()
+        self._heartbeat        = self._init_heartbeat()
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -558,6 +561,22 @@ class CryptoComBot:
             logger.debug("MorningBriefing init failed (non-fatal): %s", exc)
             return None
 
+    def _init_midnight_report(self):
+        try:
+            from runtime.morning_briefing import get_midnight_report
+            return get_midnight_report(self)
+        except Exception as exc:
+            logger.debug("MidnightReport init failed (non-fatal): %s", exc)
+            return None
+
+    def _init_heartbeat(self):
+        try:
+            from runtime.morning_briefing import get_heartbeat
+            return get_heartbeat(self)
+        except Exception as exc:
+            logger.debug("Heartbeat init failed (non-fatal): %s", exc)
+            return None
+
     def _run_startup_reconciliation(self) -> None:
         try:
             from runtime.reconciliation import reconcile_on_startup
@@ -609,6 +628,10 @@ class CryptoComBot:
             self._tg_cmd_bot.start()
         if self._morning_briefing:
             self._morning_briefing.start()
+        if self._midnight_report:
+            self._midnight_report.start()
+        if self._heartbeat:
+            self._heartbeat.start()
         # Alert Telegram that the bot started
         try:
             from runtime.telegram_alerts import alert_bot_started
@@ -638,6 +661,10 @@ class CryptoComBot:
             self._tg_cmd_bot.stop(timeout=3.0)
         if self._morning_briefing:
             self._morning_briefing.stop()
+        if self._midnight_report:
+            self._midnight_report.stop()
+        if self._heartbeat:
+            self._heartbeat.stop()
         logger.info("CryptoComBot stopped")
 
     def is_running(self) -> bool:

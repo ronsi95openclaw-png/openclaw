@@ -114,26 +114,41 @@ def _cmd_status(chat_id, _text, bot_ref) -> None:
         _reply(chat_id, "⚠️ Bot reference not available yet.")
         return
     try:
-        s = bot_ref.get_status()
+        s         = bot_ref.get_status()
         running   = "🟢 Running" if s["running"] else "🔴 Stopped"
         paused    = " ⏸ PAUSED" if s.get("execution_paused") else ""
         demo      = "📝 PAPER" if s["demo_mode"] else "💰 LIVE"
         cap       = s.get("capital_state", "UNKNOWN")
         cap_icon  = {"SAFE": "🟢", "DEFENSIVE": "🟡",
                      "CRITICAL": "🔴", "EMERGENCY_HALT": "🚨"}.get(cap, "⚪")
+        balance   = s.get("balance", 0.0)
+        total_pnl = s.get("total_pnl", 0.0)
+        unreal    = s.get("unrealized_pnl", 0.0)
+        trades_td = s.get("trades_today", 0)
+        open_pos  = s.get("open_positions", [])
         scan_int  = s.get("scan_interval", "?")
-        last_scan = s.get("last_scan", "—")
-        open_pos  = len(s.get("open_positions", []))
+
+        # Win rate from strategy weights summary
+        ws = s.get("strategy_weights", {})
+        total_t = sum(v.get("trades", 0) for v in ws.values() if isinstance(v, dict))
+        total_w = sum(v.get("wins",   0) for v in ws.values() if isinstance(v, dict))
+        wr_line = f"{total_w}/{total_t} ({total_w/total_t:.0%})" if total_t else "no trades yet"
+
+        pnl_sign = "+" if total_pnl >= 0 else ""
+        ur_sign  = "+" if unreal   >= 0 else ""
         _reply(chat_id,
             f"📡 <b>Bot Status</b>\n"
             f"──────────────────────\n"
             f"State:      {running}{paused}\n"
-            f"Mode:       {demo}\n"
-            f"Capital:    {cap_icon} {cap}\n"
-            f"Scan:       every {scan_int}s\n"
-            f"Last scan:  {last_scan}\n"
-            f"Positions:  {open_pos} open\n"
-            f"Msg:        {s.get('status_msg','')[:60]}"
+            f"Mode:       {demo} | Capital: {cap_icon} {cap}\n"
+            f"──────────────────────\n"
+            f"Balance:    <b>${balance:,.2f}</b>\n"
+            f"Total PnL:  {pnl_sign}${total_pnl:,.2f}\n"
+            f"Unrealised: {ur_sign}${unreal:,.2f} ({len(open_pos)} pos)\n"
+            f"Win rate:   {wr_line}\n"
+            f"Trades/day: {trades_td}\n"
+            f"──────────────────────\n"
+            f"Scan: every {scan_int}s"
         )
     except Exception as exc:
         _reply(chat_id, f"⚠️ Status error: {exc}")
@@ -314,6 +329,11 @@ def _cmd_resume(chat_id, _text, bot_ref) -> None:
             return
         bot_ref.state.execution_paused = False
         _reply(chat_id, "▶️ <b>Trade execution resumed</b>\nNew positions can be opened on the next scan.")
+        try:
+            from runtime.telegram_alerts import alert_execution_resumed
+            alert_execution_resumed()
+        except Exception:
+            pass
     except Exception as exc:
         _reply(chat_id, f"⚠️ Resume error: {exc}")
 

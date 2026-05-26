@@ -166,9 +166,172 @@ class MorningBriefingDaemon:
         logger.info("Morning briefing sent for %s", date)
 
 
-# ── Module-level singleton ────────────────────────────────────────────────────
+# ── Midnight daily report ─────────────────────────────────────────────────────
 
-_daemon: Optional[MorningBriefingDaemon] = None
+class MidnightReportDaemon:
+    """Sends a daily summary at 00:00 UTC — trades/PnL/top strategy."""
+
+    TARGET_HOUR = 0
+
+    def __init__(self, bot: "CryptoComBot") -> None:
+        self._bot             = bot
+        self._stop_event      = threading.Event()
+        self._lock            = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self._last_sent_date: Optional[str] = None
+
+    def start(self) -> None:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._run, name="MidnightReportDaemon", daemon=True
+            )
+            self._thread.start()
+        logger.info("MidnightReportDaemon started")
+
+    def stop(self, timeout_s: float = 5.0) -> None:
+        self._stop_event.set()
+        with self._lock:
+            t = self._thread
+        if t:
+            t.join(timeout=timeout_s)
+        with self._lock:
+            self._thread = None
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            now   = datetime.now(timezone.utc)
+            today = now.strftime("%Y-%m-%d")
+            if now.hour == self.TARGET_HOUR and self._last_sent_date != today:
+                try:
+                    self._send_report()
+                    self._last_sent_date = today
+                except Exception as exc:
+                    logger.warning("Midnight report error: %s", exc)
+            self._stop_event.wait(timeout=30)
+
+    def _send_report(self) -> None:
+        from runtime.telegram_alerts import _send
+        bot   = self._bot
+        state = bot.state
+        now   = datetime.now(timezone.utc)
+        balance   = round(state.starting_balance + state.total_pnl, 2)
+        total_pnl = round(state.total_pnl, 2)
+        sign      = "+" if total_pnl >= 0 else ""
+
+        trades = getattr(state, "total_trades", 0)
+        wins   = getattr(state, "winning_trades", 0)
+        losses = getattr(state, "losing_trades", 0)
+        wr     = round(wins / trades * 100, 1) if trades else 0.0
+
+        # today's closed trades
+        today_str = now.strftime("%Y-%m-%d")
+        log       = list(state.trade_log)
+        day_trades = [t for t in log if (t.get("closed_at") or "").startswith(today_str)]
+        day_pnl    = sum(t.get("pnl", 0) for t in day_trades)
+        day_sign   = "+" if day_pnl >= 0 else ""
+
+        cap_state = "UNKNOWN"
+        try:
+            cap_state = bot._capital.get_state().state_name
+        except Exception:
+            pass
+        cap_icon = {"SAFE": "🟢", "DEFENSIVE": "🟡",
+                    "CRITICAL": "🔴", "EMERGENCY_HALT": "🚨"}.get(cap_state, "⚪")
+
+        goal_line = ""
+        try:
+            gp      = bot._goal_tracker.get_progress()
+            next_ms = gp.get("next_milestone", 0)
+            goal_pct = round(balance / 50_000 * 100, 2)
+            goal_line = f"\n🎯 Progress: ${balance:,.2f} / $50K ({goal_pct}%)  Next: ${next_ms:,.0f}"
+        except Exception:
+            pass
+
+        _send(
+            f"📊 <b>DAILY REPORT — {today_str}</b>\n"
+            f"──────────────────────\n"
+            f"💰 Balance:    <b>${balance:,.2f}</b>\n"
+            f"📈 Total PnL:  {sign}${total_pnl:,.2f}\n"
+            f"📅 Today PnL:  {day_sign}${day_pnl:,.2f}  ({len(day_trades)} trades)\n"
+            f"🎯 Win Rate:   {wr}%  ({wins}W / {losses}L)\n"
+            f"{cap_icon} Capital:    {cap_state}"
+            f"{goal_line}"
+        )
+        logger.info("Midnight report sent")
+
+
+# ── 4-hour heartbeat ──────────────────────────────────────────────────────────
+
+class HeartbeatDaemon:
+    """Sends a brief health ping every 4 hours."""
+
+    INTERVAL_H = 4
+
+    def __init__(self, bot: "CryptoComBot") -> None:
+        self._bot        = bot
+        self._stop_event = threading.Event()
+        self._lock       = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._run, name="HeartbeatDaemon", daemon=True
+            )
+            self._thread.start()
+        logger.info("HeartbeatDaemon started (every %dh)", self.INTERVAL_H)
+
+    def stop(self, timeout_s: float = 5.0) -> None:
+        self._stop_event.set()
+        with self._lock:
+            t = self._thread
+        if t:
+            t.join(timeout=timeout_s)
+
+    def _run(self) -> None:
+        # Stagger first ping by interval so it doesn't fire right at startup
+        self._stop_event.wait(timeout=self.INTERVAL_H * 3600)
+        while not self._stop_event.is_set():
+            try:
+                self._send_heartbeat()
+            except Exception as exc:
+                logger.debug("Heartbeat error: %s", exc)
+            self._stop_event.wait(timeout=self.INTERVAL_H * 3600)
+
+    def _send_heartbeat(self) -> None:
+        from runtime.telegram_alerts import _send
+        bot     = self._bot
+        state   = bot.state
+        balance = round(state.starting_balance + state.total_pnl, 2)
+        n_open  = len(getattr(state, "open_positions", []))
+        running = "🟢" if bot.is_running() else "🔴"
+        mode    = "PAPER" if state.demo_mode else "LIVE"
+        cap     = "UNKNOWN"
+        try:
+            cap = bot._capital.get_state().state_name
+        except Exception:
+            pass
+        cap_icon = {"SAFE": "🟢", "DEFENSIVE": "🟡",
+                    "CRITICAL": "🔴", "EMERGENCY_HALT": "🚨"}.get(cap, "⚪")
+        now_str  = datetime.now(timezone.utc).strftime("%H:%M UTC")
+        _send(
+            f"{running} <b>Heartbeat</b> {now_str}  [{mode}]\n"
+            f"Balance: ${balance:,.2f}  |  {cap_icon} {cap}  |  {n_open} open"
+        )
+        logger.debug("Heartbeat sent at %s", now_str)
+
+
+# ── Module-level singletons ───────────────────────────────────────────────────
+
+_daemon:     Optional[MorningBriefingDaemon] = None
+_midnight:   Optional[MidnightReportDaemon]  = None
+_heartbeat:  Optional[HeartbeatDaemon]       = None
 
 
 def get_morning_briefing(bot: "CryptoComBot") -> MorningBriefingDaemon:
@@ -176,3 +339,17 @@ def get_morning_briefing(bot: "CryptoComBot") -> MorningBriefingDaemon:
     if _daemon is None:
         _daemon = MorningBriefingDaemon(bot)
     return _daemon
+
+
+def get_midnight_report(bot: "CryptoComBot") -> MidnightReportDaemon:
+    global _midnight
+    if _midnight is None:
+        _midnight = MidnightReportDaemon(bot)
+    return _midnight
+
+
+def get_heartbeat(bot: "CryptoComBot") -> HeartbeatDaemon:
+    global _heartbeat
+    if _heartbeat is None:
+        _heartbeat = HeartbeatDaemon(bot)
+    return _heartbeat
