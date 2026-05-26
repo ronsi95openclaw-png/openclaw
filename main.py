@@ -49,10 +49,36 @@ def main() -> None:
     # Give uvicorn a moment to bind before the bot floods logs
     time.sleep(3)
 
+    # ── Startup integrity check ──────────────────────────────────────────────
+    try:
+        from infra.state_store import startup_integrity_check
+        integrity = startup_integrity_check()
+        if not integrity["ok"]:
+            logger.warning("Startup integrity check FAILED: %s", integrity["issues"])
+            try:
+                from runtime.telegram_alerts import _send
+                _send(
+                    "⚠️ <b>STARTUP STATE DRIFT DETECTED</b>\n\n"
+                    + "\n".join(integrity["issues"])
+                    + "\n\nBot started with execution paused. Send /resume after verification."
+                )
+            except Exception:
+                pass
+        else:
+            logger.info(
+                "Startup integrity OK — local=%d  supabase=%d",
+                integrity["local_count"], integrity["supabase_count"],
+            )
+    except Exception as exc:
+        logger.warning("Startup integrity check unavailable: %s", exc)
+        integrity = {"ok": True}  # non-fatal — proceed
+
     # ── Trading bot (foreground) ─────────────────────────────────────────────
     from trading.cryptocom_bot import CryptoComBot
 
     bot = CryptoComBot()
+    if not integrity.get("ok", True):
+        bot.state.execution_paused = True
     bot.start()
     logger.info("OpenClaw bot started — scanning every %ds", bot.state.scan_interval)
 

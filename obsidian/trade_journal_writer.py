@@ -24,8 +24,10 @@ def _safe(s: str) -> str:
     return re.sub(r'[<>:"/\\|?*]', "_", str(s))
 
 
-def write_trade(record: dict[str, Any]) -> None:
+def write_trade(record: dict[str, Any]) -> bool:
     """Write a closed trade outcome to the vault.
+
+    Returns True on success, False if vault unavailable (graceful skip).
 
     Args:
         record: trade outcome dict as written to data/logs/trade_outcomes.jsonl
@@ -33,6 +35,8 @@ def write_trade(record: dict[str, Any]) -> None:
                 pnl, outcome, regime_label, lesson (from qwen_compressor), ts
     """
     folder = vault_path(_FOLDER)
+    if folder is None:
+        return False
 
     ts_raw  = record.get("closed_at") or record.get("ts") or datetime.now(timezone.utc).isoformat()
     ts_dt   = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")) if isinstance(ts_raw, str) else datetime.now(timezone.utc)
@@ -89,17 +93,25 @@ tags: [trading, {symbol.lower()}, {strategy.lower()}, {outcome}]
 - [[06_Strategies/{_safe(strategy)}]]
 """
 
-    filepath.write_text(md, encoding="utf-8")
-    _append_index(folder, {
-        "file":     filename,
-        "date":     date_s,
-        "symbol":   symbol,
-        "strategy": strategy,
-        "outcome":  outcome,
-        "pnl":      pnl,
-        "regime":   regime,
-        "ts":       ts_raw,
-    })
+    try:
+        filepath.write_text(md, encoding="utf-8")
+        _append_index(folder, {
+            "file":     filename,
+            "date":     date_s,
+            "symbol":   symbol,
+            "strategy": strategy,
+            "outcome":  outcome,
+            "pnl":      pnl,
+            "regime":   regime,
+            "ts":       ts_raw,
+        })
+        return True
+    except Exception as exc:
+        import logging as _log
+        _log.getLogger("openclaw.obsidian").error(
+            "Obsidian: write failed (%s) — continuing without journal", exc
+        )
+        return False
 
 
 def _append_index(folder: Path, entry: dict) -> None:

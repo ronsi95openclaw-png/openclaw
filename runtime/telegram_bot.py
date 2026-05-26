@@ -75,12 +75,15 @@ def _cmd_help(chat_id, _text, bot_ref) -> None:
         "/goal     — $98 → $50K progress\n"
         "/balance  — current balance &amp; PnL\n"
         "/weights  — strategy weights &amp; win rates\n"
-        "/briefing — send morning briefing now\n"
-        "/restart  — restart the scan loop\n"
-        "/pause    — pause trade execution\n"
-        "/resume   — resume trade execution\n"
-        "/halt     — capital halt status &amp; release info\n"
-        "/help     — this message\n"
+        "/briefing   — send morning briefing now\n"
+        "/dca_status — DCA portfolio cost basis\n"
+        "/livecheck  — pre-flight check for live mode\n"
+        "/golive     — activate live mode (requires passphrase)\n"
+        "/restart    — restart the scan loop\n"
+        "/pause      — pause trade execution\n"
+        "/resume     — resume trade execution\n"
+        "/halt       — capital halt status &amp; release info\n"
+        "/help       — this message\n"
         "──────────────────────\n"
         "Morning briefing at 08:00 UTC ☀️\n"
         "Daily report at midnight UTC 📊"
@@ -354,6 +357,86 @@ def _cmd_restart(chat_id, _text, bot_ref) -> None:
         _reply(chat_id, f"⚠️ Restart failed: {exc}")
 
 
+def _cmd_livecheck(chat_id, _text, bot_ref) -> None:
+    try:
+        from runtime.live_mode_gate import format_eligibility_report
+        _reply(chat_id, format_eligibility_report())
+    except Exception as exc:
+        _reply(chat_id, f"⚠️ livecheck error: {exc}")
+
+
+def _cmd_golive(chat_id, text, bot_ref) -> None:
+    from settings import LIVE_ACTIVATION_PASSPHRASE
+    parts      = text.strip().split(maxsplit=1)
+    passphrase = parts[1].strip() if len(parts) > 1 else ""
+
+    if passphrase != LIVE_ACTIVATION_PASSPHRASE:
+        _reply(chat_id,
+               "🔐 Wrong passphrase.\n"
+               "Run /livecheck to see requirements, then:\n"
+               f"/golive {LIVE_ACTIVATION_PASSPHRASE}")
+        return
+
+    try:
+        from runtime.live_mode_gate import check_live_mode_eligibility
+        eligible, failures = check_live_mode_eligibility()
+    except Exception as exc:
+        _reply(chat_id, f"⚠️ eligibility check failed: {exc}")
+        return
+
+    if not eligible:
+        _reply(chat_id,
+               "🚫 <b>LIVE MODE BLOCKED</b> — requirements not met:\n"
+               + "\n".join(failures))
+        return
+
+    if bot_ref is None:
+        _reply(chat_id, "⚠️ Bot not running — cannot switch mode.")
+        return
+
+    bot_ref.state.demo_mode = False
+    from datetime import datetime, timezone
+    ts = datetime.now(timezone.utc).isoformat()
+    _reply(chat_id,
+           f"🚨 <b>LIVE MODE ACTIVATED</b> at {ts}\n\n"
+           "⚠️ Real money is now at risk.\n"
+           "Edit .env and set DEMO_MODE=false to persist after restart.\n"
+           "Send /status to confirm.")
+
+
+def _cmd_dca_status(chat_id, _text, bot_ref) -> None:
+    import json
+    from pathlib import Path
+    dca_file = Path(__file__).parent.parent / "data" / "dca_state.json"
+    if not dca_file.exists():
+        _reply(chat_id, "📊 DCA Portfolio\nNo DCA trades recorded yet.")
+        return
+    try:
+        state = json.loads(dca_file.read_text())
+    except Exception as exc:
+        _reply(chat_id, f"⚠️ DCA state read error: {exc}")
+        return
+
+    if not state:
+        _reply(chat_id, "📊 DCA Portfolio\nNo DCA trades recorded yet.")
+        return
+
+    lines = ["📊 <b>DCA Portfolio Status</b>\n──────────────────────"]
+    for symbol, d in state.items():
+        sym_short = symbol.replace("_USDT", "")
+        units     = d.get("total_units", 0)
+        avg_cost  = d.get("avg_cost", 0)
+        count     = d.get("count", 0)
+        total_usd = d.get("total_bought_usd", 0)
+        lines.append(
+            f"<b>{sym_short}</b>: {units:.6f} units\n"
+            f"  Avg cost:  ${avg_cost:,.4f}\n"
+            f"  Invested:  ${total_usd:,.2f}\n"
+            f"  DCA count: {count}"
+        )
+    _reply(chat_id, "\n".join(lines))
+
+
 def _cmd_briefing(chat_id, _text, bot_ref) -> None:
     if bot_ref is None:
         _reply(chat_id, "⚠️ Bot not running.")
@@ -368,18 +451,21 @@ def _cmd_briefing(chat_id, _text, bot_ref) -> None:
 
 
 _COMMANDS = {
-    "/help":     _cmd_help,
-    "/start":    _cmd_help,
-    "/status":   _cmd_status,
-    "/trades":   _cmd_trades,
-    "/goal":     _cmd_goal,
-    "/balance":  _cmd_balance,
-    "/weights":  _cmd_weights,
-    "/briefing": _cmd_briefing,
-    "/pause":    _cmd_pause,
-    "/resume":   _cmd_resume,
-    "/halt":     _cmd_halt,
-    "/restart":  _cmd_restart,
+    "/help":       _cmd_help,
+    "/start":      _cmd_help,
+    "/status":     _cmd_status,
+    "/trades":     _cmd_trades,
+    "/goal":       _cmd_goal,
+    "/balance":    _cmd_balance,
+    "/weights":    _cmd_weights,
+    "/briefing":   _cmd_briefing,
+    "/dca_status": _cmd_dca_status,
+    "/livecheck":  _cmd_livecheck,
+    "/golive":     _cmd_golive,
+    "/pause":      _cmd_pause,
+    "/resume":     _cmd_resume,
+    "/halt":       _cmd_halt,
+    "/restart":    _cmd_restart,
 }
 
 

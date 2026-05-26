@@ -72,6 +72,33 @@ def _next_trade_id(strategy: str) -> str:
         return f"CX{strategy[:3].upper()}{int(time.time())}{_trade_id_counter:04d}"
 
 
+_DCA_STATE_FILE = Path(__file__).parent.parent / "data" / "dca_state.json"
+_dca_state_lock = threading.Lock()
+
+
+def _update_dca_state(symbol: str, fill_price: float, units: float) -> None:
+    """Append a DCA buy to data/dca_state.json for cost-basis tracking."""
+    with _dca_state_lock:
+        state: dict = {}
+        if _DCA_STATE_FILE.exists():
+            try:
+                state = json.loads(_DCA_STATE_FILE.read_text())
+            except Exception:
+                pass
+        entry = state.get(symbol, {"total_bought_usd": 0.0, "total_units": 0.0, "avg_cost": 0.0, "count": 0})
+        cost = fill_price * units
+        entry["total_bought_usd"] += cost
+        entry["total_units"]      += units
+        entry["avg_cost"]          = entry["total_bought_usd"] / entry["total_units"] if entry["total_units"] else 0.0
+        entry["count"]            += 1
+        state[symbol] = entry
+        try:
+            _DCA_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _DCA_STATE_FILE.write_text(json.dumps(state, indent=2))
+        except Exception:
+            pass
+
+
 @dataclass
 class BotState:
     running:          bool  = False
@@ -1116,6 +1143,21 @@ class CryptoComBot:
             except Exception:
                 pass
 
+        # Demo slippage simulation — buyer pays above mid, seller receives below mid
+        if self.state.demo_mode:
+            try:
+                from settings import DEMO_SLIPPAGE_PCT, DEMO_SPREAD_PCT
+                _half = DEMO_SLIPPAGE_PCT / 2 + DEMO_SPREAD_PCT / 2
+                fill_price = price * (1 + _half) if sig.action == "long" else price * (1 - _half)
+                _slip_pct  = abs((fill_price / price) - 1) * 100
+                logger.info(
+                    "DEMO FILL | side=%s | market=%.4f | fill=%.4f | slippage=%.3f%%",
+                    sig.action, price, fill_price, _slip_pct,
+                )
+                price = fill_price
+            except Exception:
+                pass
+
         sl = price * (1 - sig.sl_pct / 100) if sig.action == "long" else price * (1 + sig.sl_pct / 100)
         tp = price * (1 + sig.tp_pct / 100) if sig.action == "long" else price * (1 - sig.tp_pct / 100)
         trade_id = _next_trade_id(sig.strategy)
@@ -1188,6 +1230,13 @@ class CryptoComBot:
         with self._lock:
             self.state.open_positions.append(pos)
             self.state.trades_today += 1
+
+        # DCA cost-basis tracking (separate from weight engine)
+        if sig.strategy == "DCA":
+            try:
+                _update_dca_state(sig.symbol, price, initial_size)
+            except Exception:
+                pass
 
         logger.info("OPEN %s %s @ %.4f  SL=%.4f  TP=%.4f  [%s]  DCA@%.4f",
                     sig.action.upper(), sig.symbol, price, sl, tp, sig.strategy, dca_trigger)
@@ -1438,7 +1487,8 @@ class CryptoComBot:
                 # Position may already be closed by exchange SL/TP — non-fatal
                 logger.warning("Exchange close order skipped (may already be closed): %s", e)
 
-        self.weights.record_result(pos["strategy"], outcome == "win")
+        if pos["strategy"] != "DCA":  # DCA is an accumulation policy — not tracked in weight engine
+            self.weights.record_result(pos["strategy"], outcome == "win")
         logger.info("CLOSE %s [%s]  PnL=%+.4f", pos["symbol"], outcome, pnl)
         self._append_log({"event": "close", "id": pos["id"], "outcome": outcome,
                           "pnl": round(pnl, 4), "exit_price": exit_price})

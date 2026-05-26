@@ -308,6 +308,79 @@ def append_quin_decision(record: dict) -> None:
         logger.debug("quin_decisions supabase write failed: %s", exc)
 
 
+def load_trade_outcomes() -> list:
+    """Load all trade outcomes — local JSONL file (Supabase not used to avoid large reads)."""
+    trades = []
+    if _OUTCOMES_FILE.exists():
+        try:
+            with open(_OUTCOMES_FILE, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            trades.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+        except Exception as exc:
+            logger.debug("load_trade_outcomes file read failed: %s", exc)
+    return trades
+
+
+def startup_integrity_check() -> dict:
+    """Compare Supabase trade count vs local JSONL on startup.
+
+    Returns {"ok": bool, "issues": list, "supabase_count": int, "local_count": int}.
+    Called from main.py before the trading loop starts.
+    """
+    issues = []
+
+    # Load from local JSONL
+    local_trades = load_trade_outcomes()
+    local_ids    = {t.get("id") for t in local_trades if t.get("id")}
+    local_count  = len(local_ids)
+
+    # Load from Supabase
+    supabase_ids   = set()
+    supabase_count = 0
+    sb = _sb()
+    if sb is None:
+        issues.append("Supabase unreachable — cannot compare trade counts")
+    else:
+        try:
+            res = sb.table("trade_outcomes").select("id").execute()
+            if res.data:
+                supabase_ids   = {r["id"] for r in res.data if r.get("id")}
+                supabase_count = len(supabase_ids)
+        except Exception as exc:
+            issues.append(f"Supabase trade_outcomes read failed: {exc}")
+
+    missing_from_supabase = local_ids - supabase_ids
+    missing_from_local    = supabase_ids - local_ids
+
+    if missing_from_supabase:
+        issues.append(
+            f"STATE DRIFT: {len(missing_from_supabase)} trade(s) in local JSONL "
+            f"missing from Supabase: {list(missing_from_supabase)[:5]}"
+        )
+    if missing_from_local and supabase_count > 0:
+        issues.append(
+            f"STATE DRIFT: {len(missing_from_local)} trade(s) in Supabase "
+            f"missing from local JSONL: {list(missing_from_local)[:5]}"
+        )
+
+    ok = len([i for i in issues if "STATE DRIFT" in i]) == 0
+    logger.info(
+        "startup_integrity_check: ok=%s  local=%d  supabase=%d  issues=%d",
+        ok, local_count, supabase_count, len(issues),
+    )
+    return {
+        "ok":             ok,
+        "issues":         issues,
+        "supabase_count": supabase_count,
+        "local_count":    local_count,
+    }
+
+
 # ── Analysis reports ──────────────────────────────────────────────────────────
 
 def save_analysis_report(report: dict, ts: Optional[str] = None) -> None:

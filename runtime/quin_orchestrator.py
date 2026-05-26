@@ -267,10 +267,14 @@ class QuinOrchestrator:
         confidence = signal.get("confidence", 0.7)
         score      = signal.get("score", confidence)
 
-        # Rule 1: Block TREND_FOLLOW in UNKNOWN/LIQUIDITY_DROUGHT regime (0% WR historically)
-        if strategy == "TREND_FOLLOW" and regime in ("UNKNOWN", "LIQUIDITY_DROUGHT"):
+        # Rule 1: TREND_FOLLOW only in clear trending regimes
+        # Block in: RANGING, CHOPPY (no trend to follow) + UNKNOWN, LIQUIDITY_DROUGHT (no data)
+        # Allow in: TRENDING_BULL, TRENDING_BEAR, MOMENTUM_BULL, MOMENTUM_BEAR
+        if strategy == "TREND_FOLLOW" and regime in (
+            "UNKNOWN", "LIQUIDITY_DROUGHT", "RANGING", "CHOPPY"
+        ):
             return self._make_decision("HOLD", 0.9,
-                f"TREND_FOLLOW blocked in {regime} regime (historically 0% WR)",
+                f"TREND_FOLLOW blocked in {regime} — fires only in trending regimes",
                 "rule_based", ctx.tick_id, signal)
 
         # Rule 2: Require minimum weighted score

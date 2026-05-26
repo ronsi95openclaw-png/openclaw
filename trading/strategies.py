@@ -22,7 +22,8 @@ logger = logging.getLogger("openclaw.trading.strategies")
 
 _WEIGHTS_FILE = Path(__file__).parent.parent / "data" / "strategy_weights.json"
 
-STRATEGIES = ["EMA_CROSS", "RSI_MEAN_REVERT", "BREAKOUT", "BOLLINGER_BAND", "TREND_FOLLOW", "DCA", "VWAP"]
+STRATEGIES = ["EMA_CROSS", "RSI_MEAN_REVERT", "BREAKOUT", "BOLLINGER_BAND", "TREND_FOLLOW", "VWAP"]
+# DCA excluded from weight engine — it's an accumulation policy, tracked separately in data/dca_state.json
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
@@ -378,6 +379,8 @@ def trend_follow_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
         conf   = 0.82 if rsi > 57 and hist > 0 else 0.70
         reason = (f"Triple EMA bull | gap {gap_pct:.2f}% | "
                   f"MACD hist {hist:.4f} | RSI {rsi:.1f}")
+        logger.info("TREND_FOLLOW fired | symbol=%s | signal=long | conf=%.2f | reason=%s",
+                    symbol, conf, reason)
         return StrategySignal("TREND_FOLLOW", symbol, "long",  conf, reason, sl, tp)
 
     # Bearish: full triple alignment down, price below all EMAs, MACD negative, RSI 28-53
@@ -388,6 +391,8 @@ def trend_follow_strategy(symbol: str, candles: list[dict]) -> StrategySignal:
         conf   = 0.82 if rsi < 45 and hist < 0 else 0.70
         reason = (f"Triple EMA bear | gap {gap_pct:.2f}% | "
                   f"MACD hist {hist:.4f} | RSI {rsi:.1f}")
+        logger.info("TREND_FOLLOW fired | symbol=%s | signal=short | conf=%.2f | reason=%s",
+                    symbol, conf, reason)
         return StrategySignal("TREND_FOLLOW", symbol, "short", conf, reason, sl, tp)
 
     return _hold(f"No triple alignment | RSI {rsi:.1f} | MACD {hist:.4f}", sl, tp)
