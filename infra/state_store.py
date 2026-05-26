@@ -55,13 +55,18 @@ def save_bot_state(raw: dict) -> None:
     if sb is None:
         return
     try:
+        # Compute current balance: explicit field wins, else starting_balance + total_pnl.
+        # Never let a missing 'balance' key silently write the starting value.
+        _starting = float(raw.get("starting_balance", 98.0))
+        _pnl      = float(raw.get("total_pnl", 0.0))
+        _balance  = float(raw["balance"]) if "balance" in raw else _starting + _pnl
         sb.table("bot_state").upsert({
             "id":               _SINGLETON_ID,
             "demo_mode":        bool(raw.get("demo_mode", True)),
             "running":          bool(raw.get("running", False)),
-            "balance":          float(raw.get("balance", raw.get("starting_balance", 98.0))),
-            "starting_balance": float(raw.get("starting_balance", 98.0)),
-            "total_pnl":        float(raw.get("total_pnl", 0.0)),
+            "balance":          _balance,
+            "starting_balance": _starting,
+            "total_pnl":        _pnl,
             "trades_today":     int(raw.get("trades_today", 0)),
             "trades_date":      str(raw.get("trades_date", "")),
             "scan_interval":    int(raw.get("scan_interval", 30)),
@@ -114,6 +119,12 @@ def load_bot_state() -> Optional[dict]:
     if _STATE_FILE.exists():
         try:
             local_state = json.loads(_STATE_FILE.read_text())
+            # Derive balance if not explicitly stored (older state files omit it)
+            if "balance" not in local_state:
+                local_state["balance"] = (
+                    float(local_state.get("starting_balance", 98.0))
+                    + float(local_state.get("total_pnl", 0.0))
+                )
             logger.info(
                 "bot_state local: balance=%.2f  pnl=%.2f",
                 float(local_state.get("balance") or 0),
@@ -389,7 +400,11 @@ def startup_integrity_check() -> dict:
     missing_from_supabase = local_ids - supabase_ids
     missing_from_local    = supabase_ids - local_ids
 
-    if missing_from_supabase:
+    supabase_reachable = sb is not None and not any("unreachable" in i for i in issues)
+
+    # Only flag local→Supabase drift when Supabase was actually reachable.
+    # If Supabase is down we can't tell whether it's real drift or just offline.
+    if missing_from_supabase and supabase_reachable:
         issues.append(
             f"STATE DRIFT: {len(missing_from_supabase)} trade(s) in local JSONL "
             f"missing from Supabase: {list(missing_from_supabase)[:5]}"
