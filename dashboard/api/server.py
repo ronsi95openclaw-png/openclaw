@@ -153,27 +153,59 @@ async def startup():
 
 
 def _register_telegram_webhook() -> None:
-    """Set Telegram webhook to this Railway deployment's public URL."""
-    import urllib.request
+    """Set Telegram webhook to this Railway deployment's public URL.
+
+    Only runs when RAILWAY_PUBLIC_URL is set (cloud/webhook mode).
+    In local mode (no RAILWAY_PUBLIC_URL), deletes any stale webhook so that
+    getUpdates long-polling works without 409 Conflict errors.
+    """
+    import urllib.request as _ureq
     railway_url = os.getenv("RAILWAY_PUBLIC_URL", "").rstrip("/")
     tok         = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    if not railway_url or not tok:
+    if not tok:
+        logger.warning("Telegram: TELEGRAM_BOT_TOKEN not set — commands will not work")
         return
+
+    if not railway_url:
+        # Local/dev mode — delete any active webhook so long-polling works
+        try:
+            req = _ureq.Request(
+                f"https://api.telegram.org/bot{tok}/deleteWebhook",
+                data=json.dumps({"drop_pending_updates": False}).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            with _ureq.urlopen(req, timeout=8) as r:
+                result = json.loads(r.read().decode())
+            if result.get("ok"):
+                logger.info("Telegram: stale webhook cleared — long-poll mode active")
+            else:
+                logger.debug("Telegram: deleteWebhook response: %s", result)
+        except Exception as exc:
+            logger.debug("Telegram: deleteWebhook skipped (%s)", exc)
+        return
+
+    # Cloud/Railway mode — register webhook
     webhook_url = f"{railway_url}/telegram/webhook"
-    api_url     = f"https://api.telegram.org/bot{tok}/setWebhook"
-    payload     = json.dumps({"url": webhook_url, "allowed_updates": ["message"]}).encode()
-    req         = urllib.request.Request(
-        api_url, data=payload, headers={"Content-Type": "application/json"}
+    secret      = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+    payload     = {"url": webhook_url, "allowed_updates": ["message"]}
+    if secret:
+        payload["secret_token"] = secret
+    req = _ureq.Request(
+        f"https://api.telegram.org/bot{tok}/setWebhook",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with _ureq.urlopen(req, timeout=10) as r:
             result = json.loads(r.read().decode())
         if result.get("ok"):
             logger.info("Telegram webhook registered → %s", webhook_url)
         else:
-            logger.warning("Telegram webhook registration failed: %s", result)
+            logger.warning("Telegram webhook registration failed: %s — "
+                           "run setWebhook manually from a non-cloud machine", result)
     except Exception as exc:
-        logger.warning("Telegram webhook registration error: %s", exc)
+        logger.warning("Telegram webhook registration error (%s) — "
+                       "register manually: POST api.telegram.org/bot.../setWebhook", exc)
 
 
 async def _poll_bot_state():

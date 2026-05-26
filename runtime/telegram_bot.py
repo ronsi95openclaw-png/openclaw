@@ -490,6 +490,13 @@ class TelegramCommandBot:
         self._bot_ref = bot_ref
 
     def start(self) -> None:
+        # In webhook mode (RAILWAY_PUBLIC_URL set), Telegram pushes updates to the
+        # FastAPI /telegram/webhook endpoint.  Starting getUpdates polling while a
+        # webhook is active causes 409 Conflict errors — skip polling entirely.
+        if os.getenv("RAILWAY_PUBLIC_URL", ""):
+            logger.info("TelegramCommandBot: webhook mode — polling disabled (RAILWAY_PUBLIC_URL is set)")
+            return
+
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return
@@ -500,7 +507,7 @@ class TelegramCommandBot:
                 daemon=True,
             )
             self._thread.start()
-        logger.info("TelegramCommandBot started")
+        logger.info("TelegramCommandBot: long-poll mode started")
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
