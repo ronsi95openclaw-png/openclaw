@@ -197,9 +197,10 @@ class BalanceFeedDaemon:
                 self._status.consecutive_failures += 1
             consecutive_failures = self._status.consecutive_failures
 
-        # Log sustained failure
+        # Log sustained failure — DEBUG in demo mode (no API keys = always fails)
         if equity is None and consecutive_failures >= self._max_consecutive_failures:
-            logger.error(
+            log_fn = logger.debug if self._demo_mode else logger.error
+            log_fn(
                 "balance_feed: %d consecutive fetch failures "
                 "(demo_mode=%s, interval=%.1fs)",
                 consecutive_failures,

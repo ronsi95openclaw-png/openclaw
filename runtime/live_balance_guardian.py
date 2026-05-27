@@ -28,7 +28,6 @@ Design invariants
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
@@ -36,6 +35,21 @@ import tempfile
 import threading
 import time
 import uuid
+
+# fcntl is POSIX-only; provide no-op stubs on Windows so the module imports
+# cleanly regardless of platform.  File locking is advisory here — losing it
+# on Windows is acceptable since concurrent writes don't occur in production.
+try:
+    import fcntl as _fcntl
+    _LOCK_EX = _fcntl.LOCK_EX
+    _LOCK_SH = _fcntl.LOCK_SH
+    _LOCK_UN = _fcntl.LOCK_UN
+    def _flock(fh, op: int) -> None:
+        _fcntl.flock(fh.fileno(), op)
+except ImportError:
+    _LOCK_EX = _LOCK_SH = _LOCK_UN = 0
+    def _flock(fh, op: int) -> None:  # type: ignore[misc]
+        pass
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from enum import Enum
@@ -335,11 +349,11 @@ class BalanceGuardian:
             return
         try:
             with open(path, "r", encoding="utf-8") as fh:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+                _flock(fh, _LOCK_SH)
                 try:
                     data = json.load(fh)
                 finally:
-                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                    _flock(fh, _LOCK_UN)
             with self._lock:
                 self._last_known_good = data
         except Exception as exc:  # noqa: BLE001
@@ -457,12 +471,12 @@ class BalanceGuardian:
         try:
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
             with open(path, "a", encoding="utf-8") as fh:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+                _flock(fh, _LOCK_EX)
                 try:
                     fh.write(line)
                     fh.flush()
                 finally:
-                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                    _flock(fh, _LOCK_UN)
         except OSError as exc:
             logger.error("balance_guardian: audit write failed (%s): %s", path, exc)
 
@@ -477,11 +491,11 @@ class BalanceGuardian:
             fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".cache.tmp")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+                    _flock(fh, _LOCK_EX)
                     try:
                         json.dump(self._last_known_good, fh, indent=2)
                     finally:
-                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                        _flock(fh, _LOCK_UN)
                 os.replace(tmp_path, path)
             except Exception:
                 try:

@@ -458,13 +458,17 @@ class ReconciliationEngine:
         }
         line = json.dumps(record, default=str) + "\n"
         try:
-            import fcntl
-            with open(_LOG_FILE, "a", encoding="utf-8") as fh:
-                fcntl.flock(fh, fcntl.LOCK_EX)
-                try:
+            try:
+                import fcntl as _fcntl
+                with open(_LOG_FILE, "a", encoding="utf-8") as fh:
+                    _fcntl.flock(fh, _fcntl.LOCK_EX)
+                    try:
+                        fh.write(line)
+                    finally:
+                        _fcntl.flock(fh, _fcntl.LOCK_UN)
+            except ImportError:
+                with open(_LOG_FILE, "a", encoding="utf-8") as fh:
                     fh.write(line)
-                finally:
-                    fcntl.flock(fh, fcntl.LOCK_UN)
         except Exception as exc:
             logger.error("ReconciliationEngine: log write failed: %s", exc)
 
