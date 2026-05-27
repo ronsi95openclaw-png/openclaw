@@ -10,7 +10,9 @@ venv/
 dist/
 build/
 .DS_Store
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/skills/**
 .superpowers/
 .swarm/
 credentials.json
