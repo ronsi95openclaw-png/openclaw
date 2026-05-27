@@ -366,7 +366,7 @@ class SheetReporter:
             except json.JSONDecodeError as e:
                 logger.error("SheetReporter: GOOGLE_CREDS_JSON is not valid JSON: %s", e)
             except FileNotFoundError:
-                logger.error("SheetReporter: credentials file not found: %s", self._creds_file)
+                logger.debug("SheetReporter: credentials file not found: %s (Sheets reporting disabled)", self._creds_file)
             except Exception as exc:
                 logger.error("SheetReporter: connection failed: %s", exc)
 

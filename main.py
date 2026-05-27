@@ -13,6 +13,24 @@ import logging
 import os
 import signal
 import sys
+
+# ── Windows compatibility shim ────────────────────────────────────────────────
+# fcntl is POSIX-only. Patch sys.modules before any other import so all 29
+# files that do `import fcntl` get no-op stubs on Windows instead of crashing.
+if sys.platform == "win32":
+    import types as _types
+    _fcntl = _types.ModuleType("fcntl")
+    _fcntl.LOCK_EX = 2;  _fcntl.LOCK_SH = 1
+    _fcntl.LOCK_NB = 4;  _fcntl.LOCK_UN = 8
+    _fcntl.FD_CLOEXEC = 1
+    _fcntl.F_GETFD = 1;  _fcntl.F_SETFD = 2
+    _fcntl.F_GETFL = 3;  _fcntl.F_SETFL = 4
+    _fcntl.flock  = lambda fd, op: None
+    _fcntl.lockf  = lambda fd, cmd, *a: None
+    _fcntl.fcntl  = lambda fd, cmd, *a: 0
+    _fcntl.ioctl  = lambda fd, cmd, *a: 0
+    sys.modules["fcntl"] = _fcntl
+    del _types, _fcntl
 import threading
 import time
 from pathlib import Path
