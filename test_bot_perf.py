@@ -33,7 +33,7 @@ print(f"  Cycles: {args.cycles}   Interval: {args.interval}s   "
       f"Started: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}")
 print("="*65 + "\n")
 
-from trading.blofin_bot import BloFinBot
+from trading.sim_engine import BloFinBot
 
 bot = BloFinBot()
 bot.configure(demo_mode=True)

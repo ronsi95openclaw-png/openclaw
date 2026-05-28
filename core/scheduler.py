@@ -198,7 +198,7 @@ async def _run_autotrade() -> None:
 
     try:
         from trading.exchange import fetch_all_closes, get_account_balance, get_portfolio_value_usd
-        from trading.strategy import RSIMACDStrategy
+        from trading.archive.strategy_v1_deprecated import RSIMACDStrategy
         from trading.executor import execute_signals
 
         strategy     = RSIMACDStrategy()
@@ -208,7 +208,7 @@ async def _run_autotrade() -> None:
 
         if not high_signals:
             # Show current RSI status even if no signals
-            from trading.strategy import calculate_rsi, calculate_macd
+            from trading.archive.strategy_v1_deprecated import calculate_rsi, calculate_macd
             lines = [f"📊 <b>Daily Scan — {timeframe}</b>\n<i>No HIGH confidence signals</i>\n"]
             for coin, closes in candle_data.items():
                 try:

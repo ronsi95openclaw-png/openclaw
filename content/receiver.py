@@ -308,7 +308,7 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         from trading.exchange import fetch_all_closes
-        from trading.strategy import RSIMACDStrategy, calculate_rsi, calculate_macd
+        from trading.archive.strategy_v1_deprecated import RSIMACDStrategy, calculate_rsi, calculate_macd
 
         strategy    = RSIMACDStrategy()
         candle_data = fetch_all_closes(strategy.config.coins, timeframe=timeframe, count=100)

@@ -1,3 +1,6 @@
+# DEPRECATED 2026-05-28 — superseded by trading/strategies.py (v2, weight-based)
+# Kept for: core/scheduler.py (auto-scan), content/receiver.py (Telegram /scan command)
+# Do not add new callers. Migrate to trading.strategies when those modules are updated.
 """
 ClawBot — RSI + MACD Strategy Module
 =====================================
