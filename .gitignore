@@ -12,3 +12,12 @@ build/
 .DS_Store
 .claude/
 .superpowers/
+
+# Archived clutter (kept on disk, out of git)
+_Archive/
+
+# Stray binaries / artifacts that don't belong in the repo
+*.exe
+*.zip
+*.code-search
+CC-Session-Logs/
