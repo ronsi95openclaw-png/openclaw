@@ -673,7 +673,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /market              — live prices + analysis\n"
         "  /scan [1h|4h|1d]    — RSI+MACD signals\n"
         "  /dca [asset]         — DCA entry analysis\n"
-        "  /autotrade [on|off]  — fully auto daily trading\n\n"
+        "  /autotrade [on|off]  — fully auto daily trading\n"
+        "  /report              — executed-trade activity summary\n\n"
         "<b>💻 PC Execution:</b>\n"
         "  /run [command]      — run shell command\n"
         "  /py [code]          — run Python code\n\n"
@@ -753,6 +754,18 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     os.kill(os.getpid(), signal.SIGINT)
 
 
+# ── /report ───────────────────────────────────────────────────────────────────
+
+async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_chat.id):
+        return
+    from trading.history import format_report, load_trades, summarize
+
+    await update.message.reply_text(
+        format_report(summarize(load_trades())), parse_mode="HTML"
+    )
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -787,6 +800,7 @@ def main() -> None:
     _app.add_handler(CommandHandler("weather",  cmd_weather))
     _app.add_handler(CommandHandler("help",     cmd_help))
     _app.add_handler(CommandHandler("autotrade", cmd_autotrade))
+    _app.add_handler(CommandHandler("report",    cmd_report))
     _app.add_handler(CommandHandler("stop",      cmd_stop))
 
     # Free-text conversation (must be last — catches all non-command text)
