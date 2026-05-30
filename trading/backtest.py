@@ -86,7 +86,7 @@ def walk_forward(
     coin: str,
     closes: List[float],
     *,
-    strategy: Optional[RSIMACDStrategy] = None,
+    strategy=None,
     horizon: int = 6,
     risk_pct: float = 1.5,
     starting_balance: float = 96.0,
@@ -94,17 +94,19 @@ def walk_forward(
 ) -> BacktestResult:
     """Walk forward through closes; trade on every signal at min_confidence or above.
 
+    `strategy` can be any object exposing `evaluate(coin, closes) -> Signal`.
+    Optional `.warmup` (int) overrides the default MACD-based warmup.
+    Defaults to RSIMACDStrategy() so existing callers keep working.
+
     One open position per coin at a time (live bot also serializes orders per
     coin via the executor). Position size is risk_pct of CURRENT balance, so
     losses compound (matches live behavior).
-
-    min_confidence: "HIGH" (live bot's bar — strict, same-candle crossover) /
-                    "MEDIUM" (RSI extreme + MACD direction; far more frequent) /
-                    "LOW"  (everything except HOLD).
     """
     strategy = strategy or RSIMACDStrategy()
-    cfg = strategy.config
-    warmup = cfg.macd_slow + cfg.macd_signal + 2   # bare minimum for MACD crossover
+    warmup = getattr(strategy, "warmup", None)
+    if warmup is None:
+        cfg = getattr(strategy, "config", None)
+        warmup = (cfg.macd_slow + cfg.macd_signal + 2) if cfg else 40
     min_rank = _CONFIDENCE_RANK.get(min_confidence, 3)
 
     result = BacktestResult(coin=coin, starting_balance=starting_balance, final_balance=starting_balance)
