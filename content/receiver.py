@@ -951,7 +951,7 @@ def main() -> None:
 
     sched.set_send_fn(_scheduler_send)
     sched.start_scheduler()
-    sched.reload_autotrade()   # re-register daily job if it was enabled before restart
+    sched.reload_autotrade(from_env=bool(os.getenv("AUTOTRADE_ENABLED", "").strip()))   # re-register daily job if it was enabled before restart
 
     _app = Application.builder().token(token).build()
 
