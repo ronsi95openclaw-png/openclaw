@@ -1,5 +1,5 @@
 # SESSION_COMPACT — AUTO-GENERATED
-**Last updated:** 2026-05-28 04:24 UTC (by scripts/generate_session_compact.py)
+**Last updated:** 2026-05-30 00:07 UTC (by scripts/generate_session_compact.py)
 **DO NOT edit manually — regenerated on session end.**
 
 ## SYSTEM STATE
@@ -18,11 +18,11 @@
 
 ## RECENT COMMITS
 ```
+442d06a chore: regenerate SESSION_COMPACT.md post-cleanup
 d00428f chore: remove shims + archive strategy v1 (T1.4, T1.5)
 ae91db5 feat: auto-generate SESSION_COMPACT.md from live state (T2.3)
 82e6e05 docs: add deployment ACTIVE/ASPIRATIONAL labels + env example vars
 61bcadf fix: self-contained fcntl shim in guardian + reconciliation; silence demo noise
-a8b28bf feat: add ClawBot Claude Code skill package (6 files)
 ```
 
 ## STRATEGY WEIGHTS
