@@ -2,4 +2,9 @@
 aptPkgs = ["ffmpeg", "libsm6", "libxext6", "libgl1"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+# Always install base deps. Install heavy media deps (whisper/torch, watchdog,
+# ffmpeg-python) only when INSTALL_CONTENT_DEPS=true to keep cloud builds lean.
+cmds = [
+    "pip install -r requirements.txt",
+    "if [ \"$INSTALL_CONTENT_DEPS\" = \"true\" ]; then pip install -r requirements-content.txt; fi",
+]

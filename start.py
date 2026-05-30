@@ -40,8 +40,10 @@ def _run_dashboard() -> None:
 
 
 if __name__ == "__main__":
-    # Bot in background thread
-    bot_thread = threading.Thread(target=_run_bot, name="clawbot", daemon=False)
+    # Bot in background thread. daemon=True so if the main (dashboard) thread
+    # crashes, the Python process can exit cleanly instead of hanging on the
+    # bot's asyncio loop. Process supervisor (Railway/systemd) will restart.
+    bot_thread = threading.Thread(target=_run_bot, name="clawbot", daemon=True)
     bot_thread.start()
     print("🤖 ClawBot thread started.")
 

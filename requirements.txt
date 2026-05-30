@@ -1,17 +1,19 @@
+# requirements.txt — base runtime deps (Telegram bot + dashboard + trading)
+# Media/content pipeline deps (whisper, watchdog, ffmpeg-python) live in
+# requirements-content.txt to keep cloud builds lean. Install that file only
+# when the content pipeline is enabled (e.g. INSTALL_CONTENT_DEPS=true).
 annotated-types==0.7.0
 anthropic
 anyio==4.13.0
 APScheduler==3.10.4
 certifi==2026.2.25
 charset-normalizer==3.4.6
-ffmpeg-python==0.2.0
 h11==0.16.0
 httpcore==1.0.9
 httpx==0.28.1
 idna==3.11
 ollama==0.6.1           # optional — only needed when running Ollama locally
 openai>=1.30.0          # used for OpenRouter API (OpenAI-compatible)
-openai-whisper           # optional — only needed for video caption pipeline
 pydantic==2.12.5
 pydantic_core==2.41.5
 python-dotenv==1.2.2
@@ -21,4 +23,3 @@ requests==2.33.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 urllib3==2.6.3
-watchdog==4.0.0
