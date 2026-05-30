@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -64,8 +65,22 @@ def _place_order(instrument: str, side: str, notional_usd: float) -> dict:
     }
 
     body = _sign("private/create-order", params, api_key, secret)
-    r    = requests.post(f"{_PRIVATE}/create-order", json=body, timeout=15)
-    r.raise_for_status()
+
+    # Retry transient network errors ONCE. Do NOT retry once the server has
+    # responded (raise_for_status below) — the order may have been accepted
+    # and a retry would double-fill. Create-order is not idempotent.
+    r = None
+    for attempt in range(2):
+        try:
+            r = requests.post(f"{_PRIVATE}/create-order", json=body, timeout=15)
+            break
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            if attempt == 1:
+                raise
+            logger.warning(f"_place_order transient network error (attempt 1/2): {exc}")
+            time.sleep(1.0)
+
+    r.raise_for_status()  # 4xx/5xx after success on the wire -> raise immediately, NO retry
     payload = r.json()
 
     if payload.get("code", 0) != 0:

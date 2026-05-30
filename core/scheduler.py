@@ -302,18 +302,26 @@ async def run_autotrade_now() -> None:
     await _run_autotrade()
 
 
-def reload_autotrade() -> None:
+def reload_autotrade(from_env: bool = False) -> None:
     """Re-register auto-trade job after restart.
 
     Priority order:
       1. data/autotrade.json  (set via /autotrade on command)
       2. Environment variables AUTOTRADE_ENABLED / AUTOTRADE_CHAT_ID
          (used for cloud deployments where the data dir is ephemeral)
+
+    Args:
+        from_env: When True, callers indicate the config is being driven
+            purely from environment variables and the data/ dir may be
+            ephemeral / read-only. In that case, if the persisted file
+            did not already contribute the config, skip the disk write —
+            env vars will re-apply on the next start anyway.
     """
     cfg = _load_autotrade()
+    file_already_enabled = bool(cfg.get("enabled"))
 
     # Fall back to env vars when the file says disabled or doesn't exist
-    if not cfg.get("enabled") and os.getenv("AUTOTRADE_ENABLED", "").lower() == "true":
+    if not file_already_enabled and os.getenv("AUTOTRADE_ENABLED", "").lower() == "true":
         chat_id = os.getenv("AUTOTRADE_CHAT_ID", "").strip()
         if chat_id:
             cfg = {
@@ -322,7 +330,11 @@ def reload_autotrade() -> None:
                 "scan_time": os.getenv("AUTOTRADE_TIME", "08:00"),
                 "timeframe": os.getenv("AUTOTRADE_TIMEFRAME", "4h"),
             }
-            _save_autotrade(cfg)
+            # Only persist when we're not in pure-env mode. The /autotrade
+            # command path still calls enable_autotrade() which persists,
+            # so the normal interactive case is unaffected.
+            if not from_env:
+                _save_autotrade(cfg)
             print(f"🤖 Auto-trade enabled from env vars (chat={chat_id}, time={cfg['scan_time']} UTC)")
 
     if cfg.get("enabled") and cfg.get("chat_id") and _scheduler:
