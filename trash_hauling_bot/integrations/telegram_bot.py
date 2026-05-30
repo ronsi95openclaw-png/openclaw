@@ -1,7 +1,10 @@
 import logging
+import os
 import traceback
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+from agents.review import review_request_message
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -43,6 +46,9 @@ _HELP = """
 /jobs — List scheduled jobs
 /reschedule `<lead_id> <new_datetime>` — Move a job
 /cancel `<lead_id>` — Cancel a job
+
+*Reviews*
+/review `<lead_id>` — Generate a post-job Google review request message (for team to copy-send)
 
 *System*
 /sync — Trigger calendar sync
@@ -103,6 +109,7 @@ class TrashHaulingBot:
         add(CommandHandler("scan", self._cmd_scan))
         add(CommandHandler("sync", self._cmd_sync))
         add(CommandHandler("ping", self._cmd_ping))
+        add(CommandHandler("review", self._cmd_review))
         add(CallbackQueryHandler(self._on_callback))
 
     async def _cmd_ping(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -110,9 +117,35 @@ class TrashHaulingBot:
         cid = update.effective_chat.id
         logger.info("PING from chat_id=%s", cid)
         await update.message.reply_text(
-            f"Pong! Bot is alive.\nYour chat_id: `{cid}`\nAdd it to TRASH_BOT_CHAT_IDS in .env.haulyeah",
+            f"Pong! Bot is alive.\nYour chat_id: `{cid}`\nAdd it to TRASH_BOT_CHAT_IDS in the root .env",
             parse_mode="Markdown",
         )
+
+    @_require_auth
+    async def _cmd_review(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Generate a Google review request message for a completed-job lead.
+
+        Replies with the message text for the team to copy-send through their
+        usual customer channel (FB Messenger / SMS). Does NOT auto-send.
+        """
+        if not ctx.args:
+            await update.message.reply_text("Usage: /review <lead_id>")
+            return
+        lead_id = ctx.args[0].strip()
+        lead = self._sheets.get_lead_by_id(lead_id)
+        if lead is None:
+            await update.message.reply_text(f"Lead `{lead_id}` not found.", parse_mode="Markdown")
+            return
+        msg = review_request_message(
+            customer_name=lead.get("name", ""),
+            review_url=os.getenv("GOOGLE_REVIEW_URL", "").strip(),
+            business_name="HaulYeah",
+        )
+        await update.message.reply_text(
+            f"*Review request draft for `{lead_id}`* — copy/send via your usual channel:\n\n{msg}",
+            parse_mode="Markdown",
+        )
+        self._audit.log("telegram", "review_drafted", {"lead_id": lead_id})
 
     async def _on_error(self, update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Unhandled exception in handler:\n%s", traceback.format_exc())

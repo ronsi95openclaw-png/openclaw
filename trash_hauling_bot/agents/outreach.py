@@ -9,6 +9,7 @@ explicitly confirms via Telegram.
 
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import Dict, List, Optional
 
 import anthropic
 
+from agents.quote import estimate
 from config import config
 from integrations.sheets import (
     SheetsClient,
@@ -27,6 +29,21 @@ from utils.audit import AuditLogger
 from utils.sanitize import is_prompt_injection, sanitize_text
 
 logger = logging.getLogger(__name__)
+
+
+def _maybe_append_quote(message: str, description: str) -> str:
+    """Optionally tack a short price-range estimate onto an outreach message.
+
+    Gated by env var OUTREACH_INCLUDE_QUOTE (default off) so the existing
+    soft-ask outreach behavior is preserved unless explicitly enabled.
+    """
+    if os.getenv("OUTREACH_INCLUDE_QUOTE", "false").strip().lower() != "true":
+        return message
+    est = estimate(description)
+    return (
+        f"{message}\n\n"
+        f"Quick estimate from your post: {est['range']} (final price confirmed on-site)."
+    )
 
 _TEMPLATE = (
     "Hi! I came across your listing for {job_type} and wanted to reach out. "
@@ -148,10 +165,10 @@ class OutreachAgent:
         if is_prompt_injection(description):
             logger.warning("Prompt injection in lead %s — using template", lead.get("id"))
             self._audit.log(self.AGENT_NAME, "injection_blocked", {"lead_id": lead.get("id")})
-            return _TEMPLATE.format(job_type=job_type)
+            return _maybe_append_quote(_TEMPLATE.format(job_type=job_type), description)
 
         if not self._claude:
-            return _TEMPLATE.format(job_type=job_type)
+            return _maybe_append_quote(_TEMPLATE.format(job_type=job_type), description)
 
         try:
             resp = self._claude.messages.create(
@@ -173,7 +190,7 @@ class OutreachAgent:
                     ),
                 }],
             )
-            return resp.content[0].text.strip()
+            return _maybe_append_quote(resp.content[0].text.strip(), description)
         except Exception as exc:
             logger.warning("Claude API error: %s — using template", exc)
-            return _TEMPLATE.format(job_type=job_type)
+            return _maybe_append_quote(_TEMPLATE.format(job_type=job_type), description)

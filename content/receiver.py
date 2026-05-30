@@ -1,4 +1,4 @@
-"""ClawBot v0.9 — Business AI Partner + Trading Bot
+"""ClawBot — Business AI Partner + Trading Bot. (Version: core.__version__)
 
 Just type anything to chat. Commands for structured tasks:
 
@@ -957,7 +957,8 @@ def main() -> None:
     # Global error handler so uncaught exceptions don't go silent.
     _app.add_error_handler(_on_error)
 
-    print("🦾 ClawBot v0.9 running.")
+    from core import __version__ as _bot_version
+    print(f"🦾 ClawBot v{_bot_version} running.")
     print("   Chat freely or use commands. /help for the full list.")
     _app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 

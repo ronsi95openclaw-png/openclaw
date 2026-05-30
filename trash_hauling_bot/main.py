@@ -48,6 +48,12 @@ async def main() -> None:
         logger.error("Fill in the consolidated parent .env (Claude-openclaw\\.env) with your keys.")
         sys.exit(1)
 
+    if not config.authorized_chat_ids and not config.dry_run:
+        logger.warning(
+            "TRASH_BOT_CHAT_IDS is empty — bot will accept commands from ANY chat that "
+            "finds the bot token. Set TRASH_BOT_CHAT_IDS in .env to lock it down."
+        )
+
     audit = AuditLogger(config.audit_log_file)
     scraper = ScraperAgent(audit)
     outreach = OutreachAgent(audit)

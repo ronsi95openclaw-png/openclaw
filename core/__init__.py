@@ -1,3 +1,9 @@
-"""Core package for OpenClaw."""
+"""Core package for OpenClaw.
 
-__all__ = ["brain", "conversation", "scheduler", "market"]
+The bot version lives here so every release-tracking surface
+(receiver banner, /status output, dashboard, README) references one source.
+"""
+
+__version__ = "0.9.0"
+
+__all__ = ["brain", "conversation", "scheduler", "market", "__version__"]
