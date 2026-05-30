@@ -146,6 +146,11 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
             "mode":       "DEMO",
         }
         _log_trade(entry)
+        try:
+            from trading.history import record_trade
+            record_trade(entry)
+        except Exception as exc:
+            logger.warning(f"Trade history record failed: {exc}")
         logger.info(f"[DEMO] Simulated {action} {coin} ${usd_amount} @ ${price}")
         return entry
 
