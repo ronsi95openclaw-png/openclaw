@@ -65,6 +65,8 @@ from core.brain import CLAWBOT_SYSTEM, ask_hybrid, classify_complexity, get_usag
 from core.conversation import add_message, clear_history, get_history
 from core import scheduler as sched
 from security.whitelist import is_authorized
+from security import audit
+from security.blocklist import is_blocked
 
 logger = logging.getLogger("openclaw.receiver")
 
@@ -400,6 +402,20 @@ async def cmd_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     command = " ".join(context.args)
+    actor = str(update.effective_chat.id)
+
+    # Blocklist check BEFORE we run anything.
+    hit = is_blocked(command)
+    if hit:
+        audit.log_command(actor, command, source="run", outcome="blocked")
+        await update.message.reply_text(
+            f"⛔ Command rejected: matches blocklist pattern <code>{hit}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    audit.log_command(actor, command, source="run", outcome="allowed")
+
     thinking_msg = await update.message.reply_text(
         f"<i>Running:</i> <code>{command}</code>", parse_mode="HTML"
     )
@@ -452,6 +468,20 @@ async def cmd_py(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     code         = " ".join(context.args)
+    actor = str(update.effective_chat.id)
+
+    # Blocklist check BEFORE we run anything.
+    hit = is_blocked(code)
+    if hit:
+        audit.log_command(actor, code, source="py", outcome="blocked")
+        await update.message.reply_text(
+            f"⛔ Code rejected: matches blocklist pattern <code>{hit}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    audit.log_command(actor, code, source="py", outcome="allowed")
+
     thinking_msg = await update.message.reply_text(
         f"<i>Running Python:</i> <code>{code}</code>", parse_mode="HTML"
     )
