@@ -113,7 +113,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>📈 Crypto:</b>\n"
         "  /market             — live prices + analysis\n"
         "  /scan [1h|4h|1d]   — RSI+MACD signal scan\n"
-        "  /dca [asset]        — DCA entry analysis\n\n"
+        "  /dca [asset]        — DCA entry analysis\n"
+        "  /trades [n]         — last N trade decisions\n\n"
         "<b>💻 PC Execution:</b>\n"
         "  /run [command]      — run shell command\n"
         "  /py [code]          — run Python code\n\n"
@@ -121,6 +122,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /remind HH:MM text  — set daily reminder\n"
         "  /tasks              — list reminders\n\n"
         "<b>⚙️ System:</b>\n"
+        "  /mode               — check trading mode\n"
+        "  /live               — switch to LIVE trading\n"
+        "  /demo               — switch to DEMO mode\n"
         "  /status  /brain  /weather [city]  /stop",
         parse_mode="HTML",
     )
@@ -420,7 +424,7 @@ async def cmd_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as exc:
             return str(exc), 1
 
-    loop   = asyncio.get_event_loop()
+    loop   = asyncio.get_running_loop()
     output, rc = await loop.run_in_executor(None, _execute)
 
     # Truncate if too long for Telegram (4096 char limit)
@@ -454,7 +458,8 @@ async def cmd_py(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     def _execute():
         try:
-            python = str(Path(__file__).resolve().parent.parent / ".venv" / "Scripts" / "python.exe")
+            import sys as _sys
+            python = _sys.executable  # use the same interpreter running the bot
             result = subprocess.run(
                 [python, "-c", code],
                 capture_output=True,
@@ -471,7 +476,7 @@ async def cmd_py(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as exc:
             return str(exc), 1
 
-    loop   = asyncio.get_event_loop()
+    loop   = asyncio.get_running_loop()
     output, rc = await loop.run_in_executor(None, _execute)
 
     if len(output) > 3500:
@@ -674,6 +679,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /scan [1h|4h|1d]    — RSI+MACD signals\n"
         "  /dca [asset]         — DCA entry analysis\n"
         "  /autotrade [on|off]  — fully auto daily trading\n"
+        "  /trades [n]          — last N trade decisions\n"
         "  /report              — executed-trade activity summary\n\n"
         "<b>💻 PC Execution:</b>\n"
         "  /run [command]      — run shell command\n"
@@ -683,6 +689,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /tasks              — list reminders\n"
         "  /cancel [id]        — cancel reminder\n\n"
         "<b>⚙️ System:</b>\n"
+        "  /mode               — check trading mode\n"
+        "  /live               — switch to LIVE trading\n"
+        "  /demo               — switch to DEMO mode\n"
         "  /status             — system health\n"
         "  /brain              — AI usage stats\n"
         "  /weather [city]     — current weather\n"
@@ -723,9 +732,8 @@ async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
     elif arg == "now":
-        # Manual trigger for testing
         await update.message.reply_text("<i>Running auto-trade scan now...</i>", parse_mode="HTML")
-        await sched._run_autotrade()  # type: ignore[attr-defined]
+        await sched.run_autotrade_now()
 
     else:
         cfg    = sched.get_autotrade_status()
@@ -741,6 +749,121 @@ async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             f"  /autotrade now          — run scan immediately",
             parse_mode="HTML",
         )
+
+
+# ── /trades ───────────────────────────────────────────────────────────────────
+
+async def cmd_trades(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    try:
+        count = int(context.args[0]) if context.args else 10
+        count = max(1, min(count, 30))
+    except ValueError:
+        count = 10
+
+    from pathlib import Path as _Path
+    log_file = _Path(__file__).parent.parent / "data" / "logs" / "trades.log"
+
+    if not log_file.exists():
+        await update.message.reply_text(
+            "📋 <b>No trades logged yet.</b>\n\n"
+            "<i>Trades appear here once the bot executes or simulates a signal.</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        lines = log_file.read_text(encoding="utf-8").splitlines()
+        trade_lines = [l for l in lines if l.strip()]
+        recent = trade_lines[-count:]
+    except Exception as exc:
+        await update.message.reply_text(f"🚨 Could not read trades.log: <code>{exc}</code>", parse_mode="HTML")
+        return
+
+    if not recent:
+        await update.message.reply_text("📋 <b>No trades logged yet.</b>", parse_mode="HTML")
+        return
+
+    import json as _json
+    parts = [f"📋 <b>Last {len(recent)} Trade(s):</b>\n"]
+    for raw in recent:
+        try:
+            # Format: "TRADE_DECISION | timestamp | {json}"
+            _, ts, payload = raw.split(" | ", 2)
+            data = _json.loads(payload)
+            action   = data.get("action", "?")
+            coin     = data.get("coin", "?")
+            status   = data.get("status", "?")
+            ts_short = ts[:16]  # "2025-05-24T08:00"
+
+            if status == "demo":
+                emoji = "🟡"
+                detail = f"${data.get('usd_amount', 0):.2f} @ ${data.get('price', 0):,.2f} [DEMO]"
+            elif status == "executed":
+                emoji = "🟢" if action == "BUY" else "🔴"
+                detail = f"${data.get('usd_amount', 0):.2f} @ ${data.get('price', 0):,.2f}"
+            elif status == "skipped":
+                emoji = "⚪"
+                detail = data.get("reason", "")[:60]
+            else:
+                emoji = "🚨"
+                detail = data.get("reason", status)[:60]
+
+            parts.append(f"{emoji} <code>{ts_short}</code> {action} {coin}\n   {detail}")
+        except Exception:
+            parts.append(f"<code>{raw[:120]}</code>")
+
+    await update.message.reply_text("\n".join(parts), parse_mode="HTML")
+
+
+# ── /mode /live /demo ─────────────────────────────────────────────────────────
+
+async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_chat.id):
+        return
+    from trading.mode import get_mode
+    mode = get_mode()
+    emoji = "⚡" if mode == "LIVE" else "🛡"
+    await update.message.reply_text(
+        f"Current mode: <b>{mode}</b> {emoji}\n\n"
+        f"  /live — Switch to LIVE trading ⚡\n"
+        f"  /demo — Switch to DEMO mode 🛡",
+        parse_mode="HTML",
+    )
+
+
+async def cmd_live(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_chat.id):
+        return
+    from trading.mode import set_mode, get_mode
+    if get_mode() == "LIVE":
+        await update.message.reply_text("⚡ Already in <b>LIVE</b> mode.", parse_mode="HTML")
+        return
+    set_mode("LIVE")
+    await update.message.reply_text(
+        "⚡ <b>Switched to LIVE trading mode.</b>\n\n"
+        "⚠️ Real orders will now be placed on Crypto.com.\n"
+        "Use /demo to switch back to safe DEMO mode.",
+        parse_mode="HTML",
+    )
+
+
+async def cmd_demo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_chat.id):
+        return
+    from trading.mode import set_mode, get_mode
+    if get_mode() == "DEMO":
+        await update.message.reply_text("🛡 Already in <b>DEMO</b> mode.", parse_mode="HTML")
+        return
+    set_mode("DEMO")
+    await update.message.reply_text(
+        "🛡 <b>Switched to DEMO mode.</b>\n\n"
+        "Signals will be evaluated and logged but no real orders will be placed.\n"
+        "Use /live to enable real trading.",
+        parse_mode="HTML",
+    )
 
 
 # ── /stop ─────────────────────────────────────────────────────────────────────
@@ -775,6 +898,11 @@ def main() -> None:
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN is not set in .env")
 
+    if not os.getenv("ALLOWED_CHAT_ID", "").strip():
+        print("⚠️  WARNING: ALLOWED_CHAT_ID is not set in .env")
+        print("   The bot will start but will silently ignore ALL messages.")
+        print("   Get your chat ID from @userinfobot, then add it to .env")
+
     sched.set_send_fn(_scheduler_send)
     sched.start_scheduler()
     sched.reload_autotrade()   # re-register daily job if it was enabled before restart
@@ -800,6 +928,10 @@ def main() -> None:
     _app.add_handler(CommandHandler("weather",  cmd_weather))
     _app.add_handler(CommandHandler("help",     cmd_help))
     _app.add_handler(CommandHandler("autotrade", cmd_autotrade))
+    _app.add_handler(CommandHandler("trades",    cmd_trades))
+    _app.add_handler(CommandHandler("mode",      cmd_mode))
+    _app.add_handler(CommandHandler("live",      cmd_live))
+    _app.add_handler(CommandHandler("demo",      cmd_demo))
     _app.add_handler(CommandHandler("report",    cmd_report))
     _app.add_handler(CommandHandler("stop",      cmd_stop))
 

@@ -297,9 +297,34 @@ def get_autotrade_status() -> dict:
     return _load_autotrade()
 
 
+async def run_autotrade_now() -> None:
+    """Public entry point to trigger the auto-trade scan immediately."""
+    await _run_autotrade()
+
+
 def reload_autotrade() -> None:
-    """Re-register auto-trade job after restart if it was enabled."""
+    """Re-register auto-trade job after restart.
+
+    Priority order:
+      1. data/autotrade.json  (set via /autotrade on command)
+      2. Environment variables AUTOTRADE_ENABLED / AUTOTRADE_CHAT_ID
+         (used for cloud deployments where the data dir is ephemeral)
+    """
     cfg = _load_autotrade()
+
+    # Fall back to env vars when the file says disabled or doesn't exist
+    if not cfg.get("enabled") and os.getenv("AUTOTRADE_ENABLED", "").lower() == "true":
+        chat_id = os.getenv("AUTOTRADE_CHAT_ID", "").strip()
+        if chat_id:
+            cfg = {
+                "enabled":   True,
+                "chat_id":   int(chat_id),
+                "scan_time": os.getenv("AUTOTRADE_TIME", "08:00"),
+                "timeframe": os.getenv("AUTOTRADE_TIMEFRAME", "4h"),
+            }
+            _save_autotrade(cfg)
+            print(f"🤖 Auto-trade enabled from env vars (chat={chat_id}, time={cfg['scan_time']} UTC)")
+
     if cfg.get("enabled") and cfg.get("chat_id") and _scheduler:
         scan_time = cfg.get("scan_time", "08:00")
         hour, minute = scan_time.split(":")

@@ -86,15 +86,17 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
         Result dict with status, order_id, amount, etc.
     """
     from trading.strategy import calculate_position_size
+    from trading.mode import get_mode
 
     coin   = signal.coin
     action = signal.action
+    mode   = get_mode()
 
     # Only execute HIGH confidence — protect capital
     if signal.confidence != "HIGH":
         msg = f"Skipped {action} {coin} — confidence {signal.confidence} (need HIGH)"
         logger.info(msg)
-        _log_trade({"action": "SKIP", "coin": coin, "reason": msg, "confidence": signal.confidence})
+        _log_trade({"action": "SKIP", "coin": coin, "reason": msg, "confidence": signal.confidence, "mode": mode})
         return {"status": "skipped", "reason": msg}
 
     # Position sizing: 1.5% of portfolio per trade
@@ -103,7 +105,7 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
         price = fetch_ticker_price(coin)
     except Exception as e:
         msg = f"Price fetch failed for {coin}: {e}"
-        _log_trade({"action": "ERROR", "coin": coin, "reason": msg})
+        _log_trade({"action": "ERROR", "coin": coin, "reason": msg, "mode": mode})
         return {"status": "error", "reason": msg}
 
     sizing     = calculate_position_size(portfolio_usd, price, risk_pct=1.5)
@@ -112,8 +114,25 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
 
     if usd_amount < min_order:
         msg = f"Order too small: ${usd_amount} < min ${min_order} for {coin}"
-        _log_trade({"action": "SKIP", "coin": coin, "reason": msg})
+        _log_trade({"action": "SKIP", "coin": coin, "reason": msg, "mode": mode})
         return {"status": "skipped", "reason": msg}
+
+    # DEMO mode: simulate without placing a real order
+    if mode == "DEMO":
+        entry = {
+            "action":     action,
+            "coin":       coin,
+            "usd_amount": usd_amount,
+            "price":      price,
+            "rsi":        round(signal.rsi, 2),
+            "confidence": signal.confidence,
+            "order_id":   "DEMO",
+            "status":     "demo",
+            "mode":       "DEMO",
+        }
+        _log_trade(entry)
+        logger.info(f"[DEMO] Simulated {action} {coin} ${usd_amount} @ ${price}")
+        return entry
 
     try:
         result = _place_order(coin, action, usd_amount)
@@ -126,6 +145,7 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
             "confidence": signal.confidence,
             "order_id":   result.get("order_id", "unknown"),
             "status":     "executed",
+            "mode":       "LIVE",
         }
         _log_trade(entry)
         try:
@@ -142,6 +162,7 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
             "coin":    coin,
             "status":  "error",
             "reason":  str(exc),
+            "mode":    "LIVE",
         }
         _log_trade(entry)
         logger.error(f"Order failed: {exc}")

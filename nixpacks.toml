@@ -1,0 +1,5 @@
+[phases.setup]
+aptPkgs = ["ffmpeg", "libsm6", "libxext6", "libgl1"]
+
+[phases.install]
+cmds = ["pip install -r requirements.txt"]
