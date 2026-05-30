@@ -1,3 +1,4 @@
+
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -6,8 +7,9 @@ from typing import List
 from dotenv import load_dotenv
 
 _HERE = Path(__file__).parent
-# Explicit path so this never accidentally picks up ClawBot's root .env
-load_dotenv(_HERE / ".env.haulyeah")
+# Consolidated env: both bots now share Claude-openclaw\.env at the parent dir.
+# Key names are namespaced (TRASH_BOT_*, FB_*, etc.) so the bots can't cross-load.
+load_dotenv(_HERE.parent / ".env")
 
 
 def _int_env(key: str, default: int) -> int:
