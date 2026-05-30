@@ -13,6 +13,11 @@ build/
 .claude/
 .superpowers/
 
+
+
+
+
+
 # Archived clutter (kept on disk, out of git)
 _Archive/
 
@@ -22,6 +27,5 @@ _Archive/
 *.code-search
 CC-Session-Logs/
 
-# .env safety backups (never commit)
-.env.backup-*
-.env.old-*
+# Watchdog runtime state (per-host, never commit)
+infra/watchdog_state.json
