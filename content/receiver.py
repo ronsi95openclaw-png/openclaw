@@ -1,4 +1,4 @@
-"""ClawBot v0.6 — Business AI Partner + Trading Bot
+"""ClawBot v0.9 — Business AI Partner + Trading Bot
 
 Just type anything to chat. Commands for structured tasks:
 
@@ -889,6 +889,22 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
 
 
+# ── Global error handler ──────────────────────────────────────────────────────
+
+async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Catch any uncaught handler exception, log it, and tell the user politely."""
+    logger.exception("Unhandled handler exception: %s", context.error)
+    try:
+        if isinstance(update, Update) and update.effective_chat is not None:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="⚠️ Internal error — check logs.",
+            )
+    except Exception:
+        # Best-effort notification; never re-raise from the error handler.
+        pass
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -938,7 +954,10 @@ def main() -> None:
     # Free-text conversation (must be last — catches all non-command text)
     _app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("🦾 ClawBot v0.6 running.")
+    # Global error handler so uncaught exceptions don't go silent.
+    _app.add_error_handler(_on_error)
+
+    print("🦾 ClawBot v0.9 running.")
     print("   Chat freely or use commands. /help for the full list.")
     _app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 

@@ -229,7 +229,7 @@ def classify_complexity(prompt: str) -> str:
     if not has_any_llm:
         return "simple"
 
-    if not os.getenv("USE_CLAUDE_API", "true").lower() == "true":
+    if os.getenv("USE_CLAUDE_API", "true").lower() != "true":
         return "simple"
     if not has_claude:
         return "simple"

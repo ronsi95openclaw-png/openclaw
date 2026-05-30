@@ -21,7 +21,7 @@ from config import config
 from integrations.sheets import SheetsClient
 from utils.audit import AuditLogger
 from utils.dedup import DedupStore
-from utils.sanitize import extract_phone, sanitize_text, sanitize_lead_field, validate_fb_url
+from utils.sanitize import extract_phone, sanitize_text, validate_fb_url
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,11 @@ class ScraperAgent:
 
     async def run(self) -> int:
         """Scrape FB Marketplace across all configured keywords. Returns count of new leads added."""
+        if config.dry_run:
+            logger.info("Scraper run skipped (DRY_RUN=true)")
+            self._audit.log(self.AGENT_NAME, "scan_skipped_dry_run", {})
+            return 0
+
         logger.info("Scraper run started")
         self._audit.log(self.AGENT_NAME, "scan_started", {"keywords": config.fb_search_keywords})
 
@@ -106,6 +111,9 @@ class ScraperAgent:
 
     async def login_flow(self) -> None:
         """Open a visible browser window so the user can log into Facebook once."""
+        if config.dry_run:
+            logger.info("login_flow skipped (DRY_RUN=true) — no browser launched")
+            return
         import os
         os.makedirs(config.fb_profile_dir, exist_ok=True)
         async with async_playwright() as pw:
