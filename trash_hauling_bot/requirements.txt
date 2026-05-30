@@ -1,0 +1,20 @@
+# Telegram bot (dedicated — separate from ClawBot)
+python-telegram-bot>=21.10
+
+# Google APIs — service account auth + Sheets + Calendar
+google-auth>=2.28.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.120.0
+gspread>=6.1.2
+
+# Claude API — outreach message generation (optional; uses template fallback if key not set)
+anthropic>=0.26.0
+
+# Facebook Marketplace scraping
+playwright>=1.44.0
+
+# Scheduling
+APScheduler>=3.10.4
+
+# Config
+python-dotenv>=1.0.0

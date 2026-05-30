@@ -148,6 +148,11 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
             "mode":       "LIVE",
         }
         _log_trade(entry)
+        try:
+            from trading.history import record_trade
+            record_trade(entry)
+        except Exception as exc:
+            logger.warning(f"Trade history record failed: {exc}")
         logger.info(f"Order executed: {action} {coin} ${usd_amount}")
         return entry
 
@@ -164,8 +169,32 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
         return entry
 
 
+def _notify(message: str) -> None:
+    """Best-effort Telegram alert; never raises."""
+    token   = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not chat_id:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": message},
+            timeout=10,
+        )
+    except Exception as exc:
+        logger.warning(f"Alert send failed: {exc}")
+
+
 def execute_signals(signals: list, portfolio_usd: float) -> list[dict]:
-    """Execute a list of signals. Returns results for all attempted."""
+    """Execute a list of signals. Halts entirely if the circuit breaker trips."""
+    from trading.risk import circuit_breaker_message, is_circuit_tripped
+
+    if is_circuit_tripped(portfolio_usd):
+        logger.error(f"Circuit breaker tripped — halting trades. portfolio=${portfolio_usd:.2f}")
+        _log_trade({"action": "HALT", "reason": "circuit_breaker", "portfolio_usd": portfolio_usd})
+        _notify(circuit_breaker_message(portfolio_usd))
+        return [{"status": "halted", "reason": "circuit_breaker", "portfolio_usd": portfolio_usd}]
+
     results = []
     for signal in signals:
         if signal.action in ("BUY", "SELL"):

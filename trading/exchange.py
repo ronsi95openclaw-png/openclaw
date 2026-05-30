@@ -13,6 +13,8 @@ import time
 
 import requests
 
+from trading.backoff import with_backoff
+
 logger = logging.getLogger("clawbot.trading.exchange")
 
 _PUBLIC  = "https://api.crypto.com/exchange/v1/public"
@@ -57,6 +59,7 @@ def _sign(method: str, params: dict, api_key: str, secret: str) -> dict:
 
 # ── Public endpoints ──────────────────────────────────────────────────────────
 
+@with_backoff()
 def fetch_closes(instrument: str, timeframe: str = "4h", count: int = 100) -> list[float]:
     """Closing prices from Crypto.com public candlestick API, oldest first."""
     tf  = _TIMEFRAME_MAP.get(timeframe, timeframe)
@@ -88,6 +91,7 @@ def fetch_all_closes(coins: list[str], timeframe: str = "4h", count: int = 100) 
     return result
 
 
+@with_backoff()
 def fetch_ticker_price(instrument: str) -> float:
     """Latest ask price for an instrument."""
     r = requests.get(f"{_PUBLIC}/get-ticker", params={"instrument_name": instrument}, timeout=8)
@@ -97,6 +101,7 @@ def fetch_ticker_price(instrument: str) -> float:
 
 # ── Private endpoints ─────────────────────────────────────────────────────────
 
+@with_backoff()
 def get_account_balance() -> dict:
     """
     Fetch account balances from Crypto.com.

@@ -51,9 +51,9 @@ except ImportError:
 
 DEFAULT_OLLAMA_MODEL      = "qwen2.5:14b"
 DEFAULT_OPENROUTER_MODEL  = "meta-llama/llama-3.1-8b-instruct"
-CLAUDE_MODEL              = "claude-haiku-4-5"
-MAX_TOKENS                = int(os.getenv("MAX_TOKENS_PER_RESPONSE", "500"))
-COMPLEXITY_THRESHOLD      = int(os.getenv("COMPLEXITY_THRESHOLD", "50"))
+CLAUDE_MODEL              = "claude-haiku-4-5"   # Haiku for complex tasks
+MAX_TOKENS                = int(os.getenv("MAX_TOKENS_PER_RESPONSE") or 500)
+COMPLEXITY_THRESHOLD      = int(os.getenv("COMPLEXITY_THRESHOLD") or 50)   # word count
 CACHE_TTL_SECONDS         = 3600   # 1 hour
 
 _DATA_DIR   = Path(__file__).parent.parent / "data"
