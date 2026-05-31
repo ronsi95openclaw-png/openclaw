@@ -29,6 +29,35 @@ Entry format:
 **Status:** APPLIED
 ---
 
+## [2026-05-31 06:35] — A — LiquiditySweep paper-watch infra built + scheduled
+**Trigger:** post_backtest STEP 4 — operationalize the 14-day paper-watch decision
+**Action:**
+- Wrote `infra/paper_watch_liquiditysweep.py` (corrected against real codebase: uses `LiquiditySweepStrategy()` class, v1 API endpoint, lowercase `1d` timeframe, `dataclasses.asdict()` for Signal serialization, `datetime.now(timezone.utc)` instead of deprecated `utcnow()`, self-bootstraps sys.path so it works from any cwd)
+- Wrote `infra/paper_watch_run.bat` wrapper (sets cwd to repo root, prefers trash_hauling_bot venv python, falls back to system python)
+- Wrote `memory/strategy/paper-watch-liquiditysweep.md` (tracking note, day-7 + day-14 dates, success criteria, disable instructions)
+- Installed Windows scheduled task `ClawBot-LiquiditySweep-Watch`: DAILY @ 09:00 local, runs paper_watch_run.bat
+- Smoke-tested: 4 entries written to `data/paper_watch/liquidity_sweep.jsonl`; caught a live MEDIUM-confidence BUY on XRP_USDT
+**Result:** Daily signal observation begins. No executor changes. No trading impact.
+**Files touched:** infra/paper_watch_liquiditysweep.py (new), infra/paper_watch_run.bat (new), memory/strategy/paper-watch-liquiditysweep.md (new), memory/ACTIVE_TASKS.md (M), memory/SESSION_HANDOFF.md (M), data/paper_watch/liquidity_sweep.jsonl (new, gitignored)
+**Cadence chosen:** DAILY (not 4hr as runbook proposed) — 1d candles only refresh once per day, so 4hr would produce 4× duplicate signals
+**Approved by:** Ronnie ("Script + daily Windows scheduled task")
+**Status:** APPLIED
+---
+
+## [2026-05-31 00:15] — A — Two atomic local commits made (NOT pushed)
+**Trigger:** post_backtest workflow STEP 2
+**Action:**
+- Commit `83f6160` — fix(gitignore): broaden .env to .env*
+- Commit `f27a4aa` — feat(backtest): 5-strategy comparison + regime test + memory scaffold (9 files, +1175 lines, includes workflows/post_backtest.md tracked as a session artifact)
+- Identity: `clawbot@openclaw.local / ClawBot` (repo-local, not global git config)
+- Branch: `feature/telegram-notifications`
+- Push: NOT performed (awaits explicit "yes push")
+**Result:** Backtest session work is locally durable. .env-family files confirmed gitignored. No runtime state staged.
+**Files touched:** (see commits)
+**Approved by:** Ronnie (workflow STEP 2 authorization)
+**Status:** APPLIED — LOCAL ONLY
+---
+
 ## [2026-05-31 00:10] — C — Pre-commit sanity check caught .gitignore gap
 **Trigger:** post_backtest workflow STEP 1A — `git check-ignore` showed `.env.new`, `.env.backup-20260530-131338`, `.env.old-20260530-134625` were NOT ignored. Only literal `.env` was. Any future `git add .` would leak credentials.
 **Action:** Patched `.gitignore` line 1: `.env` → `.env*` (glob covers all variants).

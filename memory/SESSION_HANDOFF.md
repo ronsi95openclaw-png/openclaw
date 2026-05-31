@@ -1,36 +1,52 @@
-# SESSION HANDOFF — 2026-05-30
+# Session Handoff — 2026-05-31 (continued from 2026-05-30)
+
+## What Was Accomplished
+- Pre-commit sanity check on backtest session caught a `.gitignore` gap (only literal `.env` was ignored; `.env.new` / `.env.backup-*` / `.env.old-*` were not). Fixed → `.env*`.
+- Three local commits on `feature/telegram-notifications` (NOT pushed):
+  - `83f6160` — fix(gitignore)
+  - `f27a4aa` — feat(backtest) 5-strategy comparison + memory scaffold + Unicode fix
+  - `<next>` — feat(paper-watch) LiquiditySweep daily logger + scheduled task
+- LiquiditySweep paper-watch infra built:
+  - `infra/paper_watch_liquiditysweep.py` (corrected against real codebase API)
+  - `infra/paper_watch_run.bat` (wrapper for the scheduled task; handles cwd + venv)
+  - Windows scheduled task `ClawBot-LiquiditySweep-Watch` installed (daily, 09:00)
+  - First smoke-test run captured 4 entries → caught a live XRP BUY/MEDIUM signal
+- Memory files updated (ACTIVE_TASKS, SESSION_HANDOFF, CHANGES, strategy/paper-watch-liquiditysweep.md)
+- Vault sync extended to mirror `memory/` → `20 - OpenClaw/Memory/` (last session's change)
 
 ## Current State
-- **Mode:** ClawBot DEMO (workflow notes), `TRADING_MODE` env var actually unset — worth normalizing later
-- **Auth:** Crypto.com returns 401 — keys present in `.env` (22 / 28 chars) but rejected
-- **Balance baseline:** `STARTING_BALANCE_USD=96.00` (placeholder, not real)
-- **Strategy:** 4 candidates exist (`liquidity_sweep`, `trend_continuation`, `breakout_expansion`, `ema_momentum`) + RSI+MACD baseline in `trading/strategy.py`. None wired into executor.
-- **Data:** `data/backtest/` has 8 files. `*_4h_1y.json` cap at 49 days (API pagination unsupported). `*_1d_1y.json` give ~299 days — usable for regime test.
+- Mode: DEMO (unchanged)
+- Branch: `feature/telegram-notifications` (3 local commits ahead of remote)
+- Pushed to GitHub: NO
+- Paper-watch task: Ready, next run 2026-05-31 09:00 local
+- Paper-watch entries logged: 4 (smoke test)
+- Auth: STILL 401 (key refresh deferred — see ACTIVE_TASKS #1)
+- `STARTING_BALANCE_USD`: STILL $96 placeholder (depends on auth fix)
+- Strategy executor: unchanged (still dormant RSI+MACD baseline)
 
-## Open Problems
-1. Crypto.com 401 (waiting on key refresh in `.env.new`)
-2. `STARTING_BALANCE_USD` still placeholder
-3. `infra/run_strategy_comparison.py` not yet built
-4. `memory/` was missing — created today
-
-## Done This Session
-- Bootstrapped `memory/` directory (this file, CHANGES.md, DECISIONS.md, ACTIVE_TASKS.md, strategy/)
-- Fixed Unicode crash in `infra/verify_cryptocom_auth.py`
-- Decided 1d candles over 4h for regime test (see DECISIONS.md)
-- Built `infra/run_strategy_comparison.py` (5 strategies × 4 symbols + 4-quarter BTC regime test)
-- Ran the comparison — Phase 5D escalation triggered (no strategy hit 3/4 quarters)
-- Documented strategy decision in `memory/strategy/backtest-2026-05-30.md`
-- Decision: stay DEMO, paper-watch LiquiditySweep for ~14 days, NO executor wiring
+## What's Running
+- ClawBot v0.9 in DEMO (PID from prior session, if still alive)
+- HaulYeah in DRY_RUN
+- Watchdog (every 5 min — pre-existing)
+- NEW: `ClawBot-LiquiditySweep-Watch` scheduled task (daily 09:00)
 
 ## Did NOT Do (intentional)
+- Did not push to GitHub
 - Did not wire any strategy into `trading/executor.py`
 - Did not flip `TRADING_MODE` to LIVE
-- Did not refresh Crypto.com keys (Ronnie's `.env.new` still had old values; deferred)
-- Did not patch a "daily routine" file (none exists; the verifier is the auth check)
+- Did not refresh Crypto.com keys (manual step in your hands)
+- Did not build `DAILY_ROUTINE.md` (deferred to be adapted in a fresh session)
+- Did not modify `.env` values
 
 ## Next Session Priorities
-1. Resume Phase 1: re-verify Crypto.com auth (run `python -m infra.verify_cryptocom_auth`)
-2. If auth passes: update `STARTING_BALANCE_USD` from the verifier's suggested value
-3. After ~14 days of paper-watching: tally LiquiditySweep's live signals vs. backtest expectation
-4. If live cadence ≈ backtest cadence → consider small surgical wire-in (DEMO only)
-5. If live cadence diverges → escalate to ensemble approach (Phase 5D option 2)
+1. Refresh Crypto.com API key (ACTIVE_TASKS #1)
+2. Verify auth, update `STARTING_BALANCE_USD` (Phase 1+2 of `next_session.md`)
+3. Build `DAILY_ROUTINE.md` adapted to real paths (ACTIVE_TASKS #2)
+4. (Optional, ~2026-06-07) Day-7 paper-watch peek
+
+## How to disable the paper-watch task (if needed)
+```powershell
+schtasks /change /tn ClawBot-LiquiditySweep-Watch /disable
+# Or remove entirely:
+schtasks /delete /tn ClawBot-LiquiditySweep-Watch /f
+```
