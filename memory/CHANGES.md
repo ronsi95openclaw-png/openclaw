@@ -29,6 +29,19 @@ Entry format:
 **Status:** APPLIED
 ---
 
+## [2026-05-31 19:00] — A — post_vault_next workflow PHASE 4 wrap
+**Trigger:** Closing out the post_vault_next runbook (auth + push + routine + wrap)
+**Action:**
+- Updated SESSION_HANDOFF with this session's full timeline + next-session priorities
+- Bot repo state: 1 local commit (`f297ab0`) ahead of origin/feature/telegram-notifications (which sits at `70cb112` after the PHASE 2 push)
+- Vault state: 5d1d8a7 on origin/main (unchanged since vault_resume PHASE 7)
+- Pending push: f297ab0 (DAILY_ROUTINE.md commit) — kept local pending Ronnie's call
+- Calendar reminders printed for Ronnie's phone (June 7 + June 14 paper-watch checkpoints)
+**Files touched:** memory/SESSION_HANDOFF.md, memory/CHANGES.md (this entry)
+**Approved by:** Ronnie (post_vault_next PHASE 4 in workflow)
+**Status:** APPLIED
+---
+
 ## [2026-05-31 18:45] — A — DAILY_ROUTINE.md adapted from v2.1 template (not pasted)
 **Trigger:** post_vault_next workflow PHASE 3 — open HIGH-priority task
 **Action:** Inventoried real paths/env vars/scheduled tasks; mapped substitutions; wrote adapted routine
