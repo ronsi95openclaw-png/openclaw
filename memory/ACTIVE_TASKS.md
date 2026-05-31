@@ -35,13 +35,13 @@
 - **Decision:** Continue / extend / kill paper-watch
 - **Manual run check:** `python -m infra.paper_watch_liquiditysweep` from the Claude-openclaw root
 
-### 4. Day-14 LiquiditySweep paper-watch final decision — 2026-06-14
+### 5. Day-14 LiquiditySweep paper-watch final decision — 2026-06-14
 - **Action:** Compare live signals to backtest expectations (see `memory/strategy/paper-watch-liquiditysweep.md` for criteria)
 - **Decision:** Wire as Category B / extend / retire strategy / try ensemble
 
 ## BLOCKED — WAITING ON EXTERNAL
 
-### 5. Resume vault sync + commit + push (after vault reorg all-clear)
+### 6. Patch `infra/sync_to_vault.bat` to OPENCLAW_ prefix convention
 - **Status:** Hands-off notice received 2026-05-31 ~06:55 — another Claude Code session is reorganizing `Documents/Obsidian Vault/`. Don't touch the vault until cleared.
 - **What I did:** synced `memory/` to vault before the notice → un-prefixed duplicates of ACTIVE_TASKS/DECISIONS/SESSION_HANDOFF now sit alongside the prior reorg's `OPENCLAW_*.md` versions in `20 - OpenClaw/Memory/`. Reverted my un-committed `sync_to_vault.bat` naming patch.
 - **Steps after all-clear:**
@@ -53,7 +53,7 @@
 
 ## DEFERRED INDEFINITELY
 
-### 6. Ruflo skill installation
+### 7. Ruflo skill installation
 - **Status:** No `SKILL.md` on disk in any expected location
 - **Why deferred:** Lower priority than auth + daily routine; per-prompt hardcoded rules cover for now
 - **Action when ready:** Save Ruflo template to `skills/ruflo/SKILL.md`, install in Claude Code skills dir

@@ -29,6 +29,24 @@ Entry format:
 **Status:** APPLIED
 ---
 
+## [2026-05-31 18:45] — A — DAILY_ROUTINE.md adapted from v2.1 template (not pasted)
+**Trigger:** post_vault_next workflow PHASE 3 — open HIGH-priority task
+**Action:** Inventoried real paths/env vars/scheduled tasks; mapped substitutions; wrote adapted routine
+**Substitutions applied:**
+- Path: `02_CRYPTOBOT/memory/` → `memory/` (at repo root)
+- Telegram: `TELEGRAM_ALLOWED_CHAT_IDS` → `TELEGRAM_CHAT_ID` (verified present, 10 chars)
+- Scheduled tasks: `Ronsi95-Watchdog` → `ClawBot-LiquiditySweep-Watch` (daily 09:00) + `ClawBot-Watchdog`
+- Bot process detection: precise pattern `*-m content.receiver*` (per start.py:30)
+- Crypto.com auth check uses `verify_cryptocom_auth` (now hits v2 endpoint per 18:30 migration)
+- Ruflo section removed (skill doesn't exist on disk; vault CLAUDE.md is the contract)
+- Vault sync section honors post-reorg `OPENCLAW_*` prefix + frontmatter contract
+- Trade journal uses `OPENCLAW_journal-YYYY-MM-DD.md` naming with required frontmatter
+**Result:** `memory/DAILY_ROUTINE.md` ready for tomorrow's first real run
+**Files touched:** memory/DAILY_ROUTINE.md (NEW), memory/CHANGES.md (M), memory/ACTIVE_TASKS.md (M)
+**Approved by:** Ronnie (adaptation table reviewed in chat before write)
+**Status:** APPLIED — local commit only
+---
+
 ## [2026-05-31 18:30] — B — Crypto.com API: v1→v2 migration + USD parser fix
 **Trigger:** post_vault_next workflow PHASE 1. Ronnie refreshed CRYPTOCOM_API_KEY/SECRET in `.env.new` (then swapped to `.env`, backed up to `.env.backup-balance-update-20260531-181348`). Verifier still returned 401 → 400/50001 ERR_INTERNAL on v1.
 **Diagnostic chain:**
