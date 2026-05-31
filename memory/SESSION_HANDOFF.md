@@ -1,66 +1,80 @@
-# Session Handoff — 2026-05-31 (continued from 2026-05-30)
+# Session Handoff — 2026-05-31 (end-of-session)
 
-## What Was Accomplished
-- Pre-commit sanity check on backtest session caught a `.gitignore` gap (only literal `.env` was ignored; `.env.new` / `.env.backup-*` / `.env.old-*` were not). Fixed → `.env*`.
-- Three local commits on `feature/telegram-notifications` (NOT pushed):
-  - `83f6160` — fix(gitignore)
-  - `f27a4aa` — feat(backtest) 5-strategy comparison + memory scaffold + Unicode fix
-  - `<next>` — feat(paper-watch) LiquiditySweep daily logger + scheduled task
-- LiquiditySweep paper-watch infra built:
-  - `infra/paper_watch_liquiditysweep.py` (corrected against real codebase API)
-  - `infra/paper_watch_run.bat` (wrapper for the scheduled task; handles cwd + venv)
-  - Windows scheduled task `ClawBot-LiquiditySweep-Watch` installed (daily, 09:00)
-  - First smoke-test run captured 4 entries → caught a live XRP BUY/MEDIUM signal
-- Memory files updated (ACTIVE_TASKS, SESSION_HANDOFF, CHANGES, strategy/paper-watch-liquiditysweep.md)
-- Vault sync extended to mirror `memory/` → `20 - OpenClaw/Memory/` (last session's change)
+Covers the sequence: backtest → post_backtest commit → vault hands-off → vault all-clear → post_vault_next (auth + push + routine + wrap).
 
 ## Current State
-- Mode: DEMO (unchanged)
-- Branch: `feature/telegram-notifications` (3 local commits ahead of remote)
-- Pushed to GitHub: NO
-- Paper-watch task: Ready, next run 2026-05-31 09:00 local
-- Paper-watch entries logged: 4 (smoke test)
-- Auth: STILL 401 (key refresh deferred — see ACTIVE_TASKS #1)
-- `STARTING_BALANCE_USD`: STILL $96 placeholder (depends on auth fix)
-- Strategy executor: unchanged (still dormant RSI+MACD baseline)
+- **Mode:** DEMO (unchanged; LIVE flip gated on ACTIVE_TASKS #1)
+- **Branch:** `feature/telegram-notifications`
+- **Bot repo origin:** `70cb112` (PHASE 2 push); local is ahead by 2 commits (`f297ab0`, `d1c0149`) which are docs-only — push when ready
+- **Vault origin/main:** `5d1d8a7` (unchanged from vault_resume)
+- **Crypto.com auth:** ✅ 200 OK via `v2/private/get-account-summary`; balance $96.39 USD
+- **`STARTING_BALANCE_USD`:** updated 96.00 → 96.39 (matches verifier)
+- **Strategy executor:** unchanged (RSI+MACD baseline still dormant)
+- **Paper-watch task:** `ClawBot-LiquiditySweep-Watch` Ready, daily 09:00
+
+## Bot Repo Commits This Session (8 total ahead of pre-session base `e4098bc`)
+```
+d1c0149  docs(memory): post_vault_next workflow complete (PHASE 4 wrap) [LOCAL]
+f297ab0  feat(memory): DAILY_ROUTINE.md adapted from v2.1 template      [LOCAL]
+70cb112  feat(exchange): migrate private API v1 -> v2 + USD parser fix  [PUSHED]
+2d2124e  docs(memory): vault all-clear — STEP 7B resumed                [PUSHED]
+dc03f9c  docs(memory): log vault hands-off + STEP 7 deferred            [PUSHED]
+4444841  feat(paper-watch): LiquiditySweep daily signal logger          [PUSHED]
+f27a4aa  feat(backtest): 5-strategy comparison + regime test            [PUSHED]
+83f6160  fix(gitignore): broaden .env to .env*                          [PUSHED]
+```
+Also on origin: `feature/telegram-notifications-snapshot-20260531` at `70cb112` (PHASE 2 safety snapshot).
+
+## Vault Commits This Session
+- `5d1d8a7  vault: openclaw memory — log post-backtest + paper-watch + hands-off session` [PUSHED to origin/main]
+- Reorg's 16 commits below it (other session) — all on origin.
+
+## Key Decisions Made (see DECISIONS.md for full reasoning)
+1. **1d candles** chosen for regime test (4h capped at 49 days due to public-API pagination limit)
+2. **Defer strategy-wiring**, paper-watch LiquiditySweep ~14 days first (no executor change despite small-sample bias toward LiquiditySweep)
+3. **Migrate Crypto.com private API v1 → v2** (new keys provisioned for v2 surface; v1 returns 50001 ERR_INTERNAL)
 
 ## What's Running
-- ClawBot v0.9 in DEMO (PID from prior session, if still alive)
+- ClawBot v0.9 in DEMO (assuming prior PID alive)
 - HaulYeah in DRY_RUN
-- Watchdog (every 5 min — pre-existing)
-- NEW: `ClawBot-LiquiditySweep-Watch` scheduled task (daily 09:00)
+- `ClawBot-Watchdog` scheduled task
+- `ClawBot-LiquiditySweep-Watch` scheduled task (daily 09:00)
 
 ## Did NOT Do (intentional)
-- Did not push to GitHub
-- Did not wire any strategy into `trading/executor.py`
-- Did not flip `TRADING_MODE` to LIVE
-- Did not refresh Crypto.com keys (manual step in your hands)
-- Did not build `DAILY_ROUTINE.md` (deferred to be adapted in a fresh session)
-- Did not modify `.env` values
-- Did NOT commit or push the vault (hands-off notice landed mid-STEP-7)
+- Did NOT wire any strategy into `trading/executor.py`
+- Did NOT flip `TRADING_MODE` to LIVE
+- Did NOT test `private/create-order` on v2 (would place real order; logged as HIGH-priority ACTIVE_TASKS #1)
+- Did NOT push commits `f297ab0` and `d1c0149` (kept local pending next-session decision)
+- Did NOT edit Bucket C files in vault (`ai_core/skills/*`, `.obsidian/graph.json`)
+- Did NOT patch `infra/sync_to_vault.bat` to OPENCLAW_ prefix (deferred ACTIVE_TASKS #6)
 
-## Vault State (ALL-CLEAR RECEIVED — reorg integrated)
-- `origin/main = HEAD = 5d1d8a7` (vault: openclaw memory — log post-backtest + paper-watch + hands-off session)
-- The reorg's 16 commits (`cc46fa6` and earlier) landed cleanly — no stash/rebase needed on my end (the reorg session pre-cleaned my pre-hands-off duplicates)
-- New vault contract live (CLAUDE.md): Home → MOC → note; required frontmatter; DOMAIN_ prefix on collision; never delete; explicit staging only
-- Bucket C files (`ai_core/skills/*` M ×4; `.obsidian/graph.json` M) left untouched per safety rule — those are another session's WIP
-- OPENCLAW_ACTIVE_TASKS / DECISIONS / SESSION_HANDOFF in vault are slightly stale relative to bot repo's latest memory/ but were intentionally not refreshed this session (would touch 3-4 files + need a frontmatter-preserving sync; deferred)
-- Sync infra: `infra/sync_to_vault.bat` still uses the old un-prefixed pattern. **If you re-run the bat without updating it, it'll drop un-prefixed duplicates back into the vault again.** Patch the bat to use OPENCLAW_ prefix before next sync.
+## Tomorrow Morning's First Action
+Open Claude Code in `C:\Users\ronsi95openclaw\Claude-openclaw\`. Paste `memory/DAILY_ROUTINE.md`. That's the first real run of the routine.
 
-## Next-Session Vault Tasks (if desired)
-1. Patch `infra/sync_to_vault.bat` to copy `memory/{ACTIVE_TASKS,DECISIONS,SESSION_HANDOFF}.md` to `vault/.../OPENCLAW_*` filenames (preserving the prior reorg's disambiguation convention)
-2. Refresh `OPENCLAW_*.md` in vault from bot repo's current `memory/` content (preserving the existing vault-side frontmatter blocks)
-3. Run the vault's own `/scan` skill for a comprehensive audit (vs. my focused snapshot)
+## Open Items (HIGH priority — full list in ACTIVE_TASKS.md)
+1. **ACTIVE_TASKS #1** — Verify `private/create-order` on v2 with small (~$3) notional before any LIVE-mode flip
+2. **ACTIVE_TASKS #6** — Patch `infra/sync_to_vault.bat` to use OPENCLAW_ prefix per vault contract
+3. **Push** the 2 local commits `f297ab0`, `d1c0149` when ready
 
-## Next Session Priorities
-1. Refresh Crypto.com API key (ACTIVE_TASKS #1)
-2. Verify auth, update `STARTING_BALANCE_USD` (Phase 1+2 of `next_session.md`)
-3. Build `DAILY_ROUTINE.md` adapted to real paths (ACTIVE_TASKS #2)
-4. (Optional, ~2026-06-07) Day-7 paper-watch peek
+## Calendar Reminders Set (manually, on phone)
+- **Sunday 2026-06-07 09:00** — LiquiditySweep paper-watch Day-7 peek (read `data/paper_watch/liquidity_sweep.jsonl`, count signals, classify regime)
+- **Sunday 2026-06-14 09:00** — LiquiditySweep paper-watch Day-14 decision (wire / extend / retire; document in DECISIONS.md)
 
-## How to disable the paper-watch task (if needed)
+## Memory Block for Next Session
+- Project: ClawBot + Vault (synced)
+- Last session: 2026-05-31 — full chain backtest → vault reorg integration → v2 API migration → daily routine built
+- Resume from: First real run of `memory/DAILY_ROUTINE.md`
+- Don't repeat: Adapting DAILY_ROUTINE.md (done, just run it); v2 migration discovery (decision STANDING per DECISIONS.md)
+
+## How to Disable Things If Needed
 ```powershell
+# Pause paper-watch
 schtasks /change /tn ClawBot-LiquiditySweep-Watch /disable
-# Or remove entirely:
+# Remove paper-watch
 schtasks /delete /tn ClawBot-LiquiditySweep-Watch /f
+
+# Roll back v2 patches (if create-order verification fails badly)
+cd C:\Users\ronsi95openclaw\Claude-openclaw
+git revert 70cb112
+# Then push the revert when ready
 ```
