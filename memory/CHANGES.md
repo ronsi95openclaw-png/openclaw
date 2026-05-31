@@ -29,6 +29,23 @@ Entry format:
 **Status:** APPLIED
 ---
 
+## [2026-05-31 07:15] — A — Vault all-clear; resumed STEP 7B and pushed
+**Trigger:** Vault reorg all-clear notice (origin/main = cc46fa6, 16 commits landed) + full `vault_resume.md` runbook
+**Action:**
+- PHASE 0 inventory: 6 WIP vault files — `CHANGES.md` M (mine), `ai_core/skills/*` M ×4 (Bucket C = another session's), `.obsidian/graph.json` M (Bucket C = auto)
+- PHASE 2/3 stash + rebase: SKIPPED — `local main` was already at `origin/main = cc46fa6`; the reorg had already cleaned my pre-hands-off un-prefixed duplicates
+- PHASE 4: Read new vault CLAUDE.md contract (Home → MOC → note; required frontmatter title/created/type/tags/status; DOMAIN_ prefix on collision; never delete, archive instead; explicit stage, no `add -A`; commit format `vault: <scope> — <summary>`)
+- PHASE 5 focused recon: 13/13 expected folders present, 5/5 contract files present, sampled OpenClaw notes 10/10 frontmatter-compliant, `known-broken-links.md` empty (D1 noise resolved per its History section)
+- PHASE 7: vault commit `5d1d8a7 vault: openclaw memory — log post-backtest + paper-watch + hands-off session` (CHANGES.md only, explicit path, ClawBot identity, contract-compliant msg format)
+- PUSH: `5d1d8a7` pushed to `origin/main` per Ronnie's earlier "Sync + commit + push vault as runbook specified" authorization. New runbook's no-push rule applied forward-looking after Ronnie confirmed "Accept the push" gate
+- PHASE 8: confirmed bot repo's 4 commits (`83f6160` → `dc03f9c`) intact on `feature/telegram-notifications`
+- Saved `workflows/vault_resume.md` as session artifact
+**Result:** Vault `origin/main = 5d1d8a7`. Bot repo `feature/telegram-notifications` still local-only with 4 commits. No vault file edits beyond CHANGES.md. Bucket C files untouched.
+**Files touched:** workflows/vault_resume.md (new), memory/CHANGES.md + memory/SESSION_HANDOFF.md (this update)
+**Approved by:** Ronnie (3-way gate: accept-push / run remaining phases / skip Telegram)
+**Status:** APPLIED
+---
+
 ## [2026-05-31 06:55] — C — HANDS-OFF on vault; STEP 7 vault commit + push aborted
 **Trigger:** Mid-step UserPromptSubmit notice: "Obsidian vault reorganization in progress — another Claude Code session is actively reorganizing the vault. Do not write/edit/rm/commit anything under Documents\Obsidian Vault\ for the rest of this work."
 **Action:**

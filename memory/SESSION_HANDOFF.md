@@ -39,19 +39,18 @@
 - Did not modify `.env` values
 - Did NOT commit or push the vault (hands-off notice landed mid-STEP-7)
 
-## Vault State (HANDS-OFF — another Claude session is reorganizing)
-- Already-synced files from the earlier pre-notice sync are still in the vault working tree (untracked):
-  - `20 - OpenClaw/Memory/ACTIVE_TASKS.md`
-  - `20 - OpenClaw/Memory/DECISIONS.md`
-  - `20 - OpenClaw/Memory/SESSION_HANDOFF.md`
-  - `20 - OpenClaw/Memory/Strategy/paper-watch-liquiditysweep.md`
-- Modified in vault working tree (from earlier sync):
-  - `20 - OpenClaw/Memory/CHANGES.md`
-  - `20 - OpenClaw/Memory/Strategy/backtest-2026-05-30.md`
-- The reorg session will see all of these. After the all-clear:
-  - Coordinate on naming (prior commit 89b8ee2 used `OPENCLAW_` prefix; my sync used un-prefixed)
-  - Re-patch `infra/sync_to_vault.bat` to match the agreed convention
-  - Re-sync, then commit + push from the vault
+## Vault State (ALL-CLEAR RECEIVED — reorg integrated)
+- `origin/main = HEAD = 5d1d8a7` (vault: openclaw memory — log post-backtest + paper-watch + hands-off session)
+- The reorg's 16 commits (`cc46fa6` and earlier) landed cleanly — no stash/rebase needed on my end (the reorg session pre-cleaned my pre-hands-off duplicates)
+- New vault contract live (CLAUDE.md): Home → MOC → note; required frontmatter; DOMAIN_ prefix on collision; never delete; explicit staging only
+- Bucket C files (`ai_core/skills/*` M ×4; `.obsidian/graph.json` M) left untouched per safety rule — those are another session's WIP
+- OPENCLAW_ACTIVE_TASKS / DECISIONS / SESSION_HANDOFF in vault are slightly stale relative to bot repo's latest memory/ but were intentionally not refreshed this session (would touch 3-4 files + need a frontmatter-preserving sync; deferred)
+- Sync infra: `infra/sync_to_vault.bat` still uses the old un-prefixed pattern. **If you re-run the bat without updating it, it'll drop un-prefixed duplicates back into the vault again.** Patch the bat to use OPENCLAW_ prefix before next sync.
+
+## Next-Session Vault Tasks (if desired)
+1. Patch `infra/sync_to_vault.bat` to copy `memory/{ACTIVE_TASKS,DECISIONS,SESSION_HANDOFF}.md` to `vault/.../OPENCLAW_*` filenames (preserving the prior reorg's disambiguation convention)
+2. Refresh `OPENCLAW_*.md` in vault from bot repo's current `memory/` content (preserving the existing vault-side frontmatter blocks)
+3. Run the vault's own `/scan` skill for a comprehensive audit (vs. my focused snapshot)
 
 ## Next Session Priorities
 1. Refresh Crypto.com API key (ACTIVE_TASKS #1)
