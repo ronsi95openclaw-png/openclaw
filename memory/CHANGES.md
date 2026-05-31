@@ -29,6 +29,18 @@ Entry format:
 **Status:** APPLIED
 ---
 
+## [2026-05-31 19:30] — A — Pushed 3 trailing docs commits + logged calendar deferral
+**Trigger:** session_close workflow PART A
+**Action:**
+- Pushed `feature/telegram-notifications`: `70cb112..0dce709` (3 commits: f297ab0 DAILY_ROUTINE, d1c0149 PHASE 4 wrap, 0dce709 SESSION_HANDOFF rewrite)
+- Pre-push safety scan confirmed only `memory/*.md` files in those commits (no code, no secrets)
+- Ronnie chose "will add later" on calendar reminders (June 7 + June 14) — logged as risk in SESSION_HANDOFF and new HIGH-priority ACTIVE_TASKS entry
+**Result:** origin/feature/telegram-notifications = HEAD = 0dce709. Local + origin in sync (until this entry's commit lands locally).
+**Files touched:** None for push itself; memory/CHANGES.md, memory/SESSION_HANDOFF.md, memory/ACTIVE_TASKS.md (this update)
+**Approved by:** Ronnie ("yes push" + "will add later" on calendar)
+**Status:** APPLIED — push to origin durable; calendar TODO is on Ronnie's plate
+---
+
 ## [2026-05-31 19:00] — A — post_vault_next workflow PHASE 4 wrap
 **Trigger:** Closing out the post_vault_next runbook (auth + push + routine + wrap)
 **Action:**

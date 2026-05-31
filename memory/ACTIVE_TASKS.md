@@ -2,6 +2,14 @@
 
 ## HIGH PRIORITY
 
+### 0. Add paper-watch calendar reminders to phone (DUE: before 2026-06-07)
+- **Status:** Deferred during session_close PART A — "will add later" per Ronnie
+- **Risk:** If not added before 2026-06-07, the Day-7 peek + Day-14 decision can drift and the 14-day paper-watch experiment loses its capture point
+- **Reminders to add:**
+  - 📅 Sunday 2026-06-07 09:00 — "LiquiditySweep paper-watch — Day 7 peek"
+  - 📅 Sunday 2026-06-14 09:00 — "LiquiditySweep paper-watch — Day 14 DECISION"
+- **Why phone, not vault:** lock-screen notification at 9am Sunday vs. a markdown file that gets missed
+
 ### 1. Before any LIVE-mode flip: verify `private/create-order` on v2
 - **Status:** Open — gates any future TRADING_MODE=LIVE switch
 - **Why:** Bot's only un-verified private endpoint after the v1→v2 migration. The URL is patched to v2 (executor.py:22) and uses the same `_sign` function that's been proven on v2, but we couldn't safely test it without placing a real order.

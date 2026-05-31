@@ -12,18 +12,23 @@ Covers the sequence: backtest → post_backtest commit → vault hands-off → v
 - **Strategy executor:** unchanged (RSI+MACD baseline still dormant)
 - **Paper-watch task:** `ClawBot-LiquiditySweep-Watch` Ready, daily 09:00
 
-## Bot Repo Commits This Session (8 total ahead of pre-session base `e4098bc`)
+## Bot Repo Commits This Session (8 PUSHED + 1 pending this entry's commit)
 ```
-d1c0149  docs(memory): post_vault_next workflow complete (PHASE 4 wrap) [LOCAL]
-f297ab0  feat(memory): DAILY_ROUTINE.md adapted from v2.1 template      [LOCAL]
-70cb112  feat(exchange): migrate private API v1 -> v2 + USD parser fix  [PUSHED]
-2d2124e  docs(memory): vault all-clear — STEP 7B resumed                [PUSHED]
-dc03f9c  docs(memory): log vault hands-off + STEP 7 deferred            [PUSHED]
-4444841  feat(paper-watch): LiquiditySweep daily signal logger          [PUSHED]
-f27a4aa  feat(backtest): 5-strategy comparison + regime test            [PUSHED]
-83f6160  fix(gitignore): broaden .env to .env*                          [PUSHED]
+0dce709  docs(memory): rewrite SESSION_HANDOFF for end-of-2026-05-31  [PUSHED 19:30]
+d1c0149  docs(memory): post_vault_next workflow complete (PHASE 4 wrap)[PUSHED 19:30]
+f297ab0  feat(memory): DAILY_ROUTINE.md adapted from v2.1 template     [PUSHED 19:30]
+70cb112  feat(exchange): migrate private API v1 -> v2 + USD parser fix [PUSHED]
+2d2124e  docs(memory): vault all-clear — STEP 7B resumed               [PUSHED]
+dc03f9c  docs(memory): log vault hands-off + STEP 7 deferred           [PUSHED]
+4444841  feat(paper-watch): LiquiditySweep daily signal logger         [PUSHED]
+f27a4aa  feat(backtest): 5-strategy comparison + regime test           [PUSHED]
+83f6160  fix(gitignore): broaden .env to .env*                         [PUSHED]
 ```
+Origin HEAD: `0dce709` = local HEAD (until this entry's wrap commit lands).
 Also on origin: `feature/telegram-notifications-snapshot-20260531` at `70cb112` (PHASE 2 safety snapshot).
+
+## Session Risks Carried Forward
+- **Calendar reminders deferred** — Ronnie chose "will add later" instead of "set now" during session_close PART A. The June 7 + June 14 paper-watch checkpoint dates are not in any push-notification system. Mitigation: ACTIVE_TASKS #0 (HIGH) reminds at every routine read. Must be resolved before 2026-06-07.
 
 ## Vault Commits This Session
 - `5d1d8a7  vault: openclaw memory — log post-backtest + paper-watch + hands-off session` [PUSHED to origin/main]
