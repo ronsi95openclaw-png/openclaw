@@ -37,6 +37,21 @@
 - Did not refresh Crypto.com keys (manual step in your hands)
 - Did not build `DAILY_ROUTINE.md` (deferred to be adapted in a fresh session)
 - Did not modify `.env` values
+- Did NOT commit or push the vault (hands-off notice landed mid-STEP-7)
+
+## Vault State (HANDS-OFF — another Claude session is reorganizing)
+- Already-synced files from the earlier pre-notice sync are still in the vault working tree (untracked):
+  - `20 - OpenClaw/Memory/ACTIVE_TASKS.md`
+  - `20 - OpenClaw/Memory/DECISIONS.md`
+  - `20 - OpenClaw/Memory/SESSION_HANDOFF.md`
+  - `20 - OpenClaw/Memory/Strategy/paper-watch-liquiditysweep.md`
+- Modified in vault working tree (from earlier sync):
+  - `20 - OpenClaw/Memory/CHANGES.md`
+  - `20 - OpenClaw/Memory/Strategy/backtest-2026-05-30.md`
+- The reorg session will see all of these. After the all-clear:
+  - Coordinate on naming (prior commit 89b8ee2 used `OPENCLAW_` prefix; my sync used un-prefixed)
+  - Re-patch `infra/sync_to_vault.bat` to match the agreed convention
+  - Re-sync, then commit + push from the vault
 
 ## Next Session Priorities
 1. Refresh Crypto.com API key (ACTIVE_TASKS #1)

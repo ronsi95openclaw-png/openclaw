@@ -34,9 +34,21 @@
 - **Action:** Compare live signals to backtest expectations (see `memory/strategy/paper-watch-liquiditysweep.md` for criteria)
 - **Decision:** Wire as Category B / extend / retire strategy / try ensemble
 
+## BLOCKED — WAITING ON EXTERNAL
+
+### 5. Resume vault sync + commit + push (after vault reorg all-clear)
+- **Status:** Hands-off notice received 2026-05-31 ~06:55 — another Claude Code session is reorganizing `Documents/Obsidian Vault/`. Don't touch the vault until cleared.
+- **What I did:** synced `memory/` to vault before the notice → un-prefixed duplicates of ACTIVE_TASKS/DECISIONS/SESSION_HANDOFF now sit alongside the prior reorg's `OPENCLAW_*.md` versions in `20 - OpenClaw/Memory/`. Reverted my un-committed `sync_to_vault.bat` naming patch.
+- **Steps after all-clear:**
+  1. See what naming convention the reorg session standardized on
+  2. Patch `infra/sync_to_vault.bat` to match (likely the `OPENCLAW_` prefix per prior commit `89b8ee2`)
+  3. Delete the un-prefixed duplicates I left in the vault if no longer wanted
+  4. Re-run `infra/sync_to_vault.bat`
+  5. From the vault: stage `20 - OpenClaw/Memory/` only, commit with `clawbot@openclaw.local`, push to `origin/main`
+
 ## DEFERRED INDEFINITELY
 
-### 5. Ruflo skill installation
+### 6. Ruflo skill installation
 - **Status:** No `SKILL.md` on disk in any expected location
 - **Why deferred:** Lower priority than auth + daily routine; per-prompt hardcoded rules cover for now
 - **Action when ready:** Save Ruflo template to `skills/ruflo/SKILL.md`, install in Claude Code skills dir

@@ -29,6 +29,22 @@ Entry format:
 **Status:** APPLIED
 ---
 
+## [2026-05-31 06:55] — C — HANDS-OFF on vault; STEP 7 vault commit + push aborted
+**Trigger:** Mid-step UserPromptSubmit notice: "Obsidian vault reorganization in progress — another Claude Code session is actively reorganizing the vault. Do not write/edit/rm/commit anything under Documents\Obsidian Vault\ for the rest of this work."
+**Action:**
+- Aborted in-flight `rm` of three un-prefixed duplicates in vault and the planned re-sync
+- Reverted un-committed change to `infra/sync_to_vault.bat` (had patched OpenClaw section to use `OPENCLAW_` prefix matching prior vault commit 89b8ee2's disambiguation pattern). Reason for revert: the other session may choose a different convention; don't pre-commit to one.
+- Did NOT touch the vault's git state; did NOT delete the duplicates I synced earlier this session
+**Result:**
+- Bot code: clean (sync_to_vault.bat back to f27a4aa version; this-session work in 3 commits stays)
+- Vault working tree: still has the duplicates from the earlier (pre-notice) `sync_to_vault.bat` run — `20 - OpenClaw/Memory/{ACTIVE_TASKS,DECISIONS,SESSION_HANDOFF}.md` (untracked) alongside the prior commit's `OPENCLAW_*.md`. The other reorg session will see them and decide.
+- STEP 7B vault commit + push: NOT done.
+**Files touched:** infra/sync_to_vault.bat (reverted to HEAD)
+**Approved by:** Ronnie (hands-off directive)
+**Status:** APPLIED (revert + halt); vault sync DEFERRED until all-clear
+**Follow-up:** After the all-clear, decide naming convention with the reorg session's owner, then re-patch sync_to_vault.bat and re-sync.
+---
+
 ## [2026-05-31 06:35] — A — LiquiditySweep paper-watch infra built + scheduled
 **Trigger:** post_backtest STEP 4 — operationalize the 14-day paper-watch decision
 **Action:**
