@@ -14,8 +14,10 @@ if not exist "%VAULT%\" (
   exit /b 1
 )
 
-REM  source memory dir                          vault target section        label
-call :sync "%REPO%\trash_hauling_bot\memory"    "%VAULT%\10 - HaulYA'LL!"    "HaulYeah"
+REM  source memory dir                          vault target section            label
+call :sync "%REPO%\trash_hauling_bot\memory"    "%VAULT%\10 - HaulYA'LL!"        "HaulYeah"
+call :sync "%REPO%\memory"                       "%VAULT%\20 - OpenClaw\Memory"  "OpenClaw"
+call :sync "%REPO%\memory\strategy"              "%VAULT%\20 - OpenClaw\Memory\Strategy"  "OpenClaw-Strategy"
 
 echo.
 echo Vault sync complete. Open Obsidian to review.
