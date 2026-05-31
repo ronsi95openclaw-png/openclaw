@@ -29,6 +29,31 @@ Entry format:
 **Status:** APPLIED
 ---
 
+## [2026-05-31 18:30] — B — Crypto.com API: v1→v2 migration + USD parser fix
+**Trigger:** post_vault_next workflow PHASE 1. Ronnie refreshed CRYPTOCOM_API_KEY/SECRET in `.env.new` (then swapped to `.env`, backed up to `.env.backup-balance-update-20260531-181348`). Verifier still returned 401 → 400/50001 ERR_INTERNAL on v1.
+**Diagnostic chain:**
+- HTTP 401 with original .env → keys were stale (not actually refreshed)
+- Swapped `.env.new` → `.env` (preserving `gh` key); 22/28 char lengths
+- HTTP 400 with `code: 50001, message: ERR_INTERNAL` on `v1/private/get-account-summary` (signature passes — different error class than 401)
+- Direct test of `v2/private/get-account-summary` with same keys + same signing → HTTP 200 with `balance: 96.39` USD
+- New keys are provisioned for the v2 API surface; v1 endpoint structurally rejects them
+**Action:**
+- Patched `trading/exchange.py:20-21` — `_PUBLIC` and `_PRIVATE` URLs `exchange/v1/*` → `v2/*`
+- Patched `trading/executor.py:22` — `_PRIVATE` URL same migration
+- Fixed `trading/exchange.py:get_portfolio_value_usd` — USDT-only 1:1 branch widened to `("USDT", "USD")` since v2 returns the fiat wallet as `currency: USD` (response shape diff vs v1)
+- Updated `.env: STARTING_BALANCE_USD` 96.00 → 96.39 (verifier-confirmed real balance)
+**Verification:**
+- Verifier (get_account_balance + get_portfolio_value_usd): ✅ PASS, $96.39 portfolio_value_usd
+- Public surface (fetch_closes, fetch_ticker_price, fetch_all_closes): ✅ PASS no regression
+- executor.py `_PRIVATE` constant: ✅ confirmed at v2 URL
+- `private/create-order`: NOT directly tested (would place a real order); logged as ACTIVE_TASKS #1 hard gate before any LIVE-mode flip
+- DEMO mode confirmed active; `_place_order` is gated and won't fire
+- Inventory of all bot private endpoint usage: only 2 (`get-account-summary` verified, `create-order` pending)
+**Files touched:** trading/exchange.py, trading/executor.py, .env (gitignored)
+**Approved by:** Ronnie ("commit + flag create-order verification as ACTIVE_TASK")
+**Status:** APPLIED
+---
+
 ## [2026-05-31 07:15] — A — Vault all-clear; resumed STEP 7B and pushed
 **Trigger:** Vault reorg all-clear notice (origin/main = cc46fa6, 16 commits landed) + full `vault_resume.md` runbook
 **Action:**

@@ -43,3 +43,21 @@ Entry format:
 **Status:** STANDING (revisit ~2026-06-13)
 **Artifact:** [memory/strategy/backtest-2026-05-30.md](strategy/backtest-2026-05-30.md), `data/backtest/comparison_20260530-2119.json`
 ---
+
+## [2026-05-31] — Migrate Crypto.com private API surface from v1 to v2
+**Decision:** Change `_PRIVATE` base URL in both `trading/exchange.py` and `trading/executor.py` from `https://api.crypto.com/exchange/v1/private` to `https://api.crypto.com/v2/private`. Widen `get_portfolio_value_usd`'s USDT-only 1:1 branch to also handle the `USD` currency (v2 returns the fiat wallet as `currency: USD`).
+**Why:**
+- With the new API keys Ronnie generated 2026-05-31, v1 `private/get-account-summary` returns HTTP 400 / `code: 50001 ERR_INTERNAL` (signature passes — was previously 401 — but the request is structurally rejected). v2 returns HTTP 200 with the real balance ($96.39).
+- The new keys appear to be provisioned for the newer API surface; the v1 path isn't fully compatible with them
+- HMAC-SHA256 signing scheme is IDENTICAL between v1 and v2 (verified by direct test)
+- Bot's entire private surface is just 2 endpoints (`get-account-summary`, `create-order`); only `get-account-summary` is verified working on v2 directly. `create-order` only fires in LIVE mode, so DEMO is unaffected. See ACTIVE_TASKS #1 for the LIVE-flip gate.
+**How to apply:**
+- This decision shapes the LIVE-flip checklist: the create-order v2 verification (ACTIVE_TASKS #1) is now a hard prerequisite
+- If we later discover the v2 path also breaks for create-order, fallback is per-endpoint URL routing (v2 for get-account-summary, v1 or some other base for create-order)
+**Alternatives considered:**
+- Revert keys / regenerate them as v1-compatible — Crypto.com may not offer this option on the new dashboard; would need to re-engage their flow
+- Hard-rollback URL changes and live with broken verifier — bot stays in DEMO so technically functional, but loses the ability to verify auth at all
+- Per-endpoint URL routing from day 1 — premature; only 2 endpoints, can stay simple until proven needed
+**Status:** STANDING (revisit if create-order verification fails or if Crypto.com deprecates the v2 path)
+**Artifact:** Files touched in this session — trading/exchange.py, trading/executor.py. Diagnostic detail in memory/CHANGES.md entry for 2026-05-31.
+---

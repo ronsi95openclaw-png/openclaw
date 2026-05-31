@@ -2,16 +2,21 @@
 
 ## HIGH PRIORITY
 
-### 1. Refresh Crypto.com API key
-- **Status:** Blocking live operations and Phase 1+2 of `next_session` workflow
-- **Why deferred:** Required manual step (browser, Crypto.com UI), can't be automated
-- **Steps when ready:**
-  1. `crypto.com/exchange` → Settings → API Keys
-  2. DELETE the old key (revoke, don't reuse)
-  3. CREATE NEW key with READ + TRADE only (NEVER WITHDRAW)
-  4. Paste both API_KEY and SECRET into `.env` (NOT `.env.new` — that file is stale)
-  5. Run: `python -m infra.verify_cryptocom_auth`
-  6. If 200 OK: update `STARTING_BALANCE_USD` in `.env` to the printed real balance
+### 1. Before any LIVE-mode flip: verify `private/create-order` on v2
+- **Status:** Open — gates any future TRADING_MODE=LIVE switch
+- **Why:** Bot's only un-verified private endpoint after the v1→v2 migration. The URL is patched to v2 (executor.py:22) and uses the same `_sign` function that's been proven on v2, but we couldn't safely test it without placing a real order.
+- **Steps when ready (next session, NOT this one):**
+  1. Confirm `TRADING_MODE=DEMO` is still set; backup `.env`
+  2. Use Python REPL: `python -c "from dotenv import load_dotenv; load_dotenv(); from trading.executor import _place_order; print(_place_order('XRP_USDT', 'BUY', 3.0))"` (small notional, low-priced coin)
+  3. Check response: code 0 → working; non-zero or HTTP error → document and revert
+  4. If order filled, sell to flat via the Crypto.com dashboard (don't add new code paths)
+  5. Log the verification result to memory/CHANGES.md
+  6. Only after a successful create-order test should LIVE mode be considered
+
+### 2. ~~Refresh Crypto.com API key~~ — DONE 2026-05-31
+- Keys swapped from `.env.new` into `.env` (backed up to `.env.backup-balance-update-*`)
+- Verifier returns 200 OK on v2; balance $96.39 USD
+- STARTING_BALANCE_USD updated 96.00 → 96.39
 
 ### 2. Build DAILY_ROUTINE.md adapted to real paths
 - **Status:** Template lives in conversation history; no file on disk

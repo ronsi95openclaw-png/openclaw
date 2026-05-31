@@ -19,7 +19,7 @@ logger = logging.getLogger("clawbot.trading.executor")
 
 _LOG_DIR  = Path(__file__).parent.parent / "data" / "logs"
 _LOG_FILE = _LOG_DIR / "trades.log"
-_PRIVATE  = "https://api.crypto.com/exchange/v1/private"
+_PRIVATE  = "https://api.crypto.com/v2/private"
 
 # Minimum order sizes (USDT) per coin — Crypto.com minimums
 _MIN_ORDER_USD = {
