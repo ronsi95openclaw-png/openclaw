@@ -113,16 +113,24 @@ else:
             -> trading/mode.py get_mode() returns "DEMO"
             -> FAIL = halt trading until manual override
 
-[ ] Rule 2: Max trade risk in bounds
-            -> .env MAX_TRADE_RISK_PCT and last 10 trades
-            -> FAIL = Category C (do not auto-fix risk params)
+[ ] Rule 2: Risk-per-trade hardcode sane
+            -> trading/executor.py:126 calculate_position_size(..., risk_pct=1.5)
+            -> trading/strategy.py:203 default risk_pct=1.5 (1.5% per trade)
+            -> No env var (MAX_TRADE_RISK_PCT does not exist in this codebase)
+            -> FAIL only if the hardcoded value has been silently bumped; if so,
+               Category C escalation (do not adjust risk parameters)
+            -> Future: extract to .env when proper config loader exists
 
 [ ] Rule 3: Circuit breaker armed against real baseline
             -> .env STARTING_BALANCE_USD (set 2026-05-31 to 96.39)
-            -> Distance from breaker: current/baseline ratio
+            -> .env MAX_DRAWDOWN_PCT (0.20 = -20% trigger)
+            -> Distance from breaker: current_balance / starting_balance ratio
 
-[ ] Rule 4: News filter active (if configured)
-            -> agents/news_filter loaded; today's news flagged?
+[ ] Rule 4: News filter status (N/A until module exists)
+            -> CLAUDE.md mentions `agents/news_filter` aspirationally but the
+               agents/ directory is empty in the current codebase
+            -> Pass by default; revisit when the module is actually built
+            -> Then: verify it imports and today's news is classified
 
 [ ] Rule 5: Max active coins respected
             -> count of open positions <= configured ceiling

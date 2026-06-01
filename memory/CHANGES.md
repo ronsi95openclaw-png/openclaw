@@ -29,6 +29,36 @@ Entry format:
 **Status:** APPLIED
 ---
 
+## [2026-06-01 ~midnight rollover] — A — First DAILY_ROUTINE.md run (validation pass)
+**Trigger:** session_close workflow PART B — first real execution as validation
+**Step results (each verified against reality):**
+- Step 0 (contracts load): PASS (paths resolve correctly)
+- Step 2a (bot process via -m content.receiver): PASS (PIDs 27820, 34968 alive since 2026-05-30 15:52)
+- Step 2b (Ollama): DOWN, fallback to Claude API as designed
+- Step 2c (scheduled tasks): PASS (ClawBot-LiquiditySweep-Watch and ClawBot-Watchdog both Ready, LastResult=0)
+- Step 2d (Crypto.com auth on v2): PASS, $96.39 — v2 migration durable across restarts
+- Step 3 (24h trade data): 0 trades (expected, DEMO + no signals firing)
+- Step 3b (paper-watch entries): 8 lines accumulated → cadence confirmed (10h since last write means morning run did fire)
+- Step 4 (7-rule compliance): initially 5/7 with TWO adaptation bugs in DAILY_ROUTINE.md
+- Step 5 (anomalies): clean — no stale entries, no log bloat, signal-to-trade ratio fine for DEMO
+- Step 6 (auto-fix): nothing to fix (all anomalies absent)
+- Step 8 (vault journal): SKIPPED (validation-only; full execution deferred to tomorrow's run after OPENCLAW_ sync patch)
+- Step 10 (sync_to_vault.bat): SKIPPED (would re-introduce un-prefixed duplicates — see ACTIVE_TASKS #6)
+- Step 12 (Telegram): SKIPPED (consistent user preference)
+
+**Adaptation bugs found and fixed in DAILY_ROUTINE.md (Category A):**
+1. **Rule 2** had been written as "check `.env MAX_TRADE_RISK_PCT`" — that env var doesn't exist; the bot hardcodes `risk_pct=1.5` in `trading/executor.py:126` + `trading/strategy.py:203`. Fixed Rule 2 to verify the hardcode is sane (0.5-3.0%) rather than checking a fictional env var.
+2. **Rule 4** had been written as "verify `agents.news_filter` loaded" — that module doesn't exist; `agents/` directory is empty (CLAUDE.md mentioned aspirational modules not yet built). Fixed Rule 4 to PASS-by-default ("N/A until module exists").
+
+**Post-fix compliance:** 6/7 (only Rule 7 Monday-Sunday-review FAIL, expected on Day-1 bootstrap; first Sunday review scheduled for 2026-06-07 = Day-7 paper-watch peek convenient alignment).
+
+**Verdict:** DAILY_ROUTINE.md WORKS AS ADAPTED after fixing 2 template-vs-reality gaps. Ready for daily use from tomorrow morning.
+
+**Files touched:** memory/DAILY_ROUTINE.md (Rule 2 + Rule 4 wording), memory/CHANGES.md, memory/SESSION_HANDOFF.md, memory/ACTIVE_TASKS.md (this entry's updates)
+**Approved by:** Auto (Category A — own-template adaptation fix per runbook B0d)
+**Status:** APPLIED
+---
+
 ## [2026-05-31 19:30] — A — Pushed 3 trailing docs commits + logged calendar deferral
 **Trigger:** session_close workflow PART A
 **Action:**
