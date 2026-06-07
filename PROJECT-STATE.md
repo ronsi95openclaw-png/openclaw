@@ -117,4 +117,15 @@ A coherent, test-backed Python bot — **runnable**, but unproven live:
 
 ---
 
-_Audit method: filesystem + git read-only. No bot run, no Playwright, no network/MCP calls, no edits to any project file. Crypto/vault/trading stack not inspected beyond confirming the coupling boundary._
+## Changelog — stale-doc fixes (2026-06-07)
+
+Two doc-drift items from the audit, each verified against code before editing. No code, brand, or behavior changes.
+
+| Doc | Was (stale) | Now (corrected) | Verified against |
+|---|---|---|---|
+| `trash_hauling_bot/memory/SESSION_HANDOFF.md` | "quote.py / review.py … NOT yet wired into OutreachAgent" | quote/review **WIRED** (commit `2c2a404`): `_maybe_append_quote()` gated by `OUTREACH_INCLUDE_QUOTE`; `/review` Telegram command | `agents/outreach.py:20,34,40,168` + `integrations/telegram_bot.py:112,125,139` |
+| `CLAUDE.md` (root) | "separate HaulYeah lead-gen bot (its own venv + `.env.haulyeah`)" | reads consolidated root `.env` via `load_dotenv(../.env)`, namespaced keys — no separate `.env.haulyeah` | `trash_hauling_bot/config.py:12` |
+
+---
+
+_Audit method: filesystem + git read-only (initial audit). Follow-up edit limited to the two stale docs above + this changelog. No bot run, no Playwright, no network/MCP calls. Crypto/vault/trading stack not inspected beyond confirming the coupling boundary._

@@ -25,8 +25,10 @@ Tests: HaulYeah 90 pass, crypto bot 51 pass.
 ## Current state
 - Working branch: `claude/trash-hauling-bot-YpknV` (PR base is `feature/telegram-notifications`).
 - All work committed locally. **Not pushed** — awaiting explicit "yes push".
-- `quote.py` / `review.py` are standalone helpers; NOT yet wired into `OutreachAgent`
-  (outreach still uses Claude/template messages). Wiring is optional next step.
+- `quote.py` / `review.py` are now WIRED into production (commit `2c2a404`):
+  `OutreachAgent._maybe_append_quote()` appends a price range, gated by env
+  `OUTREACH_INCLUDE_QUOTE` (default off); `telegram_bot.py` has a `/review <lead_id>`
+  command using `review_request_message()` + `GOOGLE_REVIEW_URL` (never auto-sends).
 
 ## Open problems / not done (deferred on purpose)
 - New Obsidian vault, Supabase CRM schema, `lead_alert.py`, Supabase morning briefing,
@@ -38,6 +40,6 @@ Tests: HaulYeah 90 pass, crypto bot 51 pass.
 - Watchdog scheduled task NOT installed (run `infra/install_watchdog.bat` manually).
 
 ## Next priorities
-1. (If wanted) wire `quote.estimate` / `review.review_request_message` into outreach flow.
+1. ~~Wire `quote.estimate` / `review.review_request_message` into outreach flow.~~ DONE (`2c2a404`).
 2. Install watchdog scheduled task when ready.
 3. Decide whether to add exit/position tracking so `/report` can show real P&L.

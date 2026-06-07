@@ -19,7 +19,7 @@ APScheduler loop. Local Ollama brain with Claude API fallback. Remote: `openclaw
 - `security/` — whitelist auth, audit log, blocklist
 - `voice/` — Whisper transcription
 - `data/` — runtime logs/reports (git-ignored)
-- `trash_hauling_bot/` — separate HaulYeah lead-gen bot (its own venv + `.env.haulyeah`)
+- `trash_hauling_bot/` — separate HaulYeah lead-gen bot (its own venv; reads the consolidated root `.env` via `load_dotenv(../.env)` with namespaced `TRASH_BOT_*`/`FB_*` keys — no separate `.env.haulyeah`)
 
 ## Rules
 - Never hardcode secrets — use `.env`.
