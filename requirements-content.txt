@@ -1,0 +1,8 @@
+# requirements-content.txt — heavy media-pipeline deps only.
+# Split out of requirements.txt because openai-whisper pulls torch/torchaudio
+# (~600MB on cloud builds) and is only needed by content/editor.py +
+# content/pipeline.py. Install in addition to requirements.txt when the
+# content pipeline is enabled (e.g. INSTALL_CONTENT_DEPS=true on nixpacks).
+ffmpeg-python==0.2.0
+openai-whisper           # video caption pipeline (content/editor.py)
+watchdog==4.0.0          # GDrive folder watcher (content/watcher.py)

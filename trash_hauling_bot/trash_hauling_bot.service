@@ -1,0 +1,25 @@
+# systemd service unit — copy to /etc/systemd/system/ then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable trash_hauling_bot
+#   sudo systemctl start trash_hauling_bot
+
+[Unit]
+Description=Trash Hauling Lead Gen & Scheduling Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/trash_hauling_bot
+ExecStart=/opt/trash_hauling_bot/.venv/bin/python main.py
+EnvironmentFile=/opt/trash_hauling_bot/.env
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+# Give Playwright time to launch Chromium cleanly
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

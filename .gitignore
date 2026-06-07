@@ -1,9 +1,9 @@
-.env
+.env*
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-data/logs/
+data/
 .venv/
 venv/
 *.egg-info/
@@ -11,3 +11,21 @@ dist/
 build/
 .DS_Store
 .claude/
+.superpowers/
+
+
+
+
+
+
+# Archived clutter (kept on disk, out of git)
+_Archive/
+
+# Stray binaries / artifacts that don't belong in the repo
+*.exe
+*.zip
+*.code-search
+CC-Session-Logs/
+
+# Watchdog runtime state (per-host, never commit)
+infra/watchdog_state.json

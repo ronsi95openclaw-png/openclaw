@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  trash-hauling-bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Persist all runtime data (audit logs, dedup store, FB session, pending queue)
+      - ./data:/app/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
