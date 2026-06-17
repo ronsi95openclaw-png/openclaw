@@ -10,7 +10,8 @@ venv/
 dist/
 build/
 .DS_Store
-.claude/
+.claude/*
+!.claude/skills/
 .superpowers/
 
 
