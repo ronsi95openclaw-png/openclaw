@@ -12,8 +12,11 @@ Setup:
 
 Secrets — NEVER hardcode the key (see CLAUDE.md). Pass it via env:
     export OPENROUTER_API_KEY=sk-or-v1-...
-    # Verify the exact model id at https://openrouter.ai/models?q=nemotron
-    export OPENROUTER_MODEL='nvidia/llama-3.1-nemotron-70b-instruct'
+    # Copy the EXACT slug from the model's OpenRouter page (the ':free' suffix
+    # matters — free and paid variants are different slugs). For agentic browser
+    # tasks pick a general chat model, e.g. Nemotron 3 Ultra; avoid the rerank/
+    # embed/content-safety variants (not chat models).
+    export OPENROUTER_MODEL='nvidia/nemotron-3-ultra:free'  # verify on OpenRouter
     export BU_TASK='Go to https://news.ycombinator.com and return the title of the top story'
 
     python docs/examples/browser_use_openrouter.py
@@ -23,6 +26,8 @@ Notes:
     visits. In a Claude-Code-on-the-web sandbox both must be in the network
     egress allowlist, or calls return 403 host_not_allowed.
   - Headless by default; set BU_HEADLESS=0 to watch the browser.
+  - Free-tier OpenRouter models are rate-limited; an agentic run makes many
+    calls per task, so a multi-step browse may hit throttling.
 """
 import asyncio
 import os
@@ -34,7 +39,9 @@ API_KEY = os.environ.get("OPENROUTER_API_KEY")
 if not API_KEY:
     sys.exit("Set OPENROUTER_API_KEY in your environment first.")
 
-MODEL = os.environ.get("OPENROUTER_MODEL", "nvidia/llama-3.1-nemotron-70b-instruct")
+# Default to a general-purpose Nemotron chat model; override with the exact
+# slug from your OpenRouter workspace (e.g. nvidia/nemotron-3-super:free).
+MODEL = os.environ.get("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra:free")
 TASK = os.environ.get(
     "BU_TASK",
     "Go to https://news.ycombinator.com and return the title of the top story.",
