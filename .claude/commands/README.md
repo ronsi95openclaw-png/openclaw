@@ -25,9 +25,12 @@ self-contained prompt.
 ## Before you run — prerequisites & permissions
 - **`/spy` and `/competitive-ad-extractor`** call the public Ad Library. The MCP requires the token to
   have **at least one active ad account** or the search returns an error. They pull **US-only, ACTIVE** ads.
-- **`/adsmeta`** reads live account data. It first checks `is_queryable` on the account; if Meta hasn't
-  enabled MCP querying for `795836823772411`, it will report `not_queryable_reason` and stop. It's
-  **read-only** — it never creates, pauses, or edits anything.
+- **`/adsmeta`** reads live account data and is **read-only** (never creates, pauses, or edits anything).
+  It first checks the account gates: **`is_ads_mcp_enabled`** and `is_queryable`. As of last check,
+  account `795836823772411` is `is_queryable: true` but **`is_ads_mcp_enabled: false`** — Meta is still
+  rolling Ads MCP out to this account, so the audit will stop early with that reason until it's enabled.
+  The account also has no payment method yet (no spend history), so once enabled the first audits will be
+  structure-only until campaigns run.
 - **`/ad-score`** needs you to paste the creative (hook + body + CTA, plus any visual idea) as the argument.
 - **`/bulk-creative`** needs nothing — run it as-is.
 
