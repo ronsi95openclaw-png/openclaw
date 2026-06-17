@@ -71,6 +71,27 @@ App is served on the port defined by the compose file (see
 
 ---
 
+## Verified / test status
+
+Both upstream test suites were run in this environment and pass:
+
+| Project | Suite | Result |
+|---|---|---|
+| Flowsint | `make test` (pytest: types, core, enrichers, api) | **458 passed** |
+| MoneyPrinterTurbo | `python -m unittest discover -s test` | **148 passed, 5 skipped** (live-provider integration tests, skipped unless `MPT_RUN_INTEGRATION_TESTS` is set) |
+
+Notes for reproducing locally:
+- **MoneyPrinterTurbo** needs an `ffmpeg` binary on `PATH`. If you don't have a
+  system ffmpeg, the one bundled with `imageio-ffmpeg` (a moviepy dependency)
+  works: ``ln -s "$(.venv/bin/python -c 'import imageio_ffmpeg;print(imageio_ffmpeg.get_ffmpeg_exe())')" /usr/local/bin/ffmpeg``.
+  A tracked `storage/temp/.gitkeep` is included so the TTS tests can write output
+  on a fresh checkout (the running app creates `storage/temp/` itself at startup).
+- **Flowsint** Python tests need `uv` (auto-fetches Python 3.12) and the dummy env
+  vars `AUTH_SECRET` / `REDIS_URL` (no real services are contacted — Postgres/Redis
+  connections are lazy, so "connection refused" log lines during the run are
+  harmless). The `flowsint-app` frontend also has a Vitest suite (`yarn test`), run
+  separately from the Python CI.
+
 ## Notes / maintenance
 - These trees are pinned to the upstream `HEAD` at the time of install. To update,
   re-pull from upstream and replace the directory contents.
