@@ -1,0 +1,67 @@
+[project]
+name = "flowsint-core"
+version = "1.2.8"
+description = "Core utilities and base classes for flowsint modules"
+authors = [{ name = "dextmorgn", email = "contact@flowsint.io" }]
+requires-python = ">=3.12,<4.0"
+dependencies = [
+    "flowsint-enrichers",
+    "pydantic[email]>=2.11.7,<3.0.0",
+    "neo4j>=5.0,<6.0",
+    "sqlalchemy>=2.0,<3.0",
+    "psycopg2-binary>=2.9,<3.0",
+    "asyncpg>=0.30,<0.31",
+    "redis>=5.0,<6.0",
+    "celery>=5.3,<6.0",
+    "python-dotenv>=1.0,<2.0",
+    "pyyaml>=6.0,<7.0",
+    "requests>=2.31,<3.0",
+    "httpx>=0.28,<0.29",
+    "networkx>=2.6.3,<3.0.0",
+    "passlib[bcrypt]>=1.7,<2.0",
+    "bcrypt>=4.0.0,<5.0.0",
+    "python-jose[cryptography]>=3.3,<4.0",
+    "sse-starlette>=1.8,<2.0",
+    "alembic==1.13.0",
+    "phonenumbers>=9.0.8,<10.0.0",
+    "python-multipart>=0.0.27,<0.1.0",
+    "docker>=7.1.0,<8.0.0",
+    "pytest>=9.0.3,<10.0.0",
+    "cryptography>=46.0.7,<47.0.0",
+    "openpyxl>=3.1,<4.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest-asyncio>=0.21,<2.0",
+    "pytest-httpx>=0.36,<1.0",
+    "black>=26.3.1,<27.0",
+    "isort>=6.0,<7.0",
+    "flake8>=7.0,<8.0",
+    "mypy>=1.17,<2.0",
+    "factory-boy>=3.3,<4.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/flowsint_core"]
+
+[tool.uv.sources]
+flowsint-enrichers = { workspace = true }
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
