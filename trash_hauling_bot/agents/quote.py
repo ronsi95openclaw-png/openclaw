@@ -42,11 +42,11 @@ def estimate(description: Optional[str]) -> dict:
     return {"tier": tier, "price": price, "high": high, "range": f"${price}-${high}"}
 
 
-def format_quote(description: Optional[str], business_name: str = "HaulYeah") -> str:
+def format_quote(description: Optional[str], business_name: str = "HaulYA'LL!") -> str:
     """Build a short, friendly customer message with the estimated price range."""
     est = estimate(description)
     return (
-        f"Thanks for reaching out to {business_name}! "
+        f"Thanks for reaching out to {business_name} — happy to help! "
         f"Based on what you described, your estimate is {est['range']}. "
         f"That covers loading, hauling, and responsible disposal — "
         f"final price is confirmed on-site. "

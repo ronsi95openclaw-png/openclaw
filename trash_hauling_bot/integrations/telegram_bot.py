@@ -139,7 +139,7 @@ class TrashHaulingBot:
         msg = review_request_message(
             customer_name=lead.get("name", ""),
             review_url=os.getenv("GOOGLE_REVIEW_URL", "").strip(),
-            business_name="HaulYeah",
+            business_name="HaulYA'LL!",
         )
         await update.message.reply_text(
             f"*Review request draft for `{lead_id}`* — copy/send via your usual channel:\n\n{msg}",

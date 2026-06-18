@@ -10,13 +10,13 @@ GOOGLE_REVIEW_URL env value) so this stays trivial to test and reuse.
 def review_request_message(
     customer_name: str = "",
     review_url: str = "",
-    business_name: str = "HaulYeah",
+    business_name: str = "HaulYA'LL!",
 ) -> str:
     name = (customer_name or "").strip()
     greeting = f"Hi {name}!" if name else "Hi!"
 
     lines = [
-        f"{greeting} Thanks for choosing {business_name}!",
+        f"{greeting} Thanks for choosing {business_name} for the job.",
         "If you have a moment, a quick Google review would mean a lot to us.",
     ]
     url = (review_url or "").strip()
