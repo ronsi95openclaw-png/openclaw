@@ -38,14 +38,17 @@
 
 ## MEDIUM PRIORITY
 
-### 3. Day-7 LiquiditySweep paper-watch review — 2026-06-07
-- **Action:** Read `data/paper_watch/liquidity_sweep.jsonl`, count HIGH-confidence signals, classify market regime
-- **Decision:** Continue / extend / kill paper-watch
-- **Manual run check:** `python -m infra.paper_watch_liquiditysweep` from the Claude-openclaw root
+### 3. ~~Day-7 LiquiditySweep paper-watch review — 2026-06-07~~ — RESOLVED 2026-06-18 (overdue, batched with #5)
+- See CHANGES.md [2026-06-18 02:40] + DECISIONS.md [2026-06-18].
 
-### 5. Day-14 LiquiditySweep paper-watch final decision — 2026-06-14
-- **Action:** Compare live signals to backtest expectations (see `memory/strategy/paper-watch-liquiditysweep.md` for criteria)
-- **Decision:** Wire as Category B / extend / retire strategy / try ensemble
+### 5. ~~Day-14 LiquiditySweep paper-watch final decision — 2026-06-14~~ — RESOLVED 2026-06-18: EXTEND
+- **Decision:** Do NOT wire; stay DEMO; extend to 2026-07-02. Reconstructed replay (06-13→06-18) fired 0/24 signals in a strong downtrend → no live validation possible + adverse regime.
+- See CHANGES.md [2026-06-18 02:40] + DECISIONS.md [2026-06-18].
+
+### 5b. LiquiditySweep paper-watch — extended review — 2026-07-02
+- **Action:** Read the real `data/paper_watch/liquidity_sweep.jsonl` on Ronnie's machine (confirm the 0-signal reconstruction); re-run the replay if still in the cloud.
+- **Decision:** Wire (with a trend filter) / extend again / retire.
+- **Note:** Consider a BTC-EMA-slope trend filter before any wire-in (the 06-18 downtrend is why).
 
 ## BLOCKED — WAITING ON EXTERNAL
 

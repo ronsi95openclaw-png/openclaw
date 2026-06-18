@@ -231,3 +231,24 @@ Entry format:
 **Approved by:** Auto (Category A — bug fix on a tool we're about to depend on)
 **Status:** APPLIED
 ---
+
+## [2026-06-18 02:40] — B — LiquiditySweep paper-watch Day-14+ decision (OVERDUE) — EXTEND, do not wire
+**Trigger:** ACTIVE_TASKS #3 (Day-7, 2026-06-07) and #5 (Day-14, 2026-06-14) both went past their dates; resumed 2026-06-18.
+**Data problem:** the 14-day `data/paper_watch/liquidity_sweep.jsonl` is git-ignored and lives only on Ronnie's local machine — not reachable from the cloud session.
+**Reconstruction (substitute method):** pulled live 1d candles for BTC/ETH/SOL/XRP via the Crypto.com MCP (30 candles each, 2026-05-20→06-18) and replayed the real `LiquiditySweepStrategy.evaluate()` at every close with ≥25 candles (06-13→06-18). Script: `/tmp/replay_ls.py` (analysis-only, not committed).
+**Findings:**
+- 24 evaluations (4 symbols × 6 days) → **0 HIGH, 0 MEDIUM, 24 HOLD**. The strategy fired NOTHING in the recent window.
+- BTC regime = **DOWNTREND**: EMA(10) 71326→64491; BTC −16.5% over 30d ($77.5k→$64.8k). ETH/SOL/XRP also down hard.
+**Decision: EXTEND paper-watch (criteria PARTIALLY met). Do NOT wire. Stay DEMO.**
+- Cadence criterion (0–1 HIGH / 14d, 5+ = divergence) is technically satisfied (0 signals = no over-firing), BUT zero live signals means **no live validation of direction-accuracy was possible** — there is nothing to compare against the backtest.
+- The window is a **strong downtrend**, the adverse regime for a mean-reversion strategy (catching falling knives). The backtest already scored LiquiditySweep 1/4 positive quarters. Wiring now would be on data the regime test never validated — violates workflow hard-rule #4.
+- Reconstruction only covers ~6 of the 14 days (30-candle MCP cap); the local jsonl may hold earlier signals I cannot see. Another reason not to act on a partial picture.
+**Action items going forward:**
+1. Keep DEMO; no executor change.
+2. Extend observation to **2026-07-02** (next decision date).
+3. When wiring is reconsidered, add a **trend filter** (suppress mean-reversion BUYs when BTC EMA slope is strongly negative) — this downtrend is exactly why.
+4. On Ronnie's machine, read the real `liquidity_sweep.jsonl` to confirm the reconstruction (expect mostly HOLD given the regime).
+**Files touched:** memory/CHANGES.md, memory/DECISIONS.md, memory/ACTIVE_TASKS.md, memory/strategy/paper-watch-liquiditysweep.md
+**Approved by:** Pending Ronnie review (conservative no-code-change decision; documentation applied)
+**Status:** APPLIED (docs); strategy wiring DEFERRED to 2026-07-02
+---

@@ -47,6 +47,12 @@ signal cadence + direction matches the backtest, or diverges.
 - **Manual run:** `python -m infra.paper_watch_liquiditysweep` from the Claude-openclaw root.
 - **Output location:** `data/paper_watch/liquidity_sweep.jsonl` (data/ is gitignored — JSONL is local-only).
 
+## Day-14+ outcome (2026-06-18, overdue review)
+- **Decision: EXTEND to 2026-07-02; do NOT wire; stay DEMO.**
+- Local jsonl unreachable from cloud → reconstructed by replaying the strategy on live MCP 1d candles (06-13→06-18). Result: **0 BUY/SELL across 24 evaluations (all HOLD)** in a strong BTC downtrend (−16.5%/30d).
+- Zero live signals = no direction-accuracy validation; adverse regime for mean-reversion. Before any future wire-in, add a BTC-EMA-slope trend filter.
+- Full reasoning: CHANGES.md [2026-06-18 02:40], DECISIONS.md [2026-06-18].
+
 ## Cross-references
 - [[backtest-2026-05-30]] — the comparison that produced the deferred-wiring decision
-- [[DECISIONS]] — see entry "Defer strategy-wiring; paper-watch LiquiditySweep"
+- [[DECISIONS]] — see entry "Defer strategy-wiring; paper-watch LiquiditySweep" and "Extend LiquiditySweep paper-watch; do NOT wire"

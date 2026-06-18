@@ -61,3 +61,17 @@ Entry format:
 **Status:** STANDING (revisit if create-order verification fails or if Crypto.com deprecates the v2 path)
 **Artifact:** Files touched in this session — trading/exchange.py, trading/executor.py. Diagnostic detail in memory/CHANGES.md entry for 2026-05-31.
 ---
+
+## [2026-06-18] — Extend LiquiditySweep paper-watch; do NOT wire (Day-14 overdue review)
+**Decision:** Keep `LiquiditySweepStrategy` OUT of `trading/executor.py`. Stay DEMO. Extend the paper-watch to 2026-07-02 instead of wiring or retiring.
+**Why:**
+- The 14-day decision was overdue (06-14 → reviewed 06-18). The local signal log was unreachable from the cloud session, so signals were reconstructed by replaying the real strategy on live MCP 1d candles (06-13→06-18, 4 symbols).
+- Replay produced **0 BUY/SELL signals (24/24 HOLD)**. Zero live signals = no direction-accuracy validation was possible; there is nothing to confirm the backtest's 62.5% win-rate against.
+- The market is in a **strong downtrend** (BTC −16.5%/30d), the worst regime for a mean-reversion strategy. Backtest regime score was already 1/4. Wiring now repeats the exact mistake hard-rule #4 forbids.
+**How to apply:** Next review 2026-07-02. Before any wire-in, add a trend filter (suppress mean-reversion BUYs when BTC EMA slope is strongly negative). Confirm against the real local jsonl first.
+**Alternatives considered:**
+- Wire as Category B now → rejected: no live validation + adverse regime.
+- Retire the strategy → rejected: it correctly stayed flat in a trend (not evidence it's broken), and the new TJR/Telegram send-only path (PR #12) lets us surface its signals without executor risk anyway.
+**Status:** STANDING (revisit 2026-07-02)
+**Artifact:** memory/CHANGES.md [2026-06-18 02:40]; reconstruction /tmp/replay_ls.py (not committed). Supersedes the 2026-05-30 "revisit ~2026-06-13" timing.
+---
