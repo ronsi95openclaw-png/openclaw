@@ -346,6 +346,61 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+# ── /tjr — TJR liquidity-sweep setups (send-only, never executes) ─────────────
+
+async def cmd_tjr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    timeframe = context.args[0] if context.args else "1d"
+    if timeframe not in {"1h", "4h", "1d"}:
+        await update.message.reply_text("Usage: /tjr [1h|4h|1d]  (default: 1d)")
+        return
+
+    thinking_msg = await update.message.reply_text(
+        f"<i>Scanning TJR liquidity sweeps on {timeframe} candles...</i>",
+        parse_mode="HTML",
+    )
+
+    try:
+        from trading.exchange import fetch_all_closes
+        from trading.strategies.liquidity_sweep import LiquiditySweepStrategy
+        from trading.setup import build_trade_setup, format_trade_setup_telegram
+
+        strategy    = LiquiditySweepStrategy()
+        candle_data = fetch_all_closes(strategy.config.coins, timeframe=timeframe, count=100)
+
+        setups = []
+        for coin in strategy.config.coins:
+            closes = candle_data.get(coin)
+            if not closes:
+                continue
+            signal = strategy.evaluate(coin, closes)
+            if signal.action not in ("BUY", "SELL"):
+                continue
+            setup = build_trade_setup(signal, closes)
+            if setup is not None:
+                setups.append((setup, signal))
+
+        if not setups:
+            await thinking_msg.edit_text(
+                f"🎯 <b>TJR Scan — {timeframe}</b>\n<i>No setups right now.</i>",
+                parse_mode="HTML",
+            )
+            return
+
+        parts = [f"🎯 <b>TJR Scan — {timeframe} — {len(setups)} setup(s)</b>\n"]
+        for setup, signal in setups:
+            parts.append(format_trade_setup_telegram(setup, signal))
+            parts.append("")
+        await thinking_msg.edit_text("\n".join(parts), parse_mode="HTML")
+
+    except Exception as exc:
+        await thinking_msg.edit_text(
+            f"🚨 TJR scan failed: <code>{exc}</code>", parse_mode="HTML"
+        )
+
+
 # ── /dca ──────────────────────────────────────────────────────────────────────
 
 async def cmd_dca(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -707,6 +762,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>📈 Crypto:</b>\n"
         "  /market              — live prices + analysis\n"
         "  /scan [1h|4h|1d]    — RSI+MACD signals\n"
+        "  /tjr [1h|4h|1d]     — TJR liquidity-sweep setups (send-only)\n"
         "  /dca [asset]         — DCA entry analysis\n"
         "  /autotrade [on|off]  — fully auto daily trading\n"
         "  /trades [n]          — last N trade decisions\n"
@@ -952,6 +1008,7 @@ def main() -> None:
     sched.set_send_fn(_scheduler_send)
     sched.start_scheduler()
     sched.reload_autotrade(from_env=bool(os.getenv("AUTOTRADE_ENABLED", "").strip()))   # re-register daily job if it was enabled before restart
+    sched.reload_tjr_scan()   # re-register daily TJR send-only scan if enabled via env
 
     _app = Application.builder().token(token).build()
 
@@ -963,6 +1020,7 @@ def main() -> None:
     _app.add_handler(CommandHandler("clear",    cmd_clear))
     _app.add_handler(CommandHandler("market",   cmd_market))
     _app.add_handler(CommandHandler("scan",     cmd_scan))
+    _app.add_handler(CommandHandler("tjr",      cmd_tjr))
     _app.add_handler(CommandHandler("dca",      cmd_dca))
     _app.add_handler(CommandHandler("run",      cmd_run))
     _app.add_handler(CommandHandler("py",       cmd_py))

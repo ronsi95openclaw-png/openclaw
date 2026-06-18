@@ -22,6 +22,9 @@ _TASKS_FILE      = _DATA_DIR / "tasks.json"
 _AUTOTRADE_FILE  = _DATA_DIR / "autotrade.json"
 _AUTOTRADE_JOB   = "clawbot_autotrade_daily"
 
+_TJR_SETUPS_FILE = _DATA_DIR / "logs" / "tjr_setups.jsonl"
+_TJR_SCAN_JOB    = "clawbot_tjr_scan_daily"
+
 _scheduler: Optional[AsyncIOScheduler] = None
 _send_fn = None   # injected by receiver.py: async def send_fn(chat_id, text)
 
@@ -346,3 +349,107 @@ def reload_autotrade(from_env: bool = False) -> None:
             id=_AUTOTRADE_JOB,
             replace_existing=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# TJR liquidity-sweep scan (SEND-ONLY — never executes orders)
+# ---------------------------------------------------------------------------
+
+def _log_tjr_setup(record_line: str) -> None:
+    """Append a single JSONL setup record to data/logs/tjr_setups.jsonl."""
+    _TJR_SETUPS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(_TJR_SETUPS_FILE, "a", encoding="utf-8") as f:
+        f.write(record_line + "\n")
+
+
+async def _run_tjr_scan() -> None:
+    """Daily TJR scan: run LiquiditySweepStrategy → send each BUY/SELL setup.
+
+    SEND-ONLY: this job NEVER calls the executor or places an order. For every
+    actionable signal it builds a TradeSetup, sends a formatted message via the
+    injected send function, and logs the setup to data/logs/tjr_setups.jsonl.
+    The user executes the trade manually.
+
+    Config priority: env vars only (TJR_SCAN_*). The chat_id reuses
+    AUTOTRADE_CHAT_ID so it shares the operator's chat.
+    """
+    if os.getenv("TJR_SCAN_ENABLED", "false").lower() != "true":
+        return
+
+    chat_id_raw = os.getenv("AUTOTRADE_CHAT_ID", "").strip()
+    if not chat_id_raw:
+        return
+    chat_id   = int(chat_id_raw)
+    timeframe = os.getenv("TJR_SCAN_TIMEFRAME", "1d")
+
+    if _send_fn:
+        await _send_fn(chat_id, "🎯 <b>TJR Scan running...</b>")
+
+    try:
+        from trading.exchange import fetch_all_closes
+        from trading.strategies.liquidity_sweep import LiquiditySweepStrategy
+        from trading.setup import (
+            build_trade_setup,
+            format_trade_setup_telegram,
+            to_jsonl_record,
+        )
+
+        strategy    = LiquiditySweepStrategy()
+        candle_data = fetch_all_closes(strategy.config.coins, timeframe=timeframe, count=100)
+
+        setups_sent = 0
+        for coin in strategy.config.coins:
+            closes = candle_data.get(coin)
+            if not closes:
+                continue
+            signal = strategy.evaluate(coin, closes)
+            if signal.action not in ("BUY", "SELL"):
+                continue
+
+            setup = build_trade_setup(signal, closes)
+            if setup is None:
+                continue
+
+            _log_tjr_setup(to_jsonl_record(setup, signal))
+            if _send_fn:
+                await _send_fn(chat_id, format_trade_setup_telegram(setup, signal))
+            setups_sent += 1
+
+        if setups_sent == 0 and _send_fn:
+            await _send_fn(
+                chat_id,
+                f"🎯 <b>TJR Scan — {timeframe}</b>\n<i>No setups right now.</i>",
+            )
+
+    except Exception as exc:
+        if _send_fn:
+            await _send_fn(chat_id, f"🚨 <b>TJR scan error:</b> <code>{exc}</code>")
+
+
+async def run_tjr_scan_now() -> None:
+    """Public entry point to trigger the TJR scan immediately (send-only)."""
+    await _run_tjr_scan()
+
+
+def reload_tjr_scan() -> None:
+    """Register the daily TJR scan job from env vars, if enabled.
+
+    Env:
+      TJR_SCAN_ENABLED    — "true" to enable (default false)
+      TJR_SCAN_TIME       — daily run time "HH:MM" UTC (default "08:30")
+      TJR_SCAN_TIMEFRAME  — candle timeframe (default "1d")
+    """
+    if os.getenv("TJR_SCAN_ENABLED", "false").lower() != "true":
+        return
+    if not _scheduler:
+        return
+
+    scan_time = os.getenv("TJR_SCAN_TIME", "08:30")
+    hour, minute = scan_time.split(":")
+    _scheduler.add_job(
+        _run_tjr_scan,
+        CronTrigger(hour=int(hour), minute=int(minute), timezone="UTC"),
+        id=_TJR_SCAN_JOB,
+        replace_existing=True,
+    )
+    print(f"🎯 TJR scan enabled from env vars (time={scan_time} UTC)")

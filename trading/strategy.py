@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import List, Optional
 
 logger = logging.getLogger("clawbot.trading.strategy")
 
@@ -69,6 +69,26 @@ class Signal:
             f"Histogram: <code>{self.macd_histogram:.6f}</code>\n\n"
             f"Confidence: {conf_emoji} <code>{self.confidence}</code>"
         )
+
+
+# ── Trade Setup Model ─────────────────────────────────────────────────────────
+
+@dataclass
+class TradeSetup:
+    """A SEND-ONLY trade plan derived from a fired Signal.
+
+    This carries the price levels a human needs to place the trade manually:
+    entry, protective stop, and a ladder of reward-to-risk targets. It NEVER
+    triggers order execution — it is built purely for notification.
+    """
+    coin: str
+    direction: str         # "BUY" | "SELL"
+    entry: float
+    stop: float
+    targets: List[float]   # ordered, e.g. [1R, 2R, 3R]
+    reward_to_risk: float  # RR of the final (furthest) target
+    confidence: str        # "HIGH" | "MEDIUM" | "LOW"
+    reason: str = ""
 
 
 # ── Indicators ────────────────────────────────────────────────────────────────
