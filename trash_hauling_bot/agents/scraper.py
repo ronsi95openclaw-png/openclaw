@@ -13,7 +13,7 @@ import logging
 import random
 import sys
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional
 
 from playwright.async_api import BrowserContext, Page, async_playwright
 
@@ -67,6 +67,10 @@ class ScraperAgent:
         self._audit = audit
         self._sheets = SheetsClient()
         self._dedup = DedupStore(f"{config.data_dir}/seen_listings.json")
+        # Optional async callback fired with the list of newly-added lead dicts
+        # at the end of a run. Wired by the orchestrator to push a Telegram
+        # alert. Kept optional so the scraper has no hard dependency on the bot.
+        self.on_new_leads: Optional[Callable[[List[Dict]], Awaitable[None]]] = None
 
     async def run(self) -> int:
         """Scrape FB Marketplace across all configured keywords. Returns count of new leads added."""
@@ -92,22 +96,39 @@ class ScraperAgent:
                 await ctx.close()
 
         added = 0
+        new_leads: List[Dict] = []
         for lead in all_leads:
             url = lead.get("listing_url", "")
             title = lead.get("description", "")
             if self._dedup.is_seen(url, title):
                 continue
             try:
-                self._sheets.add_lead(lead)
+                lead_id = self._sheets.add_lead(lead)
                 self._dedup.mark_seen(url, title)
                 added += 1
+                new_leads.append({**lead, "id": lead_id})
                 self._audit.log(self.AGENT_NAME, "lead_added", {"url": url})
             except ValueError as exc:
                 self._audit.log(self.AGENT_NAME, "lead_rejected", {"reason": str(exc), "url": url})
 
         self._audit.log(self.AGENT_NAME, "scan_completed", {"new_leads": added})
         logger.info("Scraper complete — %d new leads", added)
+
+        if added > 0:
+            await self._maybe_alert(new_leads)
         return added
+
+    async def _maybe_alert(self, new_leads: List[Dict]) -> None:
+        """Fire the new-lead alert callback if enabled and wired."""
+        if not config.new_lead_alert or not new_leads:
+            return
+        if self.on_new_leads is None:
+            return
+        try:
+            await self.on_new_leads(new_leads)
+        except Exception as exc:  # never let alerting break a scrape run
+            logger.error("New-lead alert failed: %s", exc)
+            self._audit.log(self.AGENT_NAME, "new_lead_alert_error", {"error": str(exc)})
 
     async def login_flow(self) -> None:
         """Open a visible browser window so the user can log into Facebook once."""

@@ -4,7 +4,10 @@ import traceback
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from agents.lead_alert import format_new_leads_alert
+from agents.marketplace_poster import MarketplacePoster, build_listing_payload
 from agents.review import review_request_message
+from integrations import fb_ads
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -50,6 +53,10 @@ _HELP = """
 *Reviews*
 /review `<lead_id>` — Generate a post-job Google review request message (for team to copy-send)
 
+*Advertising* (always dry-run — confirmation-gated, never auto-posts live)
+/postad `[daily_budget]` — Prepare a PAID Facebook ad payload for review (no spend)
+/listing `[title]` — Prepare a FREE Marketplace listing for review (not published)
+
 *System*
 /sync — Trigger calendar sync
 /status — Show lead counts and system state
@@ -87,6 +94,7 @@ class TrashHaulingBot:
         self._cal_sync = cal_sync
         self._audit = audit
         self._sheets = SheetsClient()
+        self._marketplace = MarketplacePoster(audit)
         self._app = Application.builder().token(config.bot_token).build()
         self._register_handlers()
 
@@ -110,6 +118,8 @@ class TrashHaulingBot:
         add(CommandHandler("sync", self._cmd_sync))
         add(CommandHandler("ping", self._cmd_ping))
         add(CommandHandler("review", self._cmd_review))
+        add(CommandHandler("postad", self._cmd_postad))
+        add(CommandHandler("listing", self._cmd_listing))
         add(CallbackQueryHandler(self._on_callback))
 
     async def _cmd_ping(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -172,6 +182,30 @@ class TrashHaulingBot:
                 await self._app.bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
             except Exception as exc:
                 logger.error("Team notify to %s failed: %s", chat_id, exc)
+
+    async def send_new_lead_alert(self, new_leads: list) -> None:
+        """Push a concise summary of newly-scraped leads to the team chat(s).
+
+        Wired into the scraper via ScraperAgent.on_new_leads. Respects DRY_RUN
+        (logs the prepared alert instead of sending). The NEW_LEAD_ALERT toggle
+        is enforced upstream in the scraper.
+        """
+        text = format_new_leads_alert(new_leads)
+        if not text:
+            return
+        if config.dry_run:
+            logger.info("[DRY-RUN] Would send new-lead alert:\n%s", text)
+            self._audit.log("telegram", "new_lead_alert_dry_run", {"count": len(new_leads)})
+            return
+        # Fall back to authorized chats if no dedicated team chats are set, so
+        # the owner still receives the alert.
+        targets = config.team_chat_ids or config.authorized_chat_ids
+        for chat_id in targets:
+            try:
+                await self._app.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+            except Exception as exc:
+                logger.error("New-lead alert to %s failed: %s", chat_id, exc)
+        self._audit.log("telegram", "new_lead_alert_sent", {"count": len(new_leads)})
 
     # ------------------------------------------------------------------ #
     # Command handlers                                                     #
@@ -376,6 +410,62 @@ class TrashHaulingBot:
             await update.message.reply_text(f"Sync complete — {count} event(s) created.")
         except Exception as exc:
             await update.message.reply_text(f"Sync failed: {exc}")
+
+    @_require_auth
+    async def _cmd_postad(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Prepare a PAID Facebook ad (always DRY-RUN here) and report the payload.
+
+        Usage: /postad [daily_budget]
+        Confirmation-gated: this only ever prepares the payload for owner review.
+        It never spends money. Going live is a deliberate, separate action.
+        """
+        budget = 10.0
+        if ctx.args:
+            try:
+                budget = float(ctx.args[0])
+            except ValueError:
+                await update.message.reply_text("Usage: /postad [daily_budget]  (e.g. /postad 15)")
+                return
+        await update.message.reply_text("Preparing paid FB ad (dry-run, no spend)…")
+        try:
+            result = fb_ads.post_service_ad(daily_budget=budget, dry_run=True)
+        except Exception as exc:
+            logger.error("postad prepare error: %s", exc)
+            await update.message.reply_text(f"Failed to prepare ad: {exc}")
+            return
+        self._audit.log("telegram", "postad_prepared", {"budget": budget})
+        await update.message.reply_text(fb_ads.summarize_for_telegram(result), parse_mode="Markdown")
+
+    @_require_auth
+    async def _cmd_listing(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Prepare a FREE Marketplace listing (always DRY-RUN here) for review.
+
+        Usage: /listing [title...]
+        Confirmation-gated: validates and reports what it would post; never
+        clicks Publish from this command.
+        """
+        title = sanitize_text(" ".join(ctx.args), max_length=120) if ctx.args else None
+        payload = build_listing_payload(title=title)
+        await update.message.reply_text("Preparing free Marketplace listing (dry-run)…")
+        try:
+            result = await self._marketplace.post_listing(payload, dry_run=True)
+        except Exception as exc:
+            logger.error("listing prepare error: %s", exc)
+            await update.message.reply_text(f"Failed to prepare listing: {exc}")
+            return
+        p = result["payload"]
+        self._audit.log("telegram", "listing_prepared", {"title": p["title"]})
+        await update.message.reply_text(
+            "*Free Marketplace Listing — DRY-RUN (not published)*\n"
+            f"Title: {p['title']}\n"
+            f"Price: {p['price']}\n"
+            f"Category: {p['category']}\n"
+            f"Location: {p['location'] or 'N/A'}\n"
+            f"Photos: {len(p['photos'])}\n\n"
+            f"Description:\n_{p['description']}_\n\n"
+            "Nothing was published. Going live is a deliberate, separate action.",
+            parse_mode="Markdown",
+        )
 
     # ------------------------------------------------------------------ #
     # Inline keyboard confirmation flow                                    #

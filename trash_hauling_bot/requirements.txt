@@ -16,5 +16,8 @@ playwright>=1.44.0
 # Scheduling
 APScheduler>=3.10.4
 
+# Paid Facebook Ads — Graph Ads API (thin client in integrations/fb_ads.py)
+requests>=2.31.0
+
 # Config
 python-dotenv>=1.0.0

@@ -64,6 +64,14 @@ class Config:
     )
     fb_profile_dir: str = field(default_factory=lambda: os.getenv("FB_PROFILE_DIR", "data/fb_profile"))
 
+    # New-lead Telegram alert — push a summary to the team when a scrape finds leads
+    new_lead_alert: bool = field(default_factory=lambda: os.getenv("NEW_LEAD_ALERT", "true").lower() == "true")
+
+    # Paid Facebook Ads (Graph Ads API) — used by integrations/fb_ads.py
+    fb_ad_account_id: str = field(default_factory=lambda: os.getenv("FB_AD_ACCOUNT_ID", ""))
+    fb_page_id: str = field(default_factory=lambda: os.getenv("FB_PAGE_ID", ""))
+    fb_access_token: str = field(default_factory=lambda: os.getenv("FB_ACCESS_TOKEN", ""))
+
     # Scheduler intervals
     scraper_interval_minutes: int = field(default_factory=lambda: _int_env("SCRAPER_INTERVAL_MINUTES", 30))
     calendar_sync_interval_minutes: int = field(default_factory=lambda: _int_env("CALENDAR_SYNC_INTERVAL_MINUTES", 5))

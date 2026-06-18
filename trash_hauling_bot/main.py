@@ -60,6 +60,11 @@ async def main() -> None:
     cal_sync = CalendarSyncAgent(audit)
     bot = TrashHaulingBot(scraper, outreach, cal_sync, audit)
 
+    # Push a Telegram summary to the team whenever a scrape finds new leads.
+    # The scraper enforces NEW_LEAD_ALERT and DRY_RUN; the bot enforces DRY_RUN
+    # on the send side as a second guard.
+    scraper.on_new_leads = bot.send_new_lead_alert
+
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         scraper.run,
