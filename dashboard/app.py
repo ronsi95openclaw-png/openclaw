@@ -21,6 +21,11 @@ from flask import Flask, render_template_string
 ROOT     = Path(__file__).parent.parent
 DATA_DIR = ROOT / "data"
 
+# Ensure repo-root packages (e.g. hermes/) are importable when this file is run
+# directly as `python dashboard/app.py` (which puts dashboard/ on sys.path).
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 load_dotenv(ROOT / ".env", override=True)
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
@@ -145,6 +150,38 @@ def get_cache_info() -> dict:
     return {"entries": len(cache), "newest": newest}
 
 
+# ── Multi-bot health (driven by hermes/health.py) ─────────────────────────────
+# Every helper is wrapped so a missing file or import never 500s the dashboard.
+
+def get_haulyeah_status() -> dict:
+    """HaulYeah health via hermes.health — degrades gracefully if data absent."""
+    try:
+        from hermes.health import get_haulyeah_health
+        return get_haulyeah_health()
+    except Exception as exc:
+        return {"name": "HaulYeah", "running": False, "status": "unknown",
+                "last_seen": "never", "pending_outreach": 0, "leads": 0,
+                "error": str(exc)[:60]}
+
+
+def get_hermes_status() -> dict:
+    """Hermes overseer health: report whether the overseer bot is configured and
+    summarize the latest briefing it would emit. Never raises."""
+    info = {
+        "configured": bool(os.getenv("HERMES_BOT_TOKEN", "").strip()
+                           and os.getenv("HERMES_CHAT_ID", "").strip()),
+        "interval": os.getenv("HERMES_CHECK_INTERVAL_MINUTES", "30"),
+        "alerts": [],
+    }
+    try:
+        from hermes.health import get_all_health
+        from hermes.briefing import _alerts
+        info["alerts"] = _alerts(get_all_health())
+    except Exception as exc:
+        info["error"] = str(exc)[:60]
+    return info
+
+
 # ── HTML template ─────────────────────────────────────────────────────────────
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -191,7 +228,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <h1>🦾 OpenClaw Dashboard</h1>
 <p class="subtitle">
-  Last updated: {{ now }}
+  Multi-bot overview · ClawBot · HaulYeah · Hermes
+  &nbsp;·&nbsp; Last updated: {{ now }}
   &nbsp;·&nbsp; Auto-refresh in <span id="cd">30</span>s
 </p>
 
@@ -318,6 +356,71 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     {% endif %}
   </div>
 
+  <!-- HAULYEAH -->
+  <div class="card">
+    <h2>🚛 HaulYeah</h2>
+    <div class="row">
+      <span class="label">Status</span>
+      <span class="val">
+        {% if haulyeah.running %}
+          <span class="dot green"></span><span class="green">Active</span>
+          <span style="color:#444;font-size:0.75rem"> ({{ haulyeah.last_seen }})</span>
+        {% elif haulyeah.status == 'idle' %}
+          <span class="dot amber"></span><span class="amber">Idle</span>
+          <span style="color:#444;font-size:0.75rem"> ({{ haulyeah.last_seen }})</span>
+        {% else %}
+          <span class="dot red"></span><span class="red">Unknown</span>
+        {% endif %}
+      </span>
+    </div>
+    <div class="row">
+      <span class="label">Leads</span>
+      <span class="val">{{ haulyeah.leads }}</span>
+    </div>
+    <div class="row">
+      <span class="label">Pending outreach</span>
+      <span class="val {% if haulyeah.pending_outreach > 0 %}amber{% endif %}">{{ haulyeah.pending_outreach }}</span>
+    </div>
+    {% if haulyeah.error %}
+    <div class="row">
+      <span class="label">Note</span>
+      <span class="val" style="font-size:0.75rem;color:#666">{{ haulyeah.error }}</span>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- HERMES -->
+  <div class="card">
+    <h2>🪽 Hermes Overseer</h2>
+    <div class="row">
+      <span class="label">Bot</span>
+      <span class="val">
+        {% if hermes.configured %}
+          <span class="green">configured ✅</span>
+        {% else %}
+          <span class="amber">not set ⚠️</span>
+        {% endif %}
+      </span>
+    </div>
+    <div class="row">
+      <span class="label">Check interval</span>
+      <span class="val">{{ hermes.interval }} min</span>
+    </div>
+    {% if hermes.alerts %}
+      {% for a in hermes.alerts %}
+      <div class="row">
+        <span class="label">Alert</span>
+        <span class="val" style="font-size:0.8rem">{{ a }}</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="row">
+        <span class="label">Alerts</span>
+        <span class="val green">none — all nominal</span>
+      </div>
+    {% endif %}
+  </div>
+
   <!-- RECENT TRADES -->
   <div class="card" style="grid-column: 1 / -1;">
     <h2>📊 Recent Trade Decisions</h2>
@@ -355,19 +458,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 @app.route("/")
 def index():
-    usage  = get_usage_today()
-    prices = get_prices()
-    ollama = get_ollama_status()
-    bot    = get_clawbot_status()
-    tasks  = get_tasks()
-    trades = get_recent_trades()
-    cache  = get_cache_info()
+    usage    = get_usage_today()
+    prices   = get_prices()
+    ollama   = get_ollama_status()
+    bot      = get_clawbot_status()
+    haulyeah = get_haulyeah_status()
+    hermes   = get_hermes_status()
+    tasks    = get_tasks()
+    trades   = get_recent_trades()
+    cache    = get_cache_info()
     claude_ok = bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     return render_template_string(
         DASHBOARD_HTML,
         usage=usage, prices=prices, ollama=ollama, bot=bot,
+        haulyeah=haulyeah, hermes=hermes,
         tasks=tasks, trades=trades, cache=cache,
         claude_ok=claude_ok, now=now,
     )
