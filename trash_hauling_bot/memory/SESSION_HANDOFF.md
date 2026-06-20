@@ -1,6 +1,32 @@
 # Session Handoff
 
-_Last updated: 2026-05-29_
+_Last updated: 2026-06-20_
+
+## 2026-06-20 — haulyall marketplace / outreach / ads
+Decoded the request: "the hermes" = the Telegram bot `Ronsi95.hermes.bot`; its scheduled
+`haulyeah-lead-alert` cron was failing with `Response remained truncated after 3 continuation
+attempts` (alert payload outgrew Telegram's limit).
+
+Shipped on branch `claude/haulyall-marketplace-outreach-il62wq`:
+- `agents/lead_alert.py` — `build_digest()`: urgency-ranked, hard-capped, "+N more" footer →
+  fixes the truncation. Surfaced as `/digest`.
+- `agents/marketing.py` — DFW outreach scripts (F-150 + drop-off container), Meta ad copy
+  (3 variants), 5 carousel cards. Surfaced as `/pitch [city]` and `/ads`.
+- `MARKETING_PLAYBOOK.md` — human-readable copy + Ads Manager targeting.
+- `config.py` — expanded default `FB_SEARCH_KEYWORDS` for container/drop-off jobs.
+- Tests: +26 (lead_alert 9, marketing 17). Local run: 97 pass (2 files need playwright/
+  anthropic, not installed in the cloud container — pre-existing, unrelated).
+
+Could NOT do, by design/constraint:
+- Log into the owner's FB account / browse Marketplace live — no browser in the cloud
+  container and it's against Meta's terms to drive a personal account from an agent. The
+  existing `--login` scraper flow is the supported path; owner runs it locally once.
+- Create live Meta ads — needs the owner's ad account + Page approval; copy is ready and the
+  ads MCP can push it once approved.
+
+---
+
+_Earlier — 2026-05-29_
 
 ## What this session did
 Adapted the generic "RONSI95 AI OS" master prompt (Parts 1 & 2) onto the **real**

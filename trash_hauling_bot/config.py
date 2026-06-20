@@ -59,7 +59,9 @@ class Config:
     fb_search_keywords: List[str] = field(
         default_factory=lambda: _list_env(
             "FB_SEARCH_KEYWORDS",
-            "trash hauling,junk removal,cleanout,debris removal,haul away",
+            "trash hauling,junk removal,cleanout,debris removal,haul away,"
+            "dumpster rental,roll off,construction debris,estate cleanout,"
+            "garage cleanout,foreclosure cleanout,yard waste removal,trash pickup",
         )
     )
     fb_profile_dir: str = field(default_factory=lambda: os.getenv("FB_PROFILE_DIR", "data/fb_profile"))

@@ -1,6 +1,19 @@
 # Active Tasks
 
-_Last updated: 2026-05-29_
+_Last updated: 2026-06-20_
+
+## Done (2026-06-20 — haulyall marketplace/outreach session)
+- [x] Fix "hermes" lead-alert truncation: `agents/lead_alert.py` bounded digest (+9 tests)
+- [x] `/digest` command surfaces the length-safe alert in Telegram
+- [x] DFW outreach + Meta ad copy + carousel: `agents/marketing.py` (+17 tests)
+- [x] `/pitch [city]` and `/ads` Telegram commands
+- [x] `MARKETING_PLAYBOOK.md` — copy/paste assets + Ads Manager targeting notes
+- [x] Expanded `FB_SEARCH_KEYWORDS` default for container/drop-off haul jobs
+
+## Next up (needs owner)
+- [ ] Run `python -m agents.scraper --login` locally once (browser needed; can't be done in CI)
+- [ ] Approve pushing Meta ads live (needs Meta ad account + Page) → then ads MCP can create them
+- [ ] Point the external `haulyeah-lead-alert` cron at the compact digest output
 
 ## Done (this session)
 - [x] Quote estimator `agents/quote.py` (+16 tests)

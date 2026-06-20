@@ -1,5 +1,28 @@
 # Decisions
 
+## 2026-06-20 — "Hermes" lead-alert truncation fix = length-bounded digest
+- **Decision:** Add `agents/lead_alert.build_digest()` and a `/digest` command that produce
+  a compact, urgency-ranked, hard-capped (`DEFAULT_MAX_CHARS=1200`) new-leads summary with a
+  "+N more" footer. **Reason:** The scheduled `haulyeah-lead-alert` cron in the Telegram
+  ("hermes") bot was failing with `RuntimeError: Response remained truncated after 3
+  continuation attempts` — the alert grew unbounded as leads piled up. Bounding the output
+  removes the truncation. The external cron should call this digest / request a compact
+  summary rather than dumping every lead.
+
+## 2026-06-20 — Marketing copy is code + a playbook, not live ad spend
+- **Decision:** Put DFW outreach scripts, Meta ad copy, and carousel cards in pure
+  `agents/marketing.py` (source of truth) surfaced via `/pitch` and `/ads`, plus a
+  human-readable `MARKETING_PLAYBOOK.md`. Do NOT auto-create live Meta campaigns.
+  **Reason:** Launching ads spends real money and needs the owner's Meta ad account + Page;
+  that stays an explicit, owner-approved step. The ads MCP can push these once approved.
+
+## 2026-06-20 — FB login stays a local, owner-run step
+- **Decision:** Keep the existing `python -m agents.scraper --login` flow; do not attempt to
+  log into the owner's Facebook account from automation/CI. **Reason:** No browser/display in
+  the cloud container, and driving a personal FB account login from an agent is both
+  impossible here and against Meta's terms. Expanded `FB_SEARCH_KEYWORDS` for container/
+  drop-off haul jobs instead.
+
 ## 2026-05-29 — Adapt the RONSI95 template, don't execute it literally
 - **Decision:** Reconcile the generic master prompt against the real machine and build
   only the missing, infra-available pieces into the existing repos.

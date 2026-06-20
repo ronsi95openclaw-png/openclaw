@@ -4,6 +4,8 @@ import traceback
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from agents.lead_alert import build_digest
+from agents.marketing import carousel_cards, container_pitch, meta_ad_copy, outreach_message
 from agents.review import review_request_message
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -49,6 +51,11 @@ _HELP = """
 
 *Reviews*
 /review `<lead_id>` — Generate a post-job Google review request message (for team to copy-send)
+
+*Marketing*
+/digest — Compact new-leads alert (length-safe summary)
+/pitch `[city]` — DFW outreach + drop-off container pitch to copy/send
+/ads — Meta ad copy + carousel cards for Ads Manager
 
 *System*
 /sync — Trigger calendar sync
@@ -110,6 +117,9 @@ class TrashHaulingBot:
         add(CommandHandler("sync", self._cmd_sync))
         add(CommandHandler("ping", self._cmd_ping))
         add(CommandHandler("review", self._cmd_review))
+        add(CommandHandler("digest", self._cmd_digest))
+        add(CommandHandler("pitch", self._cmd_pitch))
+        add(CommandHandler("ads", self._cmd_ads))
         add(CallbackQueryHandler(self._on_callback))
 
     async def _cmd_ping(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -146,6 +156,45 @@ class TrashHaulingBot:
             parse_mode="Markdown",
         )
         self._audit.log("telegram", "review_drafted", {"lead_id": lead_id})
+
+    @_require_auth
+    async def _cmd_digest(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Compact, length-bounded new-leads alert.
+
+        This is the message the scheduled lead-alert should send: it is capped
+        so it never overflows Telegram's limit (which is what was truncating the
+        cron job). Shows the highest-urgency new leads first.
+        """
+        leads = self._sheets.get_leads_by_status("new")
+        await update.message.reply_text(build_digest(leads), parse_mode="Markdown")
+        self._audit.log("telegram", "digest_sent", {"new_leads": len(leads)})
+
+    @_require_auth
+    async def _cmd_pitch(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """DFW outreach message + drop-off container pitch to copy/send."""
+        city = sanitize_text(" ".join(ctx.args), max_length=40) if ctx.args else ""
+        msg = outreach_message(city=city or None)
+        pitch = container_pitch(city=city or None)
+        await update.message.reply_text(
+            f"*Outreach (copy/send):*\n{msg}\n\n*Container pitch:*\n{pitch}",
+            parse_mode="Markdown",
+        )
+        self._audit.log("telegram", "pitch_drafted", {"city": city})
+
+    @_require_auth
+    async def _cmd_ads(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Return Meta ad copy + carousel cards for Ads Manager."""
+        parts = ["*Meta Ad Copy*"]
+        for ad in meta_ad_copy():
+            parts.append(
+                f"\n*{ad['name']}*\n{ad['primary_text']}\n"
+                f"_Headline:_ {ad['headline']}\n_Desc:_ {ad['description']} | CTA: {ad['cta']}"
+            )
+        parts.append("\n*Carousel Cards*")
+        for i, card in enumerate(carousel_cards(), 1):
+            parts.append(f"{i}. *{card['headline']}* — {card['body']}")
+        await update.message.reply_text("\n".join(parts), parse_mode="Markdown")
+        self._audit.log("telegram", "ads_drafted", {})
 
     async def _on_error(self, update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Unhandled exception in handler:\n%s", traceback.format_exc())
