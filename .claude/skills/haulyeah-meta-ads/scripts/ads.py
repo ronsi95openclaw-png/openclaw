@@ -47,6 +47,7 @@ def main() -> int:
     for i, card in enumerate(cards, 1):
         print(f"{i}. {card['headline']} — {card['body']}")
         print(f"   image: {card['image_hint']}")
+        print(f"   prompt: {card['image_prompt']}")
     return 0
 
 

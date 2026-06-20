@@ -30,6 +30,14 @@ _VALUE_PROPS = [
     "we do the loading and the responsible disposal",
 ]
 
+# Shared visual style appended to every carousel image prompt so the 5 cards
+# look like one branded set. Square (1:1) suits a Meta carousel slot.
+_IMAGE_STYLE = (
+    "Photorealistic advertising photo, bright natural daylight, clean and "
+    "professional, vibrant but realistic colors, 1:1 square composition with "
+    "uncluttered space for a text overlay, no visible logos or readable text."
+)
+
 
 # ------------------------------------------------------------------ #
 # Outreach — for replying to Marketplace / lead inquiries             #
@@ -138,33 +146,60 @@ def carousel_cards() -> List[Dict[str, str]]:
     """Five carousel cards, one service angle each.
 
     `headline` is the card title (Meta limit ~40 chars), `body` is suggested
-    on-image/caption copy, `image_hint` guides the creative for each slot.
+    on-image/caption copy, `image_hint` is a short creative direction, and
+    `image_prompt` is a ready-to-paste text-to-image prompt (share brand style
+    via `_IMAGE_STYLE`) for whatever generator you use.
     """
     return [
         {
             "headline": "Junk Removal, Done For You",
             "body": "We load it, haul it, and dispose of it. You don't lift a thing.",
             "image_hint": "Crew loading furniture into an F-150 in a driveway",
+            "image_prompt": (
+                "Two friendly uniformed haulers lifting an old couch and a mattress into "
+                "the bed of a clean white Ford F-150 pickup in a suburban driveway, sunny "
+                f"morning, neat Texas home in the background. {_IMAGE_STYLE}"
+            ),
         },
         {
             "headline": "Drop-Off Container",
             "body": "We drop it, you fill it on your schedule, we pick it up.",
             "image_hint": "Trailer container set on a residential driveway",
+            "image_prompt": (
+                "A clean open-top dump trailer / roll-off-style container parked on a "
+                "residential driveway next to a white Ford F-150, ready to be loaded, tidy "
+                f"suburban Texas neighborhood, bright daylight. {_IMAGE_STYLE}"
+            ),
         },
         {
             "headline": "Cleanouts of Any Size",
             "body": "Garage, estate, foreclosure, attic — we clear it all out.",
             "image_hint": "Before/after of a cleared-out garage",
+            "image_prompt": (
+                "Split before-and-after of a residential garage: left side cluttered with "
+                "junk and boxes, right side completely clean and empty, same garage, clear "
+                f"divider down the middle. {_IMAGE_STYLE}"
+            ),
         },
         {
             "headline": "Construction & Reno Debris",
             "body": "Drywall, lumber, old fixtures — hauled away fast.",
             "image_hint": "Truck bed loaded with construction debris",
+            "image_prompt": (
+                "The bed of a white Ford F-150 neatly loaded with construction debris — "
+                "broken drywall, scrap lumber, an old sink — parked outside a home being "
+                f"renovated, daytime. {_IMAGE_STYLE}"
+            ),
         },
         {
             "headline": "Free Quote, Same-Week Pickup",
             "body": "Serving all of DFW. Message us — we'll get you scheduled.",
             "image_hint": "Smiling crew by the truck with HaulYeah branding",
+            "image_prompt": (
+                "Two smiling haulers in matching caps standing confidently in front of a "
+                "clean white Ford F-150, arms crossed, friendly approachable vibe, suburban "
+                f"Dallas-Fort Worth street, blue sky. {_IMAGE_STYLE}"
+            ),
         },
     ]
 

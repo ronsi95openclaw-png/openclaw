@@ -79,8 +79,14 @@ class TestCarouselCards:
 
     def test_each_card_has_fields(self):
         for card in carousel_cards():
-            for field in ("headline", "body", "image_hint"):
+            for field in ("headline", "body", "image_hint", "image_prompt"):
                 assert card.get(field), f"missing {field}"
+
+    def test_image_prompts_share_brand_style(self):
+        # Every prompt should carry the shared style suffix so the set is cohesive.
+        for card in carousel_cards():
+            assert "Photorealistic" in card["image_prompt"]
+            assert "1:1" in card["image_prompt"]
 
     def test_card_headlines_within_limit(self):
         for card in carousel_cards():

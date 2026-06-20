@@ -75,9 +75,37 @@ One image per card. `image_hint` is direction for the creative.
 
 In Telegram: `/ads` prints all of the above.
 
+### Image prompts (paste into your image generator)
+
+Run each in Higgsfield / Midjourney / Canva, etc. All 5 share a style suffix so they
+look like one branded set (photorealistic, bright daylight, 1:1 square, clear space for
+a text overlay, no readable logos). `python .claude/skills/haulyeah-meta-ads/scripts/ads.py`
+prints these too.
+
+1. **Junk Removal** — Two friendly uniformed haulers lifting an old couch and a mattress into the bed of a clean white Ford F-150 in a suburban driveway, sunny morning, neat Texas home behind.
+2. **Drop-Off Container** — A clean open-top dump trailer / roll-off container on a residential driveway next to a white F-150, ready to load, tidy suburban Texas neighborhood, bright daylight.
+3. **Cleanouts** — Split before/after of a residential garage: left cluttered with junk and boxes, right completely clean and empty, same garage, clear center divider.
+4. **Construction Debris** — Bed of a white F-150 neatly loaded with construction debris (broken drywall, scrap lumber, an old sink) outside a home being renovated, daytime.
+5. **Free Quote / Crew** — Two smiling haulers in matching caps in front of a clean white F-150, arms crossed, friendly approachable vibe, suburban DFW street, blue sky.
+
 ---
 
-## 4. Targeting suggestions (for Ads Manager)
+## 4. Go-live checklist (carousel campaign)
+
+The campaign payload is built by
+`python .claude/skills/haulyeah-meta-ads/scripts/ads.py --campaign-spec --ad-account-id <ID> --page-id <PAGE_ID> --link-url <QUOTE_URL>`
+(everything PAUSED). To actually launch:
+
+1. **Create a HaulYeah Facebook Page** (a carousel ad must run from a Page).
+2. Confirm the ad account shows `is_ads_mcp_enabled: true` (Meta is still rolling Ads MCP
+   out to this account) and has a payment method.
+3. Generate the 5 images above, upload them, collect each `image_hash`.
+4. Run the `--campaign-spec` command with your real account/page/URL, then create
+   campaign → ad set → creative → ad and preview before un-pausing.
+
+---
+
+## 5. Targeting suggestions (for Ads Manager)
 
 - **Geo:** Dallas–Fort Worth metro + 25–40 mi radius (Dallas, Fort Worth, Arlington,
   Plano, Irving, Garland, Frisco, McKinney, Denton, Mesquite, Carrollton, Richardson,
