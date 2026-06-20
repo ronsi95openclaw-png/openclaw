@@ -33,8 +33,11 @@ The hermes Telegram bot (`Ronsi95.hermes.bot`) is a self-hosted Claude Code agen
 this repo. Two pinned files keep it from the "Response remained truncated after 3 continuation
 attempts" failure that hit *every* message (not just the lead cron):
 - `.claude/settings.json` — `CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192` so a turn finishes instead of
-  stopping at `max_tokens` and exhausting the harness's continuation retries; and
+  stopping at `max_tokens` and exhausting the harness's continuation retries; `MAX_THINKING_TOKENS=2048`
+  so extended thinking can't eat the whole output budget (why even "Hi" was truncating); and
   `enableAllProjectMcpServers=false` so project MCP servers don't auto-load.
+- DEPLOY: the bot only picks this up after the host pulls the branch/merge **and restarts** the
+  process. A `max_tokens`/thinking env set on the host launch command overrides this file.
 - `.mcp.json` — pinned to `{}` (no project MCP servers). The HaulYeah skills call local Python,
   not MCP, so the bot needs none day-to-day.
 - NOTE: this only controls *project*-level config. Connectors attached at the **account** level
