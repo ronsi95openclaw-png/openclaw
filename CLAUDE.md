@@ -28,6 +28,19 @@ HaulYeah skills the hermes bot can invoke (each wraps real code in `trash_haulin
 - `haulyeah-meta-ads` — generate FB/IG ad copy + carousel; live ads are owner-gated.
 - `haulyeah-marketplace-scan` — scan FB Marketplace for hauling jobs (needs one-time human FB login).
 
+## Hermes runtime (`.claude/settings.json`, `.mcp.json`)
+The hermes Telegram bot (`Ronsi95.hermes.bot`) is a self-hosted Claude Code agent rooted at
+this repo. Two pinned files keep it from the "Response remained truncated after 3 continuation
+attempts" failure that hit *every* message (not just the lead cron):
+- `.claude/settings.json` — `CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192` so a turn finishes instead of
+  stopping at `max_tokens` and exhausting the harness's continuation retries; and
+  `enableAllProjectMcpServers=false` so project MCP servers don't auto-load.
+- `.mcp.json` — pinned to `{}` (no project MCP servers). The HaulYeah skills call local Python,
+  not MCP, so the bot needs none day-to-day.
+- NOTE: this only controls *project*-level config. Connectors attached at the **account** level
+  (Meta Ads, Higgsfield, crypto, Supabase, Gmail, Drive, GitHub) must be trimmed on the host —
+  the repo can't detach them. Fewer connectors = leaner context = less truncation risk.
+
 ## Rules
 - Never hardcode secrets — use `.env`.
 - **Archive, don't delete** (`_Archive/`); retired clutter lives there and is git-ignored.

@@ -1,5 +1,19 @@
 # Decisions
 
+## 2026-06-20 — Hermes bricked on EVERY message → pin lean harness config in-repo
+- **Symptom:** A screenshot showed `Ronsi95.hermes.bot` returning `Response remained truncated
+  after 3 continuation attempts` on *every* message, including "Hi" — not just the lead cron.
+- **Diagnosis:** That error string is raised nowhere in this repo (not in `core/brain.py` or
+  `content/receiver.py`, which truncates differently with `"... (truncated)"`). It's a
+  **Claude Code/Agent harness** error: the bot is a self-hosted agent rooted at this repo, and
+  a turn was stopping at `max_tokens` then exhausting the harness's 3 continuation retries.
+  Made worse by ~300 MCP tool definitions (account connectors) bloating context.
+- **Decision:** Pin a lean config the bot reads on pull:
+  `.claude/settings.json` (`CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192`, `enableAllProjectMcpServers=false`)
+  and `.mcp.json` (`{}`). Added `!.claude/settings.json` to `.gitignore` so it's tracked.
+- **Limit:** Repo config only governs *project*-level MCP. Account-level connectors must be
+  trimmed on the host; the repo can't detach them.
+
 ## 2026-06-20 — "Hermes" lead-alert truncation fix = length-bounded digest
 - **Decision:** Add `agents/lead_alert.build_digest()` and a `/digest` command that produce
   a compact, urgency-ranked, hard-capped (`DEFAULT_MAX_CHARS=1200`) new-leads summary with a
