@@ -9,6 +9,8 @@ _Last updated: 2026-06-20_
 - [x] `/pitch [city]` and `/ads` Telegram commands
 - [x] `MARKETING_PLAYBOOK.md` — copy/paste assets + Ads Manager targeting notes
 - [x] Expanded `FB_SEARCH_KEYWORDS` default for container/drop-off haul jobs
+- [x] Packaged 4 hermes skills in `.claude/skills/` (lead-digest, outreach, meta-ads,
+      marketplace-scan), each wrapping the real modules + a runnable script
 
 ## Next up (needs owner)
 - [ ] Run `python -m agents.scraper --login` locally once (browser needed; can't be done in CI)
