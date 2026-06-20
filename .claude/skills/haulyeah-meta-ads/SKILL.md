@@ -24,16 +24,30 @@ with Ads Manager targeting notes (DFW geo, audience, objective).
 
 ## Step 2 — Create LIVE ads (owner-gated)
 **Do not create live ads without explicit owner approval.** Live ads spend real money and
-need the owner's Meta ad account and Page. When approved:
+need the owner's Meta ad account and Page.
 
-1. Confirm the ad account id and Page with the owner (`ads_get_ad_accounts`, `ads_get_user_pages`).
-2. Build images for the carousel cards (use the `image_hint` on each card; the Higgsfield
-   `generate_image` tool can produce them), then upload via `ads_get_ad_images` / image upload.
-3. Create the campaign → ad set → creative → ad with the Meta ads tools
-   (`ads_create_campaign`, `ads_create_ad_set`, `ads_create_creative`, `ads_create_ad`).
-   Map each ad variant's `primary_text`/`headline`/`description`/`cta` onto the creative's
-   `object_story_spec`. For the carousel, one card per `child_attachment`.
-4. Preview with `ads_get_ad_preview` and show the owner before activating.
+### Preconditions (check first — these have blocked it before)
+- `ads_get_ad_accounts` → the chosen account must have `is_ads_mcp_enabled: true`. If false
+  ("Ads MCP is gradually being rolled out"), the API will reject object creation — stop and
+  tell the owner the account isn't enabled yet.
+- `ads_get_user_pages` / `ads_get_ad_account_pages` → there must be at least one Page. A
+  carousel creative requires a `page_id`; with no Page you cannot build the ad.
+
+### Build the payloads (one command)
+```
+python .claude/skills/haulyeah-meta-ads/scripts/ads.py --campaign-spec \
+  --ad-account-id <ID> --page-id <PAGE_ID> --link-url <QUOTE_URL>
+```
+This prints ready-to-submit `campaign` / `ad_set` / `creative` / `ad` bodies (all `PAUSED`),
+with one `child_attachment` per carousel card. Source: `marketing.meta_carousel_campaign_spec`.
+
+### Submit
+1. Generate 5 card images (use each card's `image_hint`; Higgsfield `generate_image`), then
+   upload them and collect the `image_hash` for each — pass them as `image_hashes` to the
+   spec builder so the `IMAGE_HASH_n` placeholders are replaced.
+2. `ads_create_campaign` → `ads_create_ad_set` → `ads_create_creative` → `ads_create_ad`,
+   feeding the IDs forward (campaign_id into the ad set, etc.).
+3. Preview with `ads_get_ad_preview` and show the owner. Activate only on explicit go.
 
 ## Rules
 - Copy generation: fine to run anytime.

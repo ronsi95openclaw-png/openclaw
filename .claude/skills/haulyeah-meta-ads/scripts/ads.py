@@ -8,16 +8,29 @@ import sys
 _BOT = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "trash_hauling_bot")
 sys.path.insert(0, os.path.abspath(_BOT))
 
-from agents.marketing import carousel_cards, meta_ad_copy
+from agents.marketing import carousel_cards, meta_ad_copy, meta_carousel_campaign_spec
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    ap.add_argument("--campaign-spec", action="store_true",
+                    help="emit the Meta Graph API campaign/adset/creative/ad payloads (PAUSED)")
+    ap.add_argument("--ad-account-id", default="AD_ACCOUNT_ID")
+    ap.add_argument("--page-id", default="PAGE_ID")
+    ap.add_argument("--link-url", default="https://example.com/quote")
     args = ap.parse_args()
 
     ads = meta_ad_copy()
     cards = carousel_cards()
+
+    if args.campaign_spec:
+        print(json.dumps(meta_carousel_campaign_spec(
+            ad_account_id=args.ad_account_id,
+            page_id=args.page_id,
+            link_url=args.link_url,
+        ), indent=2))
+        return 0
 
     if args.json:
         print(json.dumps({"ads": ads, "carousel": cards}, indent=2))

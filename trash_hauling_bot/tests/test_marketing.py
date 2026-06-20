@@ -9,6 +9,7 @@ from agents.marketing import (
     carousel_cards,
     container_pitch,
     meta_ad_copy,
+    meta_carousel_campaign_spec,
     outreach_message,
     value_props,
 )
@@ -84,6 +85,40 @@ class TestCarouselCards:
     def test_card_headlines_within_limit(self):
         for card in carousel_cards():
             assert len(card["headline"]) <= 40
+
+
+class TestCarouselCampaignSpec:
+    def test_has_all_four_objects(self):
+        spec = meta_carousel_campaign_spec()
+        for key in ("campaign", "ad_set", "creative", "ad"):
+            assert key in spec
+
+    def test_everything_paused(self):
+        spec = meta_carousel_campaign_spec()
+        assert spec["campaign"]["status"] == "PAUSED"
+        assert spec["ad_set"]["status"] == "PAUSED"
+        assert spec["ad"]["status"] == "PAUSED"
+
+    def test_one_child_attachment_per_card(self):
+        spec = meta_carousel_campaign_spec()
+        children = spec["creative"]["object_story_spec"]["link_data"]["child_attachments"]
+        assert len(children) == len(carousel_cards())
+
+    def test_ids_threaded_through(self):
+        spec = meta_carousel_campaign_spec(ad_account_id="123", page_id="456")
+        assert spec["campaign"]["ad_account_id"] == "123"
+        assert spec["creative"]["object_story_spec"]["page_id"] == "456"
+
+    def test_image_hashes_applied(self):
+        spec = meta_carousel_campaign_spec(image_hashes=["h1", "h2", "h3", "h4", "h5"])
+        children = spec["creative"]["object_story_spec"]["link_data"]["child_attachments"]
+        assert [c["image_hash"] for c in children] == ["h1", "h2", "h3", "h4", "h5"]
+
+    def test_child_uses_card_copy(self):
+        spec = meta_carousel_campaign_spec()
+        first = spec["creative"]["object_story_spec"]["link_data"]["child_attachments"][0]
+        assert first["name"] == carousel_cards()[0]["headline"]
+        assert first["description"] == carousel_cards()[0]["body"]
 
 
 class TestValuePropsAndCities:

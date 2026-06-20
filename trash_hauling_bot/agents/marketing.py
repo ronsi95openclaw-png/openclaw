@@ -172,3 +172,97 @@ def carousel_cards() -> List[Dict[str, str]]:
 def value_props() -> List[str]:
     """The reusable list of differentiators (outreach + ad bullet points)."""
     return list(_VALUE_PROPS)
+
+
+# ------------------------------------------------------------------ #
+# Meta carousel campaign payload                                      #
+# ------------------------------------------------------------------ #
+
+# Map our friendly CTA tokens to Meta's call_to_action types.
+_CTA_TYPES = {"GET_QUOTE", "MESSAGE_PAGE", "LEARN_MORE", "CALL_NOW", "BOOK_TRAVEL"}
+
+# DFW metro center (Dallas) — used for the default geo target radius.
+_DFW_LAT, _DFW_LNG = 32.7767, -96.7970
+
+
+def meta_carousel_campaign_spec(
+    ad_account_id: str = "AD_ACCOUNT_ID",
+    page_id: str = "PAGE_ID",
+    link_url: str = "https://example.com/quote",
+    daily_budget_cents: int = 1000,
+    image_hashes: Optional[List[str]] = None,
+) -> Dict:
+    """Build the Meta Graph API payloads for the 5-card carousel ad.
+
+    Returns campaign / ad_set / creative / ad request bodies ready to pass to
+    `ads_create_campaign`, `ads_create_ad_set`, `ads_create_creative`,
+    `ads_create_ad`. Everything is created PAUSED so nothing spends until a human
+    activates it. `image_hashes` (one per card, from uploaded creatives) fills
+    each child_attachment; placeholders are used when not yet uploaded.
+    """
+    cards = carousel_cards()
+    hashes = image_hashes or [f"IMAGE_HASH_{i + 1}" for i in range(len(cards))]
+
+    child_attachments = [
+        {
+            "link": link_url,
+            "name": card["headline"],          # card title
+            "description": card["body"],         # card subtext
+            "image_hash": hashes[i] if i < len(hashes) else f"IMAGE_HASH_{i + 1}",
+            "call_to_action": {"type": "GET_QUOTE", "value": {"link": link_url}},
+        }
+        for i, card in enumerate(cards)
+    ]
+
+    # Lead with the container message — it's the strongest differentiator.
+    primary = next(
+        (a["primary_text"] for a in meta_ad_copy() if a["name"] == "container_dropoff"),
+        meta_ad_copy()[0]["primary_text"],
+    )
+
+    return {
+        "campaign": {
+            "ad_account_id": ad_account_id,
+            "name": f"{BUSINESS_NAME} — {SERVICE_AREA} Carousel",
+            "objective": "OUTCOME_TRAFFIC",
+            "status": "PAUSED",
+            "special_ad_categories": [],
+        },
+        "ad_set": {
+            "ad_account_id": ad_account_id,
+            "name": f"{BUSINESS_NAME} — DFW homeowners",
+            "daily_budget": daily_budget_cents,
+            "billing_event": "IMPRESSIONS",
+            "optimization_goal": "LINK_CLICKS",
+            "status": "PAUSED",
+            "targeting": {
+                "geo_locations": {
+                    "custom_locations": [
+                        {"latitude": _DFW_LAT, "longitude": _DFW_LNG,
+                         "radius": 40, "distance_unit": "mile"}
+                    ]
+                },
+                "age_min": 28,
+                "age_max": 65,
+            },
+        },
+        "creative": {
+            "ad_account_id": ad_account_id,
+            "name": f"{BUSINESS_NAME} carousel creative",
+            "object_story_spec": {
+                "page_id": page_id,
+                "link_data": {
+                    "link": link_url,
+                    "message": primary,
+                    "child_attachments": child_attachments,
+                    "multi_share_optimized": True,
+                    "multi_share_end_card": True,
+                },
+            },
+        },
+        "ad": {
+            "ad_account_id": ad_account_id,
+            "name": f"{BUSINESS_NAME} carousel ad",
+            "status": "PAUSED",
+        },
+    }
