@@ -1,7 +1,9 @@
 """OpenClaw Local Dashboard — http://localhost:8080
 
 Runs alongside the Telegram bot as a separate process.
-Reads data files but never writes — safe to run concurrently.
+Reads the bot's data files but never writes them — safe to run concurrently.
+(The Hermes Mission Control panel writes only to its own data/hermes/ namespace,
+so it never collides with the bot's files.)
 
 Usage:
     python dashboard/app.py
@@ -15,7 +17,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, render_template_string
+from flask import Flask, jsonify, redirect, render_template_string, request
+
+# Make project root importable so `core.hermes` resolves when run directly.
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from core import hermes
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 ROOT     = Path(__file__).parent.parent
@@ -185,6 +191,32 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .tag.green { background: #00ff8820; color: #00ff88; border: 1px solid #00ff8840; }
   .tag.red   { background: #ff444420; color: #ff4444; border: 1px solid #ff444440; }
   .tag.amber { background: #ffaa0020; color: #ffaa00; border: 1px solid #ffaa0040; }
+  /* ── Hermes Mission Control ── */
+  .hermes-head { display: flex; align-items: baseline; gap: 12px; margin: 28px 0 12px; }
+  .hermes-head h2 { color: #7aa2ff; font-size: 1.1rem; letter-spacing: 0.5px; }
+  .hermes-head .sub { color: #555; font-size: 0.75rem; }
+  .stat-strip { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+  .stat { background: #15151f; border: 1px solid #262636; border-radius: 8px; padding: 10px 16px; min-width: 90px; }
+  .stat .n { font-size: 1.4rem; font-family: monospace; font-weight: bold; }
+  .stat .l { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 1px; color: #666; }
+  .brief { background: linear-gradient(135deg,#141426,#1a1a2e); border: 1px solid #2d2d4a; border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+  .brief .who { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; color: #7aa2ff; margin-bottom: 8px; }
+  .brief .body { font-size: 0.92rem; line-height: 1.5; color: #d8d8e8; }
+  .agent { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #222; }
+  .agent:last-child { border-bottom: none; }
+  .agent .meta { font-size: 0.72rem; color: #666; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.5px; }
+  .pill.online  { background: #00ff8820; color: #00ff88; }
+  .pill.busy    { background: #00ff8820; color: #00ff88; }
+  .pill.idle    { background: #ffaa0020; color: #ffaa00; }
+  .pill.error   { background: #ff444420; color: #ff4444; }
+  .pill.offline { background: #44444430; color: #888; }
+  .mission { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid #1e1e1e; font-size: 0.85rem; }
+  .mission:last-child { border-bottom: none; }
+  .mform { display: flex; gap: 6px; margin-top: 12px; }
+  .mform input { flex: 1; background: #0d0d0d; border: 1px solid #2a2a2a; border-radius: 6px; padding: 6px 10px; color: #e0e0e0; font-size: 0.8rem; }
+  .mform button, .mbtn { background: #1f3a5f; color: #7aa2ff; border: 1px solid #2d4a7a; border-radius: 6px; padding: 6px 12px; font-size: 0.78rem; cursor: pointer; }
+  .mform button:hover, .mbtn:hover { background: #264a78; }
 </style>
 </head>
 <body>
@@ -195,7 +227,76 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   &nbsp;·&nbsp; Auto-refresh in <span id="cd">30</span>s
 </p>
 
+<!-- ════════ HERMES MISSION CONTROL ════════ -->
+<div class="hermes-head">
+  <h2>🛰️ Hermes Mission Control</h2>
+  <span class="sub">single pane of glass across the OpenClaw agent fleet</span>
+</div>
+
+<div class="stat-strip">
+  <div class="stat"><div class="n green">{{ fleet.online }}</div><div class="l">Online</div></div>
+  <div class="stat"><div class="n amber">{{ fleet.idle }}</div><div class="l">Idle</div></div>
+  <div class="stat"><div class="n">{{ fleet.offline }}</div><div class="l">Offline</div></div>
+  <div class="stat"><div class="n {% if fleet.errors %}red{% endif %}">{{ fleet.errors }}</div><div class="l">Errors</div></div>
+  <div class="stat"><div class="n">{{ fleet.tasks_completed }}</div><div class="l">Tasks</div></div>
+  <div class="stat"><div class="n {% if fleet.cost_usd > 0.01 %}amber{% else %}green{% endif %}">${{ "%.4f"|format(fleet.cost_usd) }}</div><div class="l">Cost</div></div>
+</div>
+
+<div class="brief">
+  <div class="who">🧠 Hermes AI Briefing
+    <span class="mbtn" style="float:right;padding:1px 8px" onclick="loadBrief(true)">↻ refresh</span>
+  </div>
+  <div class="body" id="brief">Loading fleet briefing…</div>
+</div>
+
 <div class="grid">
+
+  <!-- AGENT FLEET -->
+  <div class="card">
+    <h2>🤖 Agent Fleet</h2>
+    {% if agents %}
+      {% for a in agents %}
+      <div class="agent">
+        <div>
+          <span class="pill {{ a.live_status }}">{{ a.live_status }}</span>
+          &nbsp;<strong>{{ a.name }}</strong>
+          <div class="meta">{{ a.current_task or '—' }} · {{ a.last_seen_label }} · {{ a.source }}</div>
+        </div>
+        <div style="text-align:right">
+          <div class="val">{{ a.tasks_completed or 0 }} tasks</div>
+          <div class="meta">${{ "%.4f"|format(a.cost_usd or 0) }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="empty">No agents reporting. Bots POST heartbeats to <code>/api/agents/state</code>.</p>
+    {% endif %}
+  </div>
+
+  <!-- MISSION BACKLOG -->
+  <div class="card">
+    <h2>🎯 Mission Backlog</h2>
+    {% if missions %}
+      {% for m in missions %}
+      <div class="mission">
+        <span class="pill {{ 'online' if m.status=='active' else ('offline' if m.status=='done' else 'idle') }}">{{ m.status }}</span>
+        <span style="flex:1">{{ m.title }}{% if m.agent %} <span class="meta">· {{ m.agent }}</span>{% endif %}</span>
+        {% if m.status != 'done' %}
+        <form method="post" action="/hermes/mission/{{ m.id }}/{{ 'active' if m.status=='backlog' else 'done' }}" style="margin:0">
+          <button class="mbtn" type="submit">{{ '▶ start' if m.status=='backlog' else '✓ done' }}</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="empty">No missions yet. Add one below.</p>
+    {% endif %}
+    <form class="mform" method="post" action="/hermes/mission">
+      <input name="title" placeholder="New mission…" required>
+      <input name="agent" placeholder="agent" style="max-width:90px">
+      <button type="submit">+ Add</button>
+    </form>
+  </div>
 
   <!-- BOT STATUS -->
   <div class="card">
@@ -346,6 +447,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     if (t <= 0) { location.reload(); }
     else { el.textContent = t; }
   }, 1000);
+
+  // Lazy-load the Hermes AI briefing so the LLM call never blocks page render.
+  function loadBrief(force) {
+    const b = document.getElementById('brief');
+    if (force) b.textContent = 'Thinking…';
+    fetch('/hermes/ai' + (force ? '?force=1' : ''))
+      .then(r => r.json())
+      .then(d => { b.textContent = d.text + (d.age ? '  ·  ' + d.age : ''); })
+      .catch(() => { b.textContent = 'Briefing unavailable.'; });
+  }
+  loadBrief(false);
 </script>
 </body>
 </html>"""
@@ -370,7 +482,79 @@ def index():
         usage=usage, prices=prices, ollama=ollama, bot=bot,
         tasks=tasks, trades=trades, cache=cache,
         claude_ok=claude_ok, now=now,
+        agents=hermes.get_agents(),
+        fleet=hermes.fleet_summary(),
+        missions=hermes.get_missions(),
     )
+
+
+# ── Hermes Mission Control endpoints ──────────────────────────────────────
+
+def _hermes_authorized() -> bool:
+    """Heartbeat auth: open if HERMES_TOKEN unset, else require Bearer match."""
+    token = os.getenv("HERMES_TOKEN", "").strip()
+    if not token:
+        return True
+    auth = request.headers.get("Authorization", "")
+    return auth == f"Bearer {token}" or request.headers.get("X-Hermes-Token", "") == token
+
+
+@app.route("/api/agents/state", methods=["POST"])
+def api_agent_state():
+    """Hermes-compatible heartbeat ingestion. Agents POST their status here."""
+    if not _hermes_authorized():
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    agent_id = data.get("id") or data.get("agent_id") or data.get("name")
+    if not agent_id:
+        return jsonify({"error": "id (or name) is required"}), 400
+    try:
+        rec = hermes.record_heartbeat(
+            str(agent_id),
+            name=data.get("name"),
+            status=data.get("status", "online"),
+            current_task=data.get("current_task", "") or data.get("task", ""),
+            tasks_completed=data.get("tasks_completed"),
+            cost_usd=data.get("cost_usd") or data.get("cost"),
+            meta=data.get("meta"),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True, "agent": rec})
+
+
+@app.route("/api/hermes/state")
+def api_hermes_state():
+    """Read-only fleet snapshot as JSON."""
+    return jsonify({
+        "fleet": hermes.fleet_summary(),
+        "agents": hermes.get_agents(),
+        "missions": hermes.get_missions(),
+    })
+
+
+@app.route("/hermes/ai")
+def hermes_ai():
+    """Lazy AI briefing (LLM call) — fetched async so it never blocks render."""
+    return jsonify(hermes.hermes_ai_briefing(force=request.args.get("force") == "1"))
+
+
+@app.route("/hermes/mission", methods=["POST"])
+def hermes_add_mission():
+    title = (request.form.get("title") or "").strip()
+    if title:
+        hermes.add_mission(title, agent=request.form.get("agent", ""),
+                           notes=request.form.get("notes", ""))
+    return redirect("/")
+
+
+@app.route("/hermes/mission/<mission_id>/<status>", methods=["POST"])
+def hermes_set_mission(mission_id: str, status: str):
+    try:
+        hermes.set_mission_status(mission_id, status)
+    except ValueError:
+        pass
+    return redirect("/")
 
 
 if __name__ == "__main__":
