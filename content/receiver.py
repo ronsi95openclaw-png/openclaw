@@ -7,6 +7,7 @@ Just type anything to chat. Commands for structured tasks:
     /ask [question]    — same, explicit
     /plan [idea]       — structured business plan
     /research [topic]  — deep research breakdown
+    /workspace         — set this Telegram topic's workspace + operating rule
     /clear             — reset conversation memory
 
   Crypto & Markets:
@@ -64,6 +65,7 @@ from telegram.ext import (
 from core.brain import CLAWBOT_SYSTEM, ask_hybrid, classify_complexity, get_usage_today
 from core.conversation import add_message, clear_history, get_history
 from core import scheduler as sched
+from core import workspaces as ws
 from security.whitelist import is_authorized
 from security import audit
 from security.blocklist import is_blocked
@@ -77,6 +79,26 @@ _app: Optional[Application] = None
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _topic_id(update: Update) -> Optional[int]:
+    """Telegram topic (message_thread_id) for this update, or None for plain chats."""
+    msg = update.effective_message
+    if msg is None or not getattr(msg, "is_topic_message", False):
+        return None
+    return msg.message_thread_id
+
+
+def _workspace_prompt(update: Update) -> tuple[str, object, Optional[int]]:
+    """Resolve the active workspace for this update.
+
+    Returns ``(system_prompt, workspace, thread_id)`` so conversational
+    handlers can route to the right room with isolated context.
+    """
+    chat_id = update.effective_chat.id
+    thread_id = _topic_id(update)
+    workspace = ws.resolve(chat_id, thread_id)
+    return ws.system_prompt(CLAWBOT_SYSTEM, workspace), workspace, thread_id
 
 
 def _ping_ollama() -> str:
@@ -111,6 +133,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /ask [question]     — explicit Q&A\n"
         "  /plan [idea]        — structured action plan\n"
         "  /research [topic]   — deep research\n"
+        "  /workspace          — set this topic's room + rule\n"
         "  /clear              — reset memory\n\n"
         "<b>📈 Crypto:</b>\n"
         "  /market             — live prices + analysis\n"
@@ -141,19 +164,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     text    = update.message.text.strip()
     chat_id = update.effective_chat.id
+    system, workspace, thread_id = _workspace_prompt(update)
 
     thinking_msg = await update.message.reply_text(
         "<i>Thinking...</i>", parse_mode="HTML"
     )
 
-    history = get_history(chat_id)
-    add_message(chat_id, "user", text)
+    history = get_history(chat_id, thread_id)
+    add_message(chat_id, "user", text, thread_id)
 
     try:
-        response, brain = ask_hybrid(text, system=CLAWBOT_SYSTEM, history=history)
-        add_message(chat_id, "assistant", response)
+        response, brain = ask_hybrid(text, system=system, history=history)
+        add_message(chat_id, "assistant", response, thread_id)
         await thinking_msg.edit_text(
-            f"🦾 <b>ClawBot</b> <i>({brain})</i>\n\n{response}",
+            f"{workspace.emoji} <b>ClawBot · {workspace.name}</b> <i>({brain})</i>\n\n{response}",
             parse_mode="HTML",
         )
     except Exception as exc:
@@ -171,20 +195,21 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     prompt  = " ".join(context.args)
     chat_id = update.effective_chat.id
+    system, workspace, thread_id = _workspace_prompt(update)
     complexity  = classify_complexity(prompt)
     brain_label = "Claude Haiku ⚡" if complexity == "complex" else "Ollama 🧠"
 
     thinking_msg = await update.message.reply_text(
         f"<i>Thinking via {brain_label}...</i>", parse_mode="HTML"
     )
-    history = get_history(chat_id)
-    add_message(chat_id, "user", prompt)
+    history = get_history(chat_id, thread_id)
+    add_message(chat_id, "user", prompt, thread_id)
 
     try:
-        response, brain = ask_hybrid(prompt, system=CLAWBOT_SYSTEM, history=history)
-        add_message(chat_id, "assistant", response)
+        response, brain = ask_hybrid(prompt, system=system, history=history)
+        add_message(chat_id, "assistant", response, thread_id)
         await thinking_msg.edit_text(
-            f"🦾 <b>ClawBot</b> <i>({brain})</i>\n\n{response}",
+            f"{workspace.emoji} <b>ClawBot · {workspace.name}</b> <i>({brain})</i>\n\n{response}",
             parse_mode="HTML",
         )
     except Exception as exc:
@@ -202,6 +227,7 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     idea         = " ".join(context.args)
     chat_id      = update.effective_chat.id
+    system, _workspace, thread_id = _workspace_prompt(update)
     thinking_msg = await update.message.reply_text(
         "<i>Building plan via Claude Haiku ⚡...</i>", parse_mode="HTML"
     )
@@ -218,12 +244,12 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Be direct and actionable. Format for Telegram."
     )
 
-    history = get_history(chat_id)
-    add_message(chat_id, "user", f"/plan {idea}")
+    history = get_history(chat_id, thread_id)
+    add_message(chat_id, "user", f"/plan {idea}", thread_id)
 
     try:
-        response, brain = ask_hybrid(prompt, system=CLAWBOT_SYSTEM, history=history, force="complex")
-        add_message(chat_id, "assistant", response)
+        response, brain = ask_hybrid(prompt, system=system, history=history, force="complex")
+        add_message(chat_id, "assistant", response, thread_id)
         await thinking_msg.edit_text(
             f"📋 <b>Plan: {idea[:40]}</b>\n\n{response}", parse_mode="HTML"
         )
@@ -242,6 +268,7 @@ async def cmd_research(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     topic        = " ".join(context.args)
     chat_id      = update.effective_chat.id
+    system, _workspace, thread_id = _workspace_prompt(update)
     thinking_msg = await update.message.reply_text(
         "<i>Researching via Claude Haiku ⚡...</i>", parse_mode="HTML"
     )
@@ -256,12 +283,12 @@ async def cmd_research(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Be direct. Format for Telegram."
     )
 
-    history = get_history(chat_id)
-    add_message(chat_id, "user", f"/research {topic}")
+    history = get_history(chat_id, thread_id)
+    add_message(chat_id, "user", f"/research {topic}", thread_id)
 
     try:
-        response, brain = ask_hybrid(prompt, system=CLAWBOT_SYSTEM, history=history, force="complex")
-        add_message(chat_id, "assistant", response)
+        response, brain = ask_hybrid(prompt, system=system, history=history, force="complex")
+        add_message(chat_id, "assistant", response, thread_id)
         await thinking_msg.edit_text(
             f"🔬 <b>Research: {topic[:40]}</b>\n\n{response}", parse_mode="HTML"
         )
@@ -274,8 +301,82 @@ async def cmd_research(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(update.effective_chat.id):
         return
-    clear_history(update.effective_chat.id)
-    await update.message.reply_text("🗑 Conversation memory cleared. Fresh start!")
+    thread_id = _topic_id(update)
+    clear_history(update.effective_chat.id, thread_id)
+    workspace = ws.resolve(update.effective_chat.id, thread_id)
+    await update.message.reply_text(
+        f"🗑 {workspace.label} memory cleared. Fresh start!"
+    )
+
+
+# ── /workspace ────────────────────────────────────────────────────────────────
+
+async def cmd_workspace(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show or manage the workspace bound to the current Telegram topic.
+
+    Usage:
+      /workspace               — show the active room + its operating rule
+      /workspace <key>         — bind this topic to a workspace template
+      /workspace rule <text>   — set a custom operating rule for this topic
+      /workspace reset         — drop the custom rule (back to the template)
+    """
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    chat_id   = update.effective_chat.id
+    thread_id = _topic_id(update)
+    args      = context.args or []
+
+    # No args → show current room + available templates.
+    if not args:
+        current = ws.resolve(chat_id, thread_id)
+        lines = [
+            f"<b>Active workspace:</b> {current.label}",
+            "",
+            f"<i>{current.rule}</i>",
+            "",
+            "<b>Available templates:</b>",
+        ]
+        for w in ws.list_workspaces():
+            lines.append(f"  {w.emoji} <code>{w.key}</code> — {w.name}")
+        lines += [
+            "",
+            "Bind this topic:  <code>/workspace &lt;key&gt;</code>",
+            "Custom rule:      <code>/workspace rule &lt;text&gt;</code>",
+            "Reset rule:       <code>/workspace reset</code>",
+        ]
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        return
+
+    sub = args[0].lower()
+
+    if sub == "rule":
+        rule = " ".join(args[1:]).strip()
+        if not rule:
+            await update.message.reply_text("Usage: /workspace rule [operating rule text]")
+            return
+        current = ws.set_rule(chat_id, thread_id, rule)
+        await update.message.reply_text(
+            f"✅ Custom rule set for {current.label}.", parse_mode="HTML"
+        )
+        return
+
+    if sub == "reset":
+        current = ws.clear_rule(chat_id, thread_id)
+        await update.message.reply_text(
+            f"♻️ Reverted {current.label} to its template rule.", parse_mode="HTML"
+        )
+        return
+
+    # Otherwise treat the first arg as a workspace key to bind.
+    try:
+        current = ws.bind_topic(chat_id, thread_id, sub)
+    except ValueError as exc:
+        await update.message.reply_text(f"⚠️ {exc}")
+        return
+    await update.message.reply_text(
+        f"✅ This topic is now the {current.label} workspace.", parse_mode="HTML"
+    )
 
 
 # ── /market ───────────────────────────────────────────────────────────────────
@@ -703,6 +804,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /ask [question]     — explicit Q&A\n"
         "  /plan [idea]        — structured plan\n"
         "  /research [topic]   — deep research\n"
+        "  /workspace          — set this topic's room + rule\n"
         "  /clear              — reset memory\n\n"
         "<b>📈 Crypto:</b>\n"
         "  /market              — live prices + analysis\n"
@@ -961,6 +1063,7 @@ def main() -> None:
     _app.add_handler(CommandHandler("plan",     cmd_plan))
     _app.add_handler(CommandHandler("research", cmd_research))
     _app.add_handler(CommandHandler("clear",    cmd_clear))
+    _app.add_handler(CommandHandler("workspace", cmd_workspace))
     _app.add_handler(CommandHandler("market",   cmd_market))
     _app.add_handler(CommandHandler("scan",     cmd_scan))
     _app.add_handler(CommandHandler("dca",      cmd_dca))
