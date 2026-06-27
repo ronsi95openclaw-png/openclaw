@@ -49,15 +49,19 @@
 
 ## BLOCKED — WAITING ON EXTERNAL
 
-### 6. Patch `infra/sync_to_vault.bat` to OPENCLAW_ prefix convention
-- **Status:** Hands-off notice received 2026-05-31 ~06:55 — another Claude Code session is reorganizing `Documents/Obsidian Vault/`. Don't touch the vault until cleared.
-- **What I did:** synced `memory/` to vault before the notice → un-prefixed duplicates of ACTIVE_TASKS/DECISIONS/SESSION_HANDOFF now sit alongside the prior reorg's `OPENCLAW_*.md` versions in `20 - OpenClaw/Memory/`. Reverted my un-committed `sync_to_vault.bat` naming patch.
-- **Steps after all-clear:**
-  1. See what naming convention the reorg session standardized on
-  2. Patch `infra/sync_to_vault.bat` to match (likely the `OPENCLAW_` prefix per prior commit `89b8ee2`)
-  3. Delete the un-prefixed duplicates I left in the vault if no longer wanted
-  4. Re-run `infra/sync_to_vault.bat`
-  5. From the vault: stage `20 - OpenClaw/Memory/` only, commit with `clawbot@openclaw.local`, push to `origin/main`
+### 6. ~~Patch `infra/sync_to_vault.bat` to OPENCLAW_ prefix convention~~ — DONE 2026-06-27
+- **Status:** ✅ Complete — `infra/sync_to_vault.bat` rewritten on branch `claude/graphify-ruflo-obsidian-0ebgmd`
+- **What changed:**
+  - Old `:sync` used bare `xcopy` (no prefix)
+  - New `:sync` uses a FOR loop: `ACTIVE_TASKS.md` → `OPENCLAW_ACTIVE_TASKS.md`, etc.
+  - `trash_hauling_bot/memory/*.md` → `HAULYALL_*.md` in vault `10 - HaulYA'LL!`
+  - `memory/*.md` → `OPENCLAW_*.md` in vault `20 - OpenClaw/Memory`
+  - `memory/strategy/*.md` → `OPENCLAW_*.md` in vault `20 - OpenClaw/Memory/Strategy`
+  - `graphify-out/GRAPH_REPORT.md` → `OPENCLAW_GRAPH_REPORT.md` in vault `20 - OpenClaw/Knowledge-Graph` ← NEW
+- **Still needed (manual, on Windows):**
+  1. Run `infra/sync_to_vault.bat` once to push the prefixed files to vault
+  2. Delete old un-prefixed duplicates in `20 - OpenClaw/Memory/` (ACTIVE_TASKS.md, DECISIONS.md, SESSION_HANDOFF.md)
+  3. From vault: stage `20 - OpenClaw/` only, commit with `clawbot@openclaw.local`, push `origin/main`
 
 ## DEFERRED INDEFINITELY
 

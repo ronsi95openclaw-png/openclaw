@@ -20,6 +20,23 @@ Entry format:
 
 ---
 
+## [2026-06-27 03:50] — A — Graphify + Hermes + Ruflo + vault sync patch
+**Trigger:** Ronnie requested graphify integration, Ruflo skill, Hermes daily agent, Obsidian vault sync
+**Action:**
+- Installed `graphifyy` (v0.8.49); wired via `graphify claude install` + `graphify claw install`
+- Created `agents/hermes.py` — daily knowledge-graph agent (09:30 UTC), `/hermes` Telegram command
+- Created `skills/ruflo/SKILL.md` — universal session rules skill (closes ACTIVE_TASKS #7)
+- Extended `core/scheduler.py` — Hermes APScheduler job (enable/disable/reload/run-now)
+- Extended `content/receiver.py` — `/hermes on|off|now` command handler
+- Patched `infra/sync_to_vault.bat` — OPENCLAW_ prefix for all memory files, HAULYALL_ for HaulYeah, new Knowledge-Graph section for graphify GRAPH_REPORT.md (closes ACTIVE_TASKS #6)
+- Updated `memory/ACTIVE_TASKS.md` — closed #6, #7, #8
+**Result:** Hermes ran successfully: 1253 nodes, 2221 edges, 61 communities. `memory/HERMES_GRAPH_REPORT.md` created. Graph hook fires on every Claude Code file read.
+**Files touched:** agents/hermes.py, agents/__init__.py, skills/ruflo/SKILL.md, core/scheduler.py, content/receiver.py, infra/sync_to_vault.bat, requirements.txt, .gitignore, CLAUDE.md, AGENTS.md, memory/ACTIVE_TASKS.md, memory/HERMES_GRAPH_REPORT.md
+**Git tag:** —
+**Approved by:** Ronnie (2026-06-27)
+**Status:** APPLIED
+---
+
 ## [2026-05-30 18:30] — A — Bootstrap memory/ directory
 **Trigger:** next_session workflow assumed memory/ existed at the Claude-openclaw root; it did not
 **Action:** Created memory/ with scaffolding for CHANGES.md, DECISIONS.md, SESSION_HANDOFF.md, ACTIVE_TASKS.md
