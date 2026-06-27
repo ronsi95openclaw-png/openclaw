@@ -3,13 +3,19 @@
 Runs graphify on the codebase, writes a snapshot to memory/HERMES_GRAPH_REPORT.md
 (picked up by sync_to_vault.bat → Obsidian), and sends a Telegram digest.
 
+Two run modes:
+  update (default/daily) — `graphify update .`  — code re-extraction only, no LLM.
+  full                   — `graphify . --backend claude` — full extraction incl. docs.
+
 Usage:
     Scheduled daily via core/scheduler.py (HERMES_ENABLED=true in .env).
     Triggered on-demand via /hermes now in Telegram.
-    Direct: python -m agents.hermes
+    Direct:  python -m agents.hermes          # update mode
+             python -m agents.hermes --full   # full mode (needs ANTHROPIC_API_KEY)
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -39,11 +45,39 @@ def graphify_available() -> bool:
         return False
 
 
-def run_graphify(update_only: bool = True) -> tuple[bool, str]:
-    """Invoke graphify CLI on the project root. Returns (success, log_output)."""
-    cmd = ["graphify", str(_PROJECT_ROOT), "--wiki"]
-    if update_only:
-        cmd.append("--update")
+def _subprocess_env() -> dict:
+    """Build env for graphify subprocess — inherits current env + .env values."""
+    env = os.environ.copy()
+    dotenv_path = _PROJECT_ROOT / ".env"
+    if dotenv_path.exists():
+        for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, val = line.partition("=")
+                key = key.strip()
+                if key and key not in env:  # don't override already-set vars
+                    env[key] = val.strip().strip('"').strip("'")
+    return env
+
+
+def run_graphify(full: bool = False) -> tuple[bool, str]:
+    """Invoke graphify CLI on the project root. Returns (success, log_output).
+
+    Args:
+        full: If True, run full extraction (docs + code, needs ANTHROPIC_API_KEY).
+              If False (default/daily), run code-only update — no LLM required.
+    """
+    env = _subprocess_env()
+
+    if full:
+        # Full extraction: docs + code — requires LLM backend
+        api_key = env.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return False, "Full mode needs ANTHROPIC_API_KEY in .env"
+        cmd = ["graphify", str(_PROJECT_ROOT), "--backend", "claude", "--wiki"]
+    else:
+        # Daily update: code re-extraction only — no LLM needed
+        cmd = ["graphify", "update", str(_PROJECT_ROOT)]
 
     try:
         result = subprocess.run(
@@ -52,6 +86,7 @@ def run_graphify(update_only: bool = True) -> tuple[bool, str]:
             text=True,
             timeout=300,
             cwd=_PROJECT_ROOT,
+            env=env,
         )
         return result.returncode == 0, (result.stdout + result.stderr).strip()
     except subprocess.TimeoutExpired:
@@ -129,7 +164,9 @@ async def run_hermes(
 
     await _send("🧠 <b>Hermes</b> — scanning codebase, building knowledge graph…")
 
-    success, log = run_graphify(update_only=True)
+    # Code-only update by default (no LLM/API cost).
+    # Pass full=True to run_hermes() for a first-time full extraction with docs.
+    success, log = run_graphify(full=False)
 
     if not success:
         snippet = log[:400] if log else "unknown error"
@@ -170,8 +207,10 @@ if __name__ == "__main__":
         if not graphify_available():
             print("graphify not found. Install with: pip install graphifyy")
             sys.exit(1)
-        print("Running graphify on project root…")
-        ok, log = run_graphify(update_only="--full" not in sys.argv)
+        use_full = "--full" in sys.argv
+        mode_label = "full (docs + code, needs ANTHROPIC_API_KEY)" if use_full else "update (code only)"
+        print(f"Running graphify [{mode_label}]…")
+        ok, log = run_graphify(full=use_full)
         print(log or "(no output)")
         if not ok:
             sys.exit(1)
