@@ -4,6 +4,7 @@
 # when the content pipeline is enabled (e.g. INSTALL_CONTENT_DEPS=true).
 annotated-types==0.7.0
 anthropic
+graphifyy                   # Hermes knowledge-graph agent (CLI: graphify)
 anyio==4.13.0
 APScheduler==3.10.4
 certifi==2026.2.25

@@ -781,6 +781,58 @@ async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 
+# ── /hermes ───────────────────────────────────────────────────────────────────
+
+async def cmd_hermes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update.effective_chat.id):
+        return
+
+    chat_id = update.effective_chat.id
+    arg     = context.args[0].lower() if context.args else ""
+
+    if arg == "on":
+        scan_time = context.args[1] if len(context.args) > 1 else "09:30"
+        try:
+            cfg = sched.enable_hermes(chat_id, scan_time=scan_time)
+        except ValueError as exc:
+            await update.message.reply_text(f"❌ {exc}", parse_mode="HTML")
+            return
+        await update.message.reply_text(
+            f"🧠 <b>Hermes ENABLED</b>\n\n"
+            f"⏰ Daily run: <code>{cfg['scan_time']} UTC</code>\n"
+            f"📊 Builds graphify knowledge graph of the codebase\n"
+            f"📝 Syncs digest to <code>memory/HERMES_GRAPH_REPORT.md</code>\n"
+            f"🗂 Obsidian: <code>graphify-out/obsidian/</code>\n\n"
+            f"<i>Use /hermes off to disable. /hermes now to run immediately.</i>",
+            parse_mode="HTML",
+        )
+
+    elif arg == "off":
+        sched.disable_hermes()
+        await update.message.reply_text(
+            "🧠 <b>Hermes DISABLED</b>\n\nNo more daily knowledge-graph builds. Use /hermes on to re-enable.",
+            parse_mode="HTML",
+        )
+
+    elif arg == "now":
+        await update.message.reply_text("<i>🧠 Running Hermes now…</i>", parse_mode="HTML")
+        await sched.run_hermes_now(send_fn=_scheduler_send, chat_id=chat_id)
+
+    else:
+        cfg    = sched.get_hermes_status()
+        status = "ENABLED ✅" if cfg.get("enabled") else "DISABLED ❌"
+        await update.message.reply_text(
+            f"🧠 <b>Hermes Status: {status}</b>\n\n"
+            f"⏰ Daily run: <code>{cfg.get('scan_time', '09:30')} UTC</code>\n\n"
+            f"<b>Commands:</b>\n"
+            f"  /hermes on        — enable (09:30 UTC default)\n"
+            f"  /hermes on HH:MM  — custom daily time\n"
+            f"  /hermes off       — disable\n"
+            f"  /hermes now       — run knowledge-graph build immediately",
+            parse_mode="HTML",
+        )
+
+
 # ── /trades ───────────────────────────────────────────────────────────────────
 
 async def cmd_trades(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -951,7 +1003,8 @@ def main() -> None:
 
     sched.set_send_fn(_scheduler_send)
     sched.start_scheduler()
-    sched.reload_autotrade(from_env=bool(os.getenv("AUTOTRADE_ENABLED", "").strip()))   # re-register daily job if it was enabled before restart
+    sched.reload_autotrade(from_env=bool(os.getenv("AUTOTRADE_ENABLED", "").strip()))
+    sched.reload_hermes()
 
     _app = Application.builder().token(token).build()
 
@@ -974,6 +1027,7 @@ def main() -> None:
     _app.add_handler(CommandHandler("weather",  cmd_weather))
     _app.add_handler(CommandHandler("help",     cmd_help))
     _app.add_handler(CommandHandler("autotrade", cmd_autotrade))
+    _app.add_handler(CommandHandler("hermes",    cmd_hermes))
     _app.add_handler(CommandHandler("trades",    cmd_trades))
     _app.add_handler(CommandHandler("mode",      cmd_mode))
     _app.add_handler(CommandHandler("live",      cmd_live))

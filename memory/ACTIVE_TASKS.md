@@ -61,7 +61,15 @@
 
 ## DEFERRED INDEFINITELY
 
-### 7. Ruflo skill installation
-- **Status:** No `SKILL.md` on disk in any expected location
-- **Why deferred:** Lower priority than auth + daily routine; per-prompt hardcoded rules cover for now
-- **Action when ready:** Save Ruflo template to `skills/ruflo/SKILL.md`, install in Claude Code skills dir
+### 7. ~~Ruflo skill installation~~ — DONE 2026-06-27
+- **Status:** ✅ Complete — `skills/ruflo/SKILL.md` created on branch `claude/graphify-ruflo-obsidian-0ebgmd`
+- **Load path:** `skills/ruflo/SKILL.md` (Windows: `C:\Users\ronsi95openclaw\Claude-openclaw\skills\ruflo\SKILL.md`)
+- **Alt install:** copy to `%APPDATA%\Claude\skills\ruflo\SKILL.md` for global availability
+- **What's in it:** universal session rules, escalation hierarchy, memory paths, Hermes integration, session-end checklist
+
+### 8. Hermes knowledge-graph agent — DONE 2026-06-27
+- **Status:** ✅ Complete — `agents/hermes.py` + daily APScheduler job + `/hermes` Telegram command
+- **Enable:** `/hermes on` in Telegram (runs at 09:30 UTC daily)
+- **Manual:** `/hermes now` to trigger immediately
+- **Outputs:** `graphify-out/` (git-ignored) + `memory/HERMES_GRAPH_REPORT.md` (synced to vault via sync_to_vault.bat)
+- **Obsidian:** `graphify-out/obsidian/` — copy to vault `25 - AI/Knowledge-Graph/` after sync_to_vault.bat patch
