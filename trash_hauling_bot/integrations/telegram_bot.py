@@ -271,7 +271,7 @@ class TrashHaulingBot:
             return
         await update.message.reply_text(
             f"Outreach confirmed for lead `{entry['lead_id']}`.\n"
-            f"Use this URL to send the message: {entry.get('listing_url', 'N/A')}",
+            f"Send your message here: {entry.get('listing_url', 'N/A')}",
             parse_mode="Markdown",
         )
 
