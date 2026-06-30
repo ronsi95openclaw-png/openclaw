@@ -1,0 +1,9 @@
+{
+  "error": "No trades generated. Check kill-zone filter, data range, CSV format.",
+  "decisions": {
+    "skip": 500
+  },
+  "strategy_source": "bot.strategy",
+  "risk_guard_source": "in-file fallback",
+  "mandate_fallback": false
+}

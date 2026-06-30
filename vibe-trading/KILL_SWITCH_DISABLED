@@ -1,0 +1,10 @@
+KILL SWITCH CONVENTION (vibe-trading agent)
+===========================================
+The agent stops if a file named `KILL_SWITCH` exists in this directory.
+
+- KILL_SWITCH present      -> agent halts immediately (and auto-flattens if configured)
+- KILL_SWITCH absent       -> agent permitted to run (still paper-only until LIVE_MODE=true)
+
+This marker file (KILL_SWITCH_DISABLED) documents that the kill switch is
+currently NOT engaged. To engage it:  create a file named KILL_SWITCH here.
+To disengage:  delete KILL_SWITCH.

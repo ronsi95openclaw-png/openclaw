@@ -1,0 +1,67 @@
+{
+  "artifacts": [
+    {
+      "path": "artifacts/equity.csv",
+      "sha256": "e679c1e24fbb93d9fa6d9a3fad16a4c71ac7130b475d95339e1b54e382dc4e7c",
+      "size_bytes": 69236
+    },
+    {
+      "path": "artifacts/metrics.csv",
+      "sha256": "7cd0ba5c9ff72b9a992f8b0475dc67d46adf60230e24dbd50c9cb64a3e988aaa",
+      "size_bytes": 386
+    },
+    {
+      "path": "artifacts/ohlcv_BTC-USDT.csv",
+      "sha256": "4a651c17cedd1b90410138e7cb4258d9d1b4b74d64e0e69e2a698d081ecfd0e7",
+      "size_bytes": 42696
+    },
+    {
+      "path": "artifacts/positions.csv",
+      "sha256": "755dcf86d9d35301b73e48d9550b0ebe0e9f620593b9d35992e798c52d86104c",
+      "size_bytes": 11722
+    },
+    {
+      "path": "artifacts/trades.csv",
+      "sha256": "ee60b3e6b3626fe7feafc69cf72afa8b07a00ae89f4fee7e9cb78fa37c589a40",
+      "size_bytes": 2233
+    }
+  ],
+  "backtest": {
+    "codes": [
+      "BTC-USDT"
+    ],
+    "end_date": "2024-12-31",
+    "engine": "daily",
+    "interval": "1D",
+    "source": "okx",
+    "start_date": "2023-01-01"
+  },
+  "data_sources": [
+    "okx"
+  ],
+  "generated_at": "2026-06-13T23:57:37.694623Z",
+  "metrics": {
+    "annual_return": -0.0871316354210897,
+    "avg_holding_days": 1.0,
+    "benchmark_return": 4.632533,
+    "calmar": -0.5221,
+    "excess_return": -4.799413,
+    "final_value": 833120.5421633454,
+    "information_ratio": -2.1913,
+    "max_consecutive_loss": 5,
+    "max_drawdown": -0.16687945783665462,
+    "profit_factor": 0.2218,
+    "profit_loss_ratio": 0.961,
+    "sharpe": -1.253182518985359,
+    "sortino": -0.2961,
+    "total_return": -0.1668794578366546,
+    "trade_count": 16,
+    "win_rate": 0.1875
+  },
+  "reproducibility": {
+    "config_hash": "195f13668634c0c815094de244ab2189e3bba122b239254a14c827bb1cd3bb1d"
+  },
+  "run_dir": "runs\\_probe_wiring",
+  "schema_version": "0.1",
+  "warnings": []
+}

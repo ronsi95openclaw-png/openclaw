@@ -30,6 +30,55 @@ _SIZE_LARGE = ["full house", "entire house", "estate", "4 bedroom", "3 bedroom",
 _SIZE_MEDIUM = ["room", "2 bedroom", "shed", "basement", "apartment", "office"]
 _SIZE_SMALL = ["few items", "small load", "quick", "couple items", "single item", "one piece"]
 
+_DEMAND_SIGNALS = [
+    "need help", "need someone", "need a hauler", "need a company", "need a service",
+    "need it hauled", "need it removed", "need it picked up", "need it gone",
+    "need to get rid", "need picked up", "need removed", "need hauled", "need pickup",
+    "looking for", "looking to hire", "want to hire", "trying to find",
+    "anyone available", "does anyone", "can someone", "can anyone",
+    "willing to pay", "how much will", "what would it cost", "get a quote",
+    "need a quote", "estimate for", "help me clean", "help me get rid",
+    "in need of", "who can", "any recommendations", "who does junk removal",
+    "who hauls", "i need someone", "we need someone", "hiring someone",
+    "looking for a hauler", "need a hauler", "need hauling",
+]
+_SUPPLY_SIGNALS = [
+    "we offer", "we provide", "we are a", "our team", "we specialize",
+    "our service", "free estimates", "free estimate", "licensed and insured",
+    "licensed & insured", "serving the dfw", "serving dallas", "we service",
+    "give us a call", "call us today", "contact us for", "book online",
+    "we remove", "we haul junk", "we pick up", "we clean out",
+    "book now", "schedule online", "our prices", "starting at $",
+]
+_CONTAINER_SIGNALS = [
+    "dumpster rental", "roll-off", "rolloff", "container rental",
+    "drop-off container", "rent a dumpster", "dumpster for rent",
+    "portable toilet", "porta potty",
+]
+_SELLING_SIGNALS = [
+    "for sale", "obo", "or best offer", "asking price",
+    "pickup only", "must pick up", "price firm", "make an offer", "make offer",
+    "free to whoever", "free to a good home", "taking offers", "open to offers",
+    "will sell", "priced to sell", "reduced to", "willing to sell",
+    "i'm selling", "im selling", "we're selling", "we are selling",
+    "items for sale", "furniture for sale", "appliances for sale",
+]
+
+
+def _is_demand_lead(text: str) -> bool:
+    t = text.lower()
+    if any(kw in t for kw in _CONTAINER_SIGNALS):
+        return False
+    has_demand = any(kw in t for kw in _DEMAND_SIGNALS)
+    has_supply = any(kw in t for kw in _SUPPLY_SIGNALS)
+    has_selling = any(kw in t for kw in _SELLING_SIGNALS)
+    if has_supply and not has_demand:
+        return False
+    if has_selling and not has_demand:
+        return False
+    return has_demand
+
+
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -178,6 +227,8 @@ class ScraperAgent:
 
                     raw_text = sanitize_text(await link.inner_text() or "", max_length=600)
                     if not raw_text:
+                        continue
+                    if not _is_demand_lead(raw_text):
                         continue
 
                     leads.append({
