@@ -65,7 +65,10 @@ from zoneinfo import ZoneInfo
 def _send_telegram_alert(signal: dict, approved_size: int) -> None:
     """Fire-and-forget Telegram alert when a signal is approved.
 
-    Uses HERMES_TELEGRAM_BOT_TOKEN + HERMES_TELEGRAM_CHAT_ID from env.
+    Env vars (set in Claude-openclaw .env):
+      HERMES_TELEGRAM_BOT_TOKEN  — Hermes bot token
+      HERMES_TELEGRAM_CHAT_ID    — Hermes HQ group ID (-1004424433192)
+      HERMES_TELEGRAM_THREAD_ID  — VibeTrade floor thread (2); optional
     Never raises — a notification failure must not affect the trade path.
     """
     token = os.environ.get("HERMES_TELEGRAM_BOT_TOKEN")
@@ -88,13 +91,21 @@ def _send_telegram_alert(signal: dict, approved_size: int) -> None:
             f"Entry: `{entry}` | Stop: `{stop}`\n"
             f"TP1: `{tp1}` | TP2: `{tp2}`\n"
             f"Reason: {reason}\n"
-            f"Time: {ts}"
+            f"Time: {ts}\n"
+            f"_PAPER MODE — no live order sent_"
         )
-        payload = _json.dumps({
+        body: dict = {
             "chat_id": chat_id,
             "text": text,
             "parse_mode": "Markdown",
-        }).encode("utf-8")
+        }
+        thread_id = os.environ.get("HERMES_TELEGRAM_THREAD_ID")
+        if thread_id:
+            try:
+                body["message_thread_id"] = int(thread_id)
+            except (ValueError, TypeError):
+                pass
+        payload = _json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendMessage",
             data=payload,
@@ -313,7 +324,7 @@ class _FallbackAuditLogger:
 class _FallbackStrategyConfig:
     kill_zones: tuple = ("ny_open",)
     lookback: int = 20
-    sweep_bars: int = 3
+    sweep_bars: int = 2
     msb_bars: int = 5
     ote_low: float = 0.618
     ote_high: float = 0.79
