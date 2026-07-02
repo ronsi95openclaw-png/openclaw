@@ -49,6 +49,7 @@ class Config:
     )
     google_sheet_id: str = field(default_factory=lambda: os.getenv("GOOGLE_SHEET_ID", ""))
     google_calendar_id: str = field(default_factory=lambda: os.getenv("GOOGLE_CALENDAR_ID", "primary"))
+    google_review_url: str = field(default_factory=lambda: os.getenv("GOOGLE_REVIEW_URL", ""))
 
     # Claude API — used for outreach message generation; falls back to template if unset
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
@@ -91,6 +92,11 @@ class Config:
             missing.append("FB_SEARCH_LOCATION")
         if not Path(self.google_credentials_file).exists():
             missing.append(f"GOOGLE_CREDENTIALS_FILE ({self.google_credentials_file} not found)")
+        if self.google_calendar_id == "primary" and Path(self.google_credentials_file).exists():
+            missing.append(
+                "GOOGLE_CALENDAR_ID is 'primary' — with a service account this creates events "
+                "on the service account's own calendar, not yours. Set it to your business calendar ID."
+            )
         return missing
 
 

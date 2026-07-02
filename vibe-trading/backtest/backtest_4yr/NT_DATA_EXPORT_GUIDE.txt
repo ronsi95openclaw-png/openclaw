@@ -1,0 +1,103 @@
+NT DATA EXPORT GUIDE — TJR Backtester (NinjaTrader)
+====================================================
+For higher-fidelity backtests using actual 5M data (vs yfinance),
+export from NinjaTrader and run the original tjr_backtest.py.
+
+── HOW TO EXPORT FROM NINJATRADER ──────────────────────────────────
+
+1. Open NinjaTrader 8
+
+2. In the Control Center, go to:
+   Tools → Historical Data
+
+3. Select your instrument:
+   • ES 03-24 (or current front-month continuous: @ES#)
+   • NQ 03-24 (or @NQ#)
+
+4. Configure the export:
+   • Type:       Minute
+   • Start date: 4 years ago (e.g., 2022-01-01)
+   • End date:   Today
+   • Interval:   5 (for 5-minute bars)
+
+5. Click "Export" and save as CSV
+
+6. The CSV format should be:
+   20240101,083000,4750.25,4752.00,4748.50,4751.00,12500
+   (Date YYYYMMDD, Time HHMMSS, Open, High, Low, Close, Volume)
+   No header row needed — the parser handles both.
+
+7. Copy the CSV to:
+   C:\Users\ronsi95openclaw\Claude-openclaw\vibe-trading\backtest\data\
+   Name it:  ES_5M.csv  or  NQ_5M.csv
+
+8. Run:
+   cd C:\Users\ronsi95openclaw\Claude-openclaw\vibe-trading\backtest
+   python tjr_backtest.py --csv data\ES_5M.csv --instrument ES --daily
+
+── CONTINUOUS CONTRACT NOTES ────────────────────────────────────────
+
+Use the continuous adjusted contract (@ES#) rather than a specific
+expiry (ES 03-24) to avoid gaps during roll periods.
+
+In NinjaTrader: connect to the Data Feed that supports @ES#
+(Rithmic, Kinetick, etc.)
+
+── COMPARISON: yfinance vs NinjaTrader ──────────────────────────────
+
+             yfinance (this script)        NinjaTrader CSV
+Source:      Yahoo Finance                 Your live data feed
+Tickers:     ES=F, NQ=F                   @ES#, @NQ#
+5M data:     Max 60 days only             Full history
+1H data:     Max 2 years                  Full history
+Daily:       Full 4+ years                Full history
+Price:       Adjusted (dividend-adj)      Unadjusted (actual trade)
+Reliability: Good for daily/1H            Best for 5M analysis
+Best for:    Quick 4yr daily/1H backtest  Production 5M backtest
+
+── KNOWN GAPS IN yfinance ES/NQ DATA ───────────────────────────────
+
+• Roll gaps between contract expiries may show as flat bars
+• Extended hours (overnight session) may be included in hourly data
+  — the 1H backtest's kill zone filter mitigates this
+• Holiday data may have thin/zero volume — not filtered automatically
+
+── LUCID 25K RULES (QUICK REFERENCE) ───────────────────────────────
+
+Eval Phase Rules:
+  Profit Target:    $1,500 (6% of $25,000)
+  Max Trailing DD:  $1,500 (trailing from highest point)
+  Daily Loss Limit: Not specified separately (watch $1,500 total)
+  Consistency:      No single day > 50% of total profits at that time
+  Overnight:        No overnight holds allowed
+  News:             Avoid trading ±30 min around major news (FOMC, NFP)
+  Instruments:      ES, MES, NQ, MNQ (futures only)
+
+Funded Account Rules may differ — always verify current rules at:
+  https://lucidtrading.com/rules
+
+── FILES IN THIS FOLDER ─────────────────────────────────────────────
+
+  fetch_4yr_data.py     Download 4yr daily + 2yr 1H data from yfinance
+  tjr_backtest_4yr.py   TJR/ICT strategy engine (daily + 1H support)
+  run_all.py            Full pipeline: fetch → backtest → report
+  smoke_test.py         Sanity check with synthetic data
+  NT_DATA_EXPORT_GUIDE.txt  This file
+
+  data/                 Market data CSVs (created on first run)
+  results/              JSON result files (created on first run)
+
+── QUICK START ──────────────────────────────────────────────────────
+
+  # First time: install deps and run everything
+  pip install yfinance pandas numpy tqdm
+  python run_all.py
+
+  # Re-run without re-downloading data
+  python run_all.py --skip-fetch
+
+  # Single instrument
+  python run_all.py --instrument ES --timeframe 1h
+
+  # Smoke test
+  python smoke_test.py --verbose
