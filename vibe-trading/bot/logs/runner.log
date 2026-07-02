@@ -37,3 +37,15 @@
 2026-06-29T10:00:08-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
 2026-06-29T10:00:08-04:00 [DECISION] data_loader:skip reason=no_bars size=0
 2026-06-29T10:00:08-04:00 [EVENT] once_done reason=skip
+2026-06-30T10:01:00-04:00 [EVENT] runner_start reason=boot
+2026-06-30T10:01:00-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-06-30T10:01:00-04:00 [DECISION] data_loader:skip reason=no_bars size=0
+2026-06-30T10:01:00-04:00 [EVENT] once_done reason=skip
+2026-07-01T10:00:15-04:00 [EVENT] runner_start reason=boot
+2026-07-01T10:00:15-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-07-01T10:00:15-04:00 [DECISION] data_loader:skip reason=no_bars size=0
+2026-07-01T10:00:15-04:00 [EVENT] once_done reason=skip
+2026-07-01T23:41:07-04:00 [EVENT] runner_start reason=boot
+2026-07-01T23:41:07-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-07-01T23:41:07-04:00 [DECISION] data_loader:skip reason=no_bars size=0
+2026-07-01T23:41:07-04:00 [EVENT] once_done reason=skip
