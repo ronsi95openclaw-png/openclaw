@@ -30,6 +30,15 @@ class TestDemandLeadRelevance:
         assert passes is False
         assert reason == "no_topical_signal"
 
+    def test_moving_help_with_bare_item_word_is_rejected(self):
+        # "couch"/"furniture" alone (no disposal word) shouldn't count as topical --
+        # this exact phrasing passed before the item-word list was narrowed.
+        passes, reason = _is_demand_lead(
+            "Need someone to help me move a couch to my new apartment, not selling it"
+        )
+        assert passes is False
+        assert reason == "no_topical_signal"
+
     def test_supply_signal_still_rejected_even_with_topic(self):
         passes, reason = _is_demand_lead(
             "Need it removed? We offer junk removal and hauling services, licensed and insured"

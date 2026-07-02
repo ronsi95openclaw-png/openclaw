@@ -69,14 +69,16 @@ _SELLING_SIGNALS = [
 # so demand phrasing alone can't pass the filter.
 _TOPICAL_SIGNALS = [
     "junk", "trash", "hauling", "haul away", "haul off", "debris", "cleanout",
-    "clean out", "furniture", "appliance", "mattress", "couch", "sofa",
-    "yard waste", "construction debris", "garage", "attic", "basement",
-    "estate", "moving boxes", "old furniture", "hoarder", "storage unit",
-    "shed", "renovation", "demo debris", "demolition", "concrete", "yard debris",
-    "tree limbs", "branches", "old appliances", "e-waste", "electronics disposal",
-    "scrap metal", "remove", "removal", "pickup", "pick up", "dump", "dumping",
-    "clear out", "clearing out",
+    "clean out", "clear out", "clearing out",
+    "yard waste", "construction debris", "yard debris", "estate",
+    "hoarder", "storage unit", "renovation", "demo debris", "demolition",
+    "tree limbs", "branches", "e-waste", "electronics disposal", "scrap metal",
+    "dump", "dumping",
 ]
+# Generic item/location words ("furniture", "couch", "garage", "remove", "pickup") were
+# deliberately dropped: they also appear in unrelated posts (moving help, item requests)
+# that use the same generic demand phrasing. They only count as topical when paired with
+# an explicit disposal word above (e.g. "furniture cleanout", "haul away the couch").
 
 
 def _is_demand_lead(text: str) -> tuple[bool, str]:
