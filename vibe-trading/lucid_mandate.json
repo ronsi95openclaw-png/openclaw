@@ -1,0 +1,22 @@
+{
+  "account": "lucid_25k_eval",
+  "rules": {
+    "account_size": 25000,
+    "drawdown_type": "end_of_day",
+    "max_loss_limit": 1500,
+    "daily_loss_limit": null,
+    "consistency_rule_eval": 0.50,
+    "consistency_rule_funded": null,
+    "overnight_holds": false,
+    "close_eod": true,
+    "instruments_allowed": ["ES", "MES", "NQ", "MNQ"],
+    "max_position_size": 2,
+    "daily_trade_cap": 10,
+    "payout_min_profitable_days": 5
+  },
+  "kill_switch": {
+    "file": "./KILL_SWITCH",
+    "auto_flatten_on_kill": true
+  },
+  "mode": "paper"
+}
