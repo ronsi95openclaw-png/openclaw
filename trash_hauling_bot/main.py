@@ -57,6 +57,11 @@ async def main() -> None:
         logger.warning(
             "TRASH_BOT_TEAM_CHAT_IDS is empty — /schedule and /cancel will not send team notifications."
         )
+    if config.google_calendar_id == "primary" and Path(config.google_credentials_file).exists():
+        logger.warning(
+            "GOOGLE_CALENDAR_ID is 'primary' — with a service account this creates events "
+            "on the service account's own calendar, not yours. Set it to your business calendar ID."
+        )
 
     audit = AuditLogger(config.audit_log_file)
     scraper = ScraperAgent(audit)
