@@ -239,7 +239,9 @@ class TraderPostClient:
     """
 
     def __init__(self, config: Any = None, audit: Any = None, *,
-                 mandate_path: Optional[Path] = None) -> None:
+                 mandate_path: Optional[Path] = None,
+                 mandate_view: Any = None,
+                 kill_switch_check: Any = None) -> None:
         self.config = config
         self.audit = audit or _FallbackAudit(LOG_DIR)
         self._mandate_path = mandate_path

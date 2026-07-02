@@ -1,7 +1,7 @@
 """
-MNQ Signal Watcher
-==================
-Watches for MNQ (Micro Nasdaq Futures) trading signals and sends
+Signal Watcher
+==============
+Watches for ES/MES/NQ/MNQ trading signals and sends
 Telegram alerts when signals are detected.
 
 Usage:
@@ -84,7 +84,7 @@ def send_telegram(message: str) -> bool:
 def format_signal(sig: dict) -> str:
     """Format a signal dict into a Telegram message."""
     ts    = sig.get("timestamp", datetime.utcnow().isoformat())
-    sym   = sig.get("symbol", "MNQ")
+    sym   = sig.get("symbol", "ES")
     side  = sig.get("side", "???").upper()
     price = sig.get("price", "?")
     tp    = sig.get("take_profit", "?")
@@ -93,7 +93,7 @@ def format_signal(sig: dict) -> str:
 
     emoji = "🟢" if side == "LONG" else "🔴" if side == "SHORT" else "⚪"
     msg = (
-        f"{emoji} *MNQ Signal – {side}*\n"
+        f"{emoji} *{sym} Signal – {side}*\n"
         f"Symbol : `{sym}`\n"
         f"Entry  : `{price}`\n"
         f"TP     : `{tp}`\n"
@@ -123,7 +123,7 @@ def process_signal_file(path: Path) -> None:
 
 def main():
     log.info("=" * 60)
-    log.info("MNQ Signal Watcher started")
+    log.info("Signal Watcher started")
     log.info(f"Project root : {PROJECT_ROOT}")
     log.info(f"Signal dir   : {SIGNAL_DIR}")
     log.info(f"Poll interval: {POLL_INTERVAL_SEC}s")
@@ -132,7 +132,7 @@ def main():
     log.info("=" * 60)
 
     send_telegram(
-        "✅ *MNQ Signal Watcher online*\n"
+        "✅ *Signal Watcher online*\n"
         f"Watching `{SIGNAL_DIR}`\n"
         f"Poll every {POLL_INTERVAL_SEC}s"
     )

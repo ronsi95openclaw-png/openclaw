@@ -141,6 +141,14 @@ class OutreachAgent:
         })
         return entry
 
+    def clear_queue(self) -> int:
+        """Wipe all pending outreach items. Returns count cleared."""
+        queue = self.get_pending()
+        count = len(queue)
+        self._save_queue([])
+        self._audit.log(self.AGENT_NAME, "queue_cleared", {"count": count})
+        return count
+
     def deny(self, queue_id: str) -> Optional[Dict]:
         """Remove from queue and mark the lead declined."""
         entry = self._remove_from_queue(queue_id)

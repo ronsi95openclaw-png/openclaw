@@ -54,16 +54,42 @@ def _yf_ticker(instrument: str) -> str:
     return _TICKER_MAP.get(instrument.upper(), instrument)
 
 
+def _build_from_csv(csv_path: str) -> Optional[dict]:
+    """Parse a NinjaTrader-format CSV (Date,Time,Open,High,Low,Close,Volume) into bars_by_tf."""
+    try:
+        import pandas as pd
+        df = pd.read_csv(csv_path, dtype=str)
+        df.columns = [c.strip() for c in df.columns]
+        df["_dt"] = pd.to_datetime(
+            df["Date"].str.zfill(8) + df["Time"].str.zfill(6),
+            format="%Y%m%d%H%M%S",
+        )
+        df = df.set_index("_dt")
+        df.index = df.index.tz_localize(ET)
+        df.rename(columns={c: c.lower() for c in df.columns}, inplace=True)
+        df = df[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric, errors="coerce")
+        df = df.dropna(subset=["open", "high", "low", "close"])
+        if df.empty:
+            return None
+        agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+        return {
+            "1m":  df,
+            "5m":  df,
+            "15m": df.resample("15min").agg(agg).dropna(subset=["open", "close"]),
+            "1h":  df.resample("1h").agg(agg).dropna(subset=["open", "close"]),
+        }
+    except Exception:
+        return None
+
+
 def build_bars_by_tf(source=None) -> Optional[dict]:
     """Fetch live bars and return bars_by_tf or None on failure.
 
-    ``source`` is ignored when None (live fetch). If a CSV path string is
-    passed the function delegates to the runner's built-in CSV parser so the
-    --csv CLI flag still works.
+    ``source`` is ignored when None (live fetch). When a CSV path is passed
+    the file is parsed directly (NinjaTrader format: Date,Time,Open,High,Low,Close,Volume).
     """
-    # CSV fallback: let runner handle it with its own _parse_csv_to_df
     if source is not None:
-        return None   # runner sees None → falls through to its own CSV path
+        return _build_from_csv(str(source))
 
     try:
         import yfinance as yf

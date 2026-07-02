@@ -65,18 +65,21 @@ _SELLING_SIGNALS = [
 ]
 
 
-def _is_demand_lead(text: str) -> bool:
+def _is_demand_lead(text: str) -> tuple[bool, str]:
+    """Return (passes, reason) so callers can log rejections."""
     t = text.lower()
     if any(kw in t for kw in _CONTAINER_SIGNALS):
-        return False
+        return False, "container_signal"
     has_demand = any(kw in t for kw in _DEMAND_SIGNALS)
     has_supply = any(kw in t for kw in _SUPPLY_SIGNALS)
     has_selling = any(kw in t for kw in _SELLING_SIGNALS)
-    if has_supply and not has_demand:
-        return False
-    if has_selling and not has_demand:
-        return False
-    return has_demand
+    if not has_demand:
+        return False, "no_demand_signal"
+    if has_supply:
+        return False, "supply_signal"
+    if has_selling:
+        return False, "selling_signal"
+    return True, "ok"
 
 
 _USER_AGENT = (
@@ -150,7 +153,13 @@ class ScraperAgent:
                 self._sheets.add_lead(lead)
                 self._dedup.mark_seen(url, title)
                 added += 1
-                self._audit.log(self.AGENT_NAME, "lead_added", {"url": url})
+                self._audit.log(self.AGENT_NAME, "lead_added", {
+                    "url": url,
+                    "job_type": lead.get("job_type", ""),
+                    "urgency_score": lead.get("urgency_score"),
+                    "size_score": lead.get("size_score"),
+                    "location": lead.get("location", ""),
+                })
             except ValueError as exc:
                 self._audit.log(self.AGENT_NAME, "lead_rejected", {"reason": str(exc), "url": url})
 
@@ -228,7 +237,11 @@ class ScraperAgent:
                     raw_text = sanitize_text(await link.inner_text() or "", max_length=600)
                     if not raw_text:
                         continue
-                    if not _is_demand_lead(raw_text):
+                    passes, reason = _is_demand_lead(raw_text)
+                    if not passes:
+                        self._audit.log(self.AGENT_NAME, "lead_rejected", {
+                            "reason": reason, "url": full_url, "text_preview": raw_text[:120],
+                        })
                         continue
 
                     leads.append({

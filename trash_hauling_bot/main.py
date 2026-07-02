@@ -53,6 +53,10 @@ async def main() -> None:
             "TRASH_BOT_CHAT_IDS is empty — bot will accept commands from ANY chat that "
             "finds the bot token. Set TRASH_BOT_CHAT_IDS in .env to lock it down."
         )
+    if not config.team_chat_ids:
+        logger.warning(
+            "TRASH_BOT_TEAM_CHAT_IDS is empty — /schedule and /cancel will not send team notifications."
+        )
 
     audit = AuditLogger(config.audit_log_file)
     scraper = ScraperAgent(audit)
@@ -60,9 +64,16 @@ async def main() -> None:
     cal_sync = CalendarSyncAgent(audit)
     bot = TrashHaulingBot(scraper, outreach, cal_sync, audit)
 
+    async def _scraper_job() -> None:
+        count = await scraper.run()
+        if count > 0:
+            await bot.notify_team(
+                f"{count} new lead(s) found — use /leads new to review."
+            )
+
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
-        scraper.run,
+        _scraper_job,
         "interval",
         minutes=config.scraper_interval_minutes,
         id="fb_scraper",

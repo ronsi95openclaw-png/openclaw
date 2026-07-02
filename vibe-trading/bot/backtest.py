@@ -668,8 +668,13 @@ class BotBacktester:
         between-trades risk_guard gate (which only runs when flat) never sees."""
         if t.side == "long":
             adverse = (bar.low - t.entry) * t.point_value * t.size
+            # Stop fires before the bar's full adverse range is realized.
+            stop_floor = (t.stop - t.entry) * t.point_value * t.size
         else:
             adverse = (t.entry - bar.high) * t.point_value * t.size
+            stop_floor = (t.entry - t.stop) * t.point_value * t.size
+        # Cap excursion at stop distance — risk beyond this can't happen.
+        adverse = max(adverse, stop_floor)
         if adverse < t.worst_adverse_pnl:
             t.worst_adverse_pnl = adverse
 
