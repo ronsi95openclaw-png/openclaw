@@ -1,0 +1,3 @@
+[submodule "skills/cc_nano_banana"]
+	path = skills/cc_nano_banana
+	url = https://github.com/kkoppenhaver/cc-nano-banana.git
