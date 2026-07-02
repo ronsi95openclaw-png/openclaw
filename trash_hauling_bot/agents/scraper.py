@@ -63,6 +63,22 @@ _SELLING_SIGNALS = [
     "i'm selling", "im selling", "we're selling", "we are selling",
     "items for sale", "furniture for sale", "appliances for sale",
 ]
+# The demand phrases above ("need someone", "can anyone", "looking for", etc.) are
+# generic "wanting" language that also shows up in unrelated posts (pet rehoming,
+# moving help, etc.). Require the post to also name a junk/hauling-relevant topic
+# so demand phrasing alone can't pass the filter.
+_TOPICAL_SIGNALS = [
+    "junk", "trash", "hauling", "haul away", "haul off", "debris", "cleanout",
+    "clean out", "clear out", "clearing out",
+    "yard waste", "construction debris", "yard debris", "estate",
+    "hoarder", "storage unit", "renovation", "demo debris", "demolition",
+    "tree limbs", "branches", "e-waste", "electronics disposal", "scrap metal",
+    "dump", "dumping",
+]
+# Generic item/location words ("furniture", "couch", "garage", "remove", "pickup") were
+# deliberately dropped: they also appear in unrelated posts (moving help, item requests)
+# that use the same generic demand phrasing. They only count as topical when paired with
+# an explicit disposal word above (e.g. "furniture cleanout", "haul away the couch").
 
 
 def _is_demand_lead(text: str) -> tuple[bool, str]:
@@ -79,6 +95,8 @@ def _is_demand_lead(text: str) -> tuple[bool, str]:
         return False, "supply_signal"
     if has_selling:
         return False, "selling_signal"
+    if not any(kw in t for kw in _TOPICAL_SIGNALS):
+        return False, "no_topical_signal"
     return True, "ok"
 
 
