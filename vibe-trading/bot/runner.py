@@ -1036,10 +1036,11 @@ class BotContext:
 
 
 def build_context(*, instrument: Optional[str] = None,
-                  csv_source: Optional[str] = None) -> BotContext:
+                  csv_source: Optional[str] = None,
+                  config_path: Optional[Path] = None) -> BotContext:
     """Assemble a BotContext with config, audit logger, paper ledger, siblings."""
     siblings = _resolve_siblings()
-    config = siblings["load_config"]()
+    config = siblings["load_config"](config_path)
     audit = siblings["AuditLogger"](getattr(config, "log_dir", LOG_DIR))
     inst = instrument or getattr(config, "instrument", "ES")
     ledger = _PaperLedger()
@@ -1429,12 +1430,18 @@ def main(argv: Optional[list] = None) -> int:
                         help="CSV bar source for offline/forward-test mode.")
     parser.add_argument("--selftest", action="store_true",
                         help="Run the internal smoke test (no external data) and exit.")
+    parser.add_argument("--config", default=None,
+                        help="Path to a JSON config file (e.g. bot/live_config.json). "
+                             "Must contain {\"go_live\": true} to arm the config half of the live gate. "
+                             "The env half (HERMES_BOT_LIVE=1) must also be set. Both are required.")
     args = parser.parse_args(argv)
 
     if args.selftest:
         return 0 if _selftest() else 1
 
-    ctx = build_context(instrument=args.instrument, csv_source=args.csv)
+    config_path = Path(args.config) if args.config else None
+    ctx = build_context(instrument=args.instrument, csv_source=args.csv,
+                        config_path=config_path)
     if args.once:
         summary = run_cycle(ctx)
         ctx.audit.log_event("once_done", reason=str(summary.get("decision")),

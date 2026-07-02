@@ -128,6 +128,7 @@ class StrategyConfig:
     tp1_rr: float = 2.0
     tp2_rr: float = 4.0
     default_contracts: int = 1
+    max_minutes_in_kz: int = 75  # reject entries more than N min into any kill zone (0 = off)
 
 
 # ── Internal helpers (pure; mirror the backtest semantics) ───────────────────
@@ -144,6 +145,28 @@ def _as_et(now_et: datetime) -> Optional[datetime]:
     if not isinstance(now_et, datetime) or now_et.tzinfo is None:
         return None
     return now_et.astimezone(_ET)
+
+
+def minutes_into_kill_zone(now_et: datetime, zones: tuple[str, ...] | list[str]) -> Optional[int]:
+    """Return how many minutes ``now_et`` is past the START of the active kill zone.
+
+    Returns ``None`` when not currently in any kill zone. Used by ``generate_signal``
+    to enforce ``StrategyConfig.max_minutes_in_kz`` — the late-entry filter that
+    drops setups triggered long after the session open, where liquidity is thin and
+    stop-runs have already played out.
+    """
+    et = _as_et(now_et)
+    if et is None:
+        return None
+    t = et.time()
+    for zone in zones:
+        bounds = KILL_ZONES.get(zone)
+        if bounds is None:
+            continue
+        lo, hi = bounds
+        if lo <= t < hi:
+            return (t.hour * 60 + t.minute) - (lo.hour * 60 + lo.minute)
+    return None
 
 
 def in_kill_zone(now_et: datetime, zones: tuple[str, ...] | list[str]) -> bool:
@@ -460,6 +483,16 @@ def generate_signal(
     # Step 1 — Kill-zone time gate (no trades outside the window).
     if not in_kill_zone(now_et_norm, cfg.kill_zones):
         return None
+
+    # Step 1b — Late-entry filter: reject if we are past max_minutes_in_kz into
+    # the active kill zone. Setups triggered >75 min after session open tend to
+    # chase already-extended moves where the sweep liquidity has been consumed
+    # and the reversal lacks follow-through. Loss analysis confirmed 2 of 3
+    # stopped trades were entered at 125–135 min into NY open.
+    if cfg.max_minutes_in_kz > 0:
+        mins_in = minutes_into_kill_zone(now_et_norm, cfg.kill_zones)
+        if mins_in is not None and mins_in > cfg.max_minutes_in_kz:
+            return None
 
     # Step 2 — HTF bias via discount/premium of the swing range.
     side = htf_bias(df_htf, cfg.lookback)

@@ -276,6 +276,15 @@ def _in_kill_zone(dt: datetime, zones: list[str]) -> bool:
     return False
 
 
+def _kill_zone_name(dt: datetime) -> str:
+    """Return the name of the kill zone active at ``dt`` (ET), or 'none'."""
+    t = dt.time()
+    for name, (lo, hi) in KILL_ZONES.items():
+        if lo <= t < hi:
+            return name
+    return "none"
+
+
 def _detect_fvg(bars: list[Bar], i: int) -> Optional[tuple[float, float, str]]:
     if i < 2:
         return None
@@ -504,6 +513,10 @@ class _OpenTrade:
     # drawdown). Used to surface intra-trade max_loss_limit breaches the between-
     # trades risk_guard gate can never see.
     worst_adverse_pnl: float = 0.0
+    # Bar index when the trade opened (for bars_held calculation).
+    open_bar_i: int = 0
+    # Signal reason string from strategy (which TJR rules fired).
+    signal_reason: str = ""
 
 
 @dataclass
@@ -520,6 +533,8 @@ class _ClosedTrade:
     session_date: date
     # Worst (most negative) mark-to-market dollar P&L observed while open.
     worst_adverse_pnl: float = 0.0
+    # Per-trade context for loss analysis (kill_zone, bars_held, signal_reason).
+    context: dict = field(default_factory=dict)
 
 
 # ── Backtest engine ───────────────────────────────────────────────────────────
@@ -565,12 +580,16 @@ class BotBacktester:
                                                  daily_gate_pct=daily_gate_pct,
                                                  consecutive_loss_limit=consecutive_loss_limit)
 
+        # Optional strategy config override (for parameter sweep).
+        self._strategy_config_override = None
+
         # Engines-of-record (paper ledger).
         self.equity = self.account_size
         self.realized_today = 0.0
         self.consecutive_losses = 0
         self.trade_count_today = 0
         self.cur_session: Optional[date] = None
+        self._cur_bar_i: int = 0   # updated each replay iteration; used by _close
         # Last bar seen by the replay loop — used to flatten a carried position
         # at the PRIOR bar's close when the session date rolls over.
         self._prev_bar: Optional[Bar] = None
@@ -646,18 +665,26 @@ class BotBacktester:
 
     # ── signal generation (bot strategy if present, else fallback) ───────────
     def _signal(self, bars: list[Bar], i: int) -> Optional[dict]:
+        cfg = self._strategy_config_override or self.scfg
         if _USING_BOT_STRATEGY and generate_signal is not None:
             try:
                 bars_by_tf = _bars_by_tf(bars, i)
                 sig = generate_signal(bars_by_tf, bars[i].dt,
-                                      instrument=self.instrument, config=self.scfg)
+                                      instrument=self.instrument, config=cfg)
                 return sig
             except Exception:
                 return None  # strategy must stay pure; any error => no setup
+        # Fallback: use overridden config fields when available.
+        sc = cfg
         return _fallback_signal(
-            bars, i, instrument=self.instrument, zones=self.zones,
-            lookback=20, sweep_bars=3, tick=self.tick,
-            tp1_rr=2.0, tp2_rr=4.0, default_contracts=1,
+            bars, i, instrument=self.instrument,
+            zones=list(getattr(sc, "kill_zones", self.zones)),
+            lookback=getattr(sc, "lookback", 20),
+            sweep_bars=getattr(sc, "sweep_bars", 3),
+            tick=self.tick,
+            tp1_rr=getattr(sc, "tp1_rr", 2.0),
+            tp2_rr=getattr(sc, "tp2_rr", 4.0),
+            default_contracts=getattr(sc, "default_contracts", 1),
         )
 
     # ── mark-to-market the open trade's worst adverse excursion ──────────────
@@ -736,6 +763,17 @@ class BotBacktester:
         # R-multiple on the ORIGINAL entry-distance at open (stop later moved to BE).
         r_mult = gross / r_points if r_points else 0.0
 
+        # Per-trade context for loss analysis.
+        bars_held = max(1, self._cur_bar_i - t.open_bar_i + 1)
+        r_pts_tick = round(r_points / self.tick) if self.tick else 0
+        context = {
+            "kill_zone": _kill_zone_name(t.entry_dt),
+            "bars_held": bars_held,
+            "r_ticks": r_pts_tick,
+            "signal_reason": t.signal_reason,
+            "entry_r_pts": round(r_points, 4),
+        }
+
         self.equity += pnl
         self.realized_today += pnl
         self.day_pnl[sd] += pnl
@@ -746,6 +784,7 @@ class BotBacktester:
             exit=exit_price, size=t.size, status=status, pnl=pnl,
             r_multiple=r_mult, session_date=sd,
             worst_adverse_pnl=t.worst_adverse_pnl,
+            context=context,
         ))
         self.open_trade = None
 
@@ -766,6 +805,7 @@ class BotBacktester:
                 continue
 
             self._roll_session(bar.session_date)
+            self._cur_bar_i = i
 
             # 1. progress open trade first (fills / EOD). Always runs for an open
             #    trade, even on out-of-year bars, so the position is not stranded.
@@ -817,6 +857,8 @@ class BotBacktester:
             point_value=self.point_value,
             # Locked at OPEN so r_multiple survives the breakeven stop move.
             original_r=abs(entry - stop),
+            open_bar_i=self._cur_bar_i,
+            signal_reason=str(sig.get("reason", "")),
         )
         self.trade_count_today += 1
         self.day_trades[sd] += 1
@@ -922,6 +964,22 @@ class BotBacktester:
                 "any_breach": bool(breaches),
                 "breaches": breaches,
             },
+            "trades": [
+                {
+                    "entry_dt": t.entry_dt.isoformat(),
+                    "exit_dt": t.exit_dt.isoformat(),
+                    "side": t.side,
+                    "entry": t.entry,
+                    "exit": t.exit,
+                    "size": t.size,
+                    "status": t.status,
+                    "pnl": round(t.pnl, 2),
+                    "r_multiple": round(t.r_multiple, 3),
+                    "worst_adverse_pnl": round(t.worst_adverse_pnl, 2),
+                    **t.context,
+                }
+                for t in trades
+            ],
         }
 
     def _lucid_breaches(self, trades: list[_ClosedTrade], max_dd: float) -> list[dict]:
