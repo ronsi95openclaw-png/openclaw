@@ -990,6 +990,7 @@ def _resolve_siblings() -> dict:
         "account": _try_import("account"),
         "audit": _try_import("audit"),
         "killswitch": _try_import("killswitch"),
+        "paper_ledger": _try_import("paper_ledger"),
     }
 
     def pick(mod_name: str, attr: str, fallback):
@@ -1007,6 +1008,7 @@ def _resolve_siblings() -> dict:
         "validate_account_state": pick("account", "validate_account_state", _fallback_validate_account_state),
         "AuditLogger": pick("audit", "AuditLogger", _FallbackAuditLogger),
         "kill_switch_engaged": pick("killswitch", "kill_switch_engaged", None),
+        "paper_ledger_open_position": pick("paper_ledger", "open_position", None),
         "_real_modules": {k: (v is not None) for k, v in mods.items()},
     }
 
@@ -1122,11 +1124,8 @@ def _flatten(ctx: BotContext, mandate_view: Any, reason: str,
             "reason": f"flatten:{reason}",
             "ts": _iso_et(),
         }
-        client = ctx.siblings["TraderPostClient"](
-            ctx.config, ctx.audit, mandate_view,
-            kill_switch_check=lambda: ctx.kill_engaged(mandate_view),
-        ) if _client_takes_mandate(ctx) else ctx.siblings["TraderPostClient"](ctx.config, ctx.audit)
         try:
+            client = _build_traderpost(ctx, mandate_view)
             client.send(exit_signal, approved_size=pos["size"])
         except Exception as e:  # never crash on flatten
             ctx.audit.log_event("flatten_error", reason=str(e))
@@ -1313,6 +1312,15 @@ def run_cycle(ctx: BotContext) -> dict:
             size=result["size"], entry=signal["entry"], stop=signal["stop"],
             tp1=signal.get("tp1"), tp2=signal.get("tp2"),
         )
+        # persist to disk too (ctx.ledger is in-memory, discarded when this
+        # --once process exits) so trade_journal.jsonl actually accumulates
+        # fills across cron invocations instead of staying permanently empty.
+        open_position = ctx.siblings.get("paper_ledger_open_position")
+        if tp.get("result") == "logged_only" and open_position is not None:
+            try:
+                open_position({**signal, "size": result["size"]})
+            except Exception as e:
+                ctx.audit.log_event("paper_ledger_open_error", reason=str(e))
         _send_telegram_alert(signal, approved_size=result["size"])
     return summary
 
@@ -1339,12 +1347,16 @@ def _build_risk_guard(ctx: BotContext, mandate_view: Any):
 
 
 def _build_traderpost(ctx: BotContext, mandate_view: Any):
+    # mandate_view / kill_switch_check are keyword-only on the real TraderPostClient
+    # (traderpost.py:241-244) — pass them by keyword, never positionally, or
+    # construction raises TypeError the moment a signal is ever actually approved.
     Client = ctx.siblings["TraderPostClient"]
+    kwargs: dict = {}
     if _client_takes_mandate(ctx):
-        return Client(ctx.config, ctx.audit, mandate_view,
-                      kill_switch_check=lambda: ctx.kill_engaged(mandate_view)) \
-            if _client_takes_kill(Client) else Client(ctx.config, ctx.audit, mandate_view)
-    return Client(ctx.config, ctx.audit)
+        kwargs["mandate_view"] = mandate_view
+    if _client_takes_kill(Client):
+        kwargs["kill_switch_check"] = lambda: ctx.kill_engaged(mandate_view)
+    return Client(ctx.config, ctx.audit, **kwargs)
 
 
 def _client_takes_kill(Client) -> bool:
