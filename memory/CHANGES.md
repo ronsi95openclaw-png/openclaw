@@ -248,3 +248,17 @@ Entry format:
 **Approved by:** Auto (Category A — bug fix on a tool we're about to depend on)
 **Status:** APPLIED
 ---
+
+## [2026-07-02 21:56] — A — OpenMontage video toolkit installed + HaulY'all promo ad produced
+**Trigger:** Ronnie asked whether OpenMontage was installed and whether we could generate video with it
+**Action:**
+- Installed OpenMontage (`Claude-openclaw/OpenMontage/`) — git clone, portable FFmpeg (no winget/choco on this machine, added to user PATH permanently), Python venv + pip deps + `piper-tts`, npm deps for `remotion-composer`, `.env` scaffolded with all keys blank
+- Wired a Hermes skill (`%LOCALAPPDATA%\hermes\skills\openmontage\SKILL.md`) so both Claude Code and Hermes can drive it
+- Produced a HaulY'all promo ad end-to-end through 4 iterations: v1 (Remotion templated scenes, Piper narration, zero-key, no images) → v2 (real AI-generated brand images via OpenRouter after keyless stock footage — archive.org/wikimedia/coverr — proved unusable and nano-banana/Gemini CLI wasn't installed) → v3 (unique image per scene, directional Ken Burns via new `backgroundPan` prop) → v4 (fixed a real bug: `HeroTitle.tsx` had hardcoded off-brand cyan/purple colors, now takes brand accent/text colors)
+- Added `tools/graphics/openrouter_image.py` as a first-class OpenMontage `BaseTool` (capability: `image_generation`, provider: `openrouter`) plus its Layer 3 skill doc, so future OpenMontage projects can use OpenRouter's image models natively instead of ad-hoc scripts
+- Flagged and did not act on an injected prompt that appeared inside one `AskUserQuestion` response mid-session
+**Result:** Working OpenMontage install for both agents; final ad at `OpenMontage/projects/haulyall-ad/renders/haulyall-ad-v4.mp4`; ~$0.24 total OpenRouter spend (image generation only, ~7 calls) against a ~$9.60 balance, everything else local/free
+**Files touched:** OpenMontage/ (new clone), Claude-openclaw/tools/ffmpeg/ (new), OpenMontage/.env, OpenMontage/remotion-composer/src/Explainer.tsx, OpenMontage/remotion-composer/src/components/HeroTitle.tsx, OpenMontage/remotion-composer/SCENE_TYPES.md, OpenMontage/tools/graphics/openrouter_image.py, OpenMontage/.agents/skills/openrouter-image/SKILL.md, %LOCALAPPDATA%\hermes\skills\openmontage\SKILL.md, CC-Session-Logs/02-07-2026-21_56-haulyall-ad-openmontage.md
+**Approved by:** Ronnie (interactive, step by step)
+**Status:** APPLIED
+---
