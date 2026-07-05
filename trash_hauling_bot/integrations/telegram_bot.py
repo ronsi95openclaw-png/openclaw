@@ -58,7 +58,7 @@ _HELP = """
 
 
 def _is_authorized(chat_id: int) -> bool:
-    return not config.authorized_chat_ids or chat_id in config.authorized_chat_ids
+    return bool(config.authorized_chat_ids) and chat_id in config.authorized_chat_ids
 
 
 def _require_auth(func):
