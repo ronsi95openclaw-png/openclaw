@@ -1,0 +1,69 @@
+@echo off
+setlocal enableextensions enabledelayedexpansion
+title Sync project memory to Obsidian vault
+
+REM Mirrors each project's memory\*.md notes into the matching vault section.
+REM Uses %USERPROFILE% so it is not tied to a specific Windows username, and
+REM points at the real active vault (Documents\Obsidian Vault), not a new one.
+REM
+REM Defensive rewrite 2026-06-04: quoting fix for bash->cmd->bat invocation chain.
+REM Changes vs original: enabledelayedexpansion, pushd normalization of REPO path,
+REM dir /b instead of if-not-exist wildcard check, xcopy errorlevel checked + reported,
+REM ANY_ERR accumulator propagated to exit code, run-log stamped at infra/sync.last-run.log.
+
+set "VAULT=%USERPROFILE%\Documents\Obsidian Vault"
+
+REM Normalize REPO via pushd so the path has no embedded "..".
+REM pushd "%~dp0.." resolves the infra/ parent (repo root) and sets %CD% to the real abs path.
+pushd "%~dp0.." || (
+  echo ERROR: cannot resolve repo root from "%~dp0.."
+  exit /b 1
+)
+set "REPO=%CD%"
+popd
+
+if not exist "%VAULT%\" (
+  echo ERROR: Vault not found at "%VAULT%"
+  echo Edit VAULT in this script if the vault has moved.
+  exit /b 1
+)
+
+set "ANY_ERR=0"
+
+REM  source memory dir                              vault target section                          label
+call :sync "%REPO%\trash_hauling_bot\memory"        "%VAULT%\10 - HaulYA'LL!"                    "HaulYeah"
+call :sync "%REPO%\memory"                           "%VAULT%\20 - OpenClaw\Memory"               "OpenClaw"
+call :sync "%REPO%\memory\strategy"                  "%VAULT%\20 - OpenClaw\Memory\Strategy"      "OpenClaw-Strategy"
+
+echo.
+if "!ANY_ERR!"=="0" (
+  echo Vault sync complete.
+) else (
+  echo Vault sync completed WITH ERRORS -- review output above.
+)
+
+REM Stamp a run log so we have evidence the bat actually ran (readable by cmd and bash callers).
+> "%~dp0sync.last-run.log" echo %date% %time%  rc=!ANY_ERR!  repo="%REPO%"  vault="%VAULT%"
+
+endlocal & exit /b %ANY_ERR%
+
+:sync
+REM :sync <source-dir> <vault-target-dir> <label>
+if not exist "%~1" (
+  echo   [%~3] source missing: "%~1" -- skipped
+  exit /b 0
+)
+REM Use dir /b to check for .md files -- more reliable than if-not-exist wildcard across shell layers.
+dir /b "%~1\*.md" >nul 2>&1
+if errorlevel 1 (
+  echo   [%~3] no .md notes in "%~1" -- skipped
+  exit /b 0
+)
+if not exist "%~2\" mkdir "%~2"
+echo   [%~3] syncing notes: "%~1" -^> "%~2" ...
+xcopy "%~1\*.md" "%~2\" /Y /Q /I
+if errorlevel 1 (
+  echo   [%~3] ERROR: xcopy failed with exit code !errorlevel!
+  set "ANY_ERR=1"
+)
+exit /b 0

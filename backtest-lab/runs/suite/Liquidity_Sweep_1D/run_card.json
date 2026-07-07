@@ -1,0 +1,79 @@
+{
+  "artifacts": [
+    {
+      "path": "artifacts/equity.csv",
+      "sha256": "73d10a5e3bb92ffca0ec5e6b41348c2d34dc07afaa02b56f876f086fffe8abe6",
+      "size_bytes": 162078
+    },
+    {
+      "path": "artifacts/metrics.csv",
+      "sha256": "0d078f1771fdfa1371e03ef80b1ceecc57c386a24d7a614b8b38e78e45a49190",
+      "size_bytes": 403
+    },
+    {
+      "path": "artifacts/ohlcv_BTC-USDT.csv",
+      "sha256": "29cf71116a22ae0b247ecc79124cd13984869f30704da45e24a0a02b570887ca",
+      "size_bytes": 86028
+    },
+    {
+      "path": "artifacts/ohlcv_ETH-USDT.csv",
+      "sha256": "e5a86ba3a874fb71fcd76eb19c8c1fa1225f23d7b7352b2fc6d7da7f683a189a",
+      "size_bytes": 82877
+    },
+    {
+      "path": "artifacts/ohlcv_SOL-USDT.csv",
+      "sha256": "ddc7436b3cafdec4dd7c6edc64c5cdad5f3abbba5f3ea62addaffd7f8cdd58c5",
+      "size_bytes": 76937
+    },
+    {
+      "path": "artifacts/positions.csv",
+      "sha256": "b244392571ef60654e2fa6a8f2419c75fc456ae4811a0c02412f13cac2e380f9",
+      "size_bytes": 79096
+    },
+    {
+      "path": "artifacts/trades.csv",
+      "sha256": "65f2a85e75c55115f9077a2ecc7e2debdfb4006875d8af476409cbaff5d3992e",
+      "size_bytes": 25516
+    }
+  ],
+  "backtest": {
+    "codes": [
+      "BTC-USDT",
+      "ETH-USDT",
+      "SOL-USDT"
+    ],
+    "end_date": "2026-06-13",
+    "engine": "daily",
+    "interval": "1D",
+    "source": "okx",
+    "start_date": "2022-06-13"
+  },
+  "data_sources": [
+    "okx"
+  ],
+  "generated_at": "2026-06-14T00:06:51.021469Z",
+  "metrics": {
+    "annual_return": -0.14712874622640681,
+    "avg_holding_days": 19.5,
+    "benchmark_return": 1.635106,
+    "calmar": -0.1921,
+    "excess_return": -2.106472,
+    "final_value": 528634.1142654741,
+    "information_ratio": -0.6044,
+    "max_consecutive_loss": 8,
+    "max_drawdown": -0.765729253052845,
+    "profit_factor": 0.9062,
+    "profit_loss_ratio": 0.8501,
+    "sharpe": -0.07157616822484424,
+    "sortino": -0.0885,
+    "total_return": -0.47136588573452587,
+    "trade_count": 188,
+    "win_rate": 0.5159574468085106
+  },
+  "reproducibility": {
+    "config_hash": "3aefa0bd27e938124f145d068f02d3e2472306e66e5368aa3672421dd63147b8"
+  },
+  "run_dir": "runs\\suite\\Liquidity_Sweep_1D",
+  "schema_version": "0.1",
+  "warnings": []
+}

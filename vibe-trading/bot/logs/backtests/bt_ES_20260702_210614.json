@@ -1,0 +1,78 @@
+{
+  "strategy": "TJR ICT Kill Zone \u2014 Lucid 25K (bot path)",
+  "instrument": "ES",
+  "strategy_source": "bot.strategy",
+  "risk_guard_source": "in-file fallback",
+  "mandate_fallback": false,
+  "period": {
+    "first_trade": "2026-04-23",
+    "last_trade": "2026-04-23",
+    "trading_days": 1,
+    "bars": 4410
+  },
+  "performance": {
+    "total_trades": 1,
+    "winners": 1,
+    "losers": 0,
+    "win_rate_pct": 100.0,
+    "total_pnl": 595.5,
+    "avg_win": 595.5,
+    "avg_loss": 0.0,
+    "avg_r_multiple": 2.0,
+    "tp1_exits": 1,
+    "tp2_exits": 0,
+    "sl_exits": 0,
+    "eod_exits": 0,
+    "avg_trades_per_day": 1.0,
+    "sharpe_per_trade": 0.0
+  },
+  "risk": {
+    "max_drawdown_dollar": 0.0,
+    "max_drawdown_pct": 0.0,
+    "worst_day": {
+      "date": "2026-04-23",
+      "pnl": 595.5
+    },
+    "best_day": {
+      "date": "2026-04-23",
+      "pnl": 595.5
+    },
+    "worst_trade_excursion": -50.0
+  },
+  "equity": {
+    "start": 25000.0,
+    "end": 25595.5,
+    "net_change": 595.5
+  },
+  "decisions": {
+    "skip": 4407,
+    "approve": 1
+  },
+  "lucid_compliance": {
+    "max_loss_limit": 1500,
+    "max_position_size": 2,
+    "daily_trade_cap": 10,
+    "consistency_rule_eval": 0.5,
+    "any_breach": false,
+    "breaches": []
+  },
+  "trades": [
+    {
+      "entry_dt": "2026-04-23T08:30:00-04:00",
+      "exit_dt": "2026-04-23T08:45:00-04:00",
+      "side": "short",
+      "entry": 7157.5,
+      "exit": 7145.5,
+      "size": 1,
+      "status": "tp1",
+      "pnl": 595.5,
+      "r_multiple": 2.0,
+      "worst_adverse_pnl": -50.0,
+      "kill_zone": "ny_open",
+      "bars_held": 4,
+      "r_ticks": 24,
+      "signal_reason": "kill_zone=ny_open; htf_bias=short; bearish_sweep@7165.75; fvg+ob_in_ote; msb_1m_confirmed",
+      "entry_r_pts": 6.0
+    }
+  ]
+}

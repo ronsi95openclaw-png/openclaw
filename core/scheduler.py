@@ -1,7 +1,8 @@
-"""APScheduler-based reminder + auto-trade system for ClawBot.
+"""APScheduler-based reminder, auto-trade, and Hermes knowledge-graph system.
 
 Reminders are persisted to data/tasks.json and survive bot restarts.
 Auto-trade job runs daily at 08:00 UTC when enabled.
+Hermes job runs daily at 09:30 UTC when enabled — builds graphify knowledge graph.
 The scheduler is started once in receiver.py and shared globally.
 """
 from __future__ import annotations
@@ -346,3 +347,102 @@ def reload_autotrade(from_env: bool = False) -> None:
             id=_AUTOTRADE_JOB,
             replace_existing=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# Hermes knowledge-graph daily job
+# ---------------------------------------------------------------------------
+
+_HERMES_FILE = _DATA_DIR / "hermes.json"
+_HERMES_JOB  = "clawbot_hermes_daily"
+
+
+def _load_hermes() -> dict:
+    if _HERMES_FILE.exists():
+        try:
+            return json.loads(_HERMES_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"enabled": False, "chat_id": None, "scan_time": "09:30"}
+
+
+def _save_hermes(cfg: dict) -> None:
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _HERMES_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+
+async def _run_hermes_job() -> None:
+    cfg = _load_hermes()
+    if not cfg.get("enabled") or not cfg.get("chat_id"):
+        return
+    try:
+        from agents.hermes import run_hermes
+        await run_hermes(send_fn=_send_fn, chat_id=cfg["chat_id"])
+    except Exception as exc:
+        if _send_fn:
+            await _send_fn(cfg["chat_id"], f"🧠 <b>Hermes error:</b> <code>{exc}</code>")
+
+
+def enable_hermes(chat_id: int, scan_time: str = "09:30") -> dict:
+    """Enable the daily Hermes knowledge-graph job."""
+    parts = scan_time.split(":")
+    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+        raise ValueError(f"Invalid time '{scan_time}'. Use HH:MM (UTC).")
+    cfg = {
+        "enabled":    True,
+        "chat_id":    chat_id,
+        "scan_time":  scan_time,
+        "enabled_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _save_hermes(cfg)
+    if _scheduler:
+        hour, minute = scan_time.split(":")
+        _scheduler.add_job(
+            _run_hermes_job,
+            CronTrigger(hour=int(hour), minute=int(minute), timezone="UTC"),
+            id=_HERMES_JOB,
+            replace_existing=True,
+        )
+    return cfg
+
+
+def disable_hermes() -> None:
+    """Disable the daily Hermes job."""
+    cfg = _load_hermes()
+    cfg["enabled"] = False
+    _save_hermes(cfg)
+    if _scheduler and _scheduler.get_job(_HERMES_JOB):
+        _scheduler.remove_job(_HERMES_JOB)
+
+
+def get_hermes_status() -> dict:
+    """Return current Hermes config."""
+    return _load_hermes()
+
+
+async def run_hermes_now(send_fn=None, chat_id: Optional[int] = None) -> None:
+    """Trigger Hermes immediately (used by /hermes now command)."""
+    _sf  = send_fn or _send_fn
+    _cid = chat_id
+    try:
+        from agents.hermes import run_hermes
+        await run_hermes(send_fn=_sf, chat_id=_cid)
+    except Exception as exc:
+        if _sf and _cid:
+            await _sf(_cid, f"🧠 <b>Hermes error:</b> <code>{exc}</code>")
+
+
+def reload_hermes() -> None:
+    """Re-register the Hermes job on scheduler startup (survives restarts)."""
+    cfg = _load_hermes()
+    if not cfg.get("enabled") or not cfg.get("chat_id") or _scheduler is None:
+        return
+    scan_time    = cfg.get("scan_time", "09:30")
+    hour, minute = scan_time.split(":")
+    _scheduler.add_job(
+        _run_hermes_job,
+        CronTrigger(hour=int(hour), minute=int(minute), timezone="UTC"),
+        id=_HERMES_JOB,
+        replace_existing=True,
+    )
+    print(f"🧠 Hermes daily job scheduled at {scan_time} UTC")

@@ -1,0 +1,79 @@
+{
+  "artifacts": [
+    {
+      "path": "artifacts/equity.csv",
+      "sha256": "10f7145552090d7e962770914d5622429aca4c5ed1502bf64bac4d2c8dd71759",
+      "size_bytes": 1070425
+    },
+    {
+      "path": "artifacts/metrics.csv",
+      "sha256": "0fdf6ed9bfb7c0da96cf7323b1a0fb07521502d45726c7a314992a5369cfc913",
+      "size_bytes": 400
+    },
+    {
+      "path": "artifacts/ohlcv_BTC-USDT.csv",
+      "sha256": "199631ea75f6b78b5d6c6a76c039f5187d89b9adb29eb818e9b2e04be5abe46f",
+      "size_bytes": 587704
+    },
+    {
+      "path": "artifacts/ohlcv_ETH-USDT.csv",
+      "sha256": "77afa1d783384d7709f24f4c51b7357f5d2b39cdf51ba6ed11a761cbe381838e",
+      "size_bytes": 568759
+    },
+    {
+      "path": "artifacts/ohlcv_SOL-USDT.csv",
+      "sha256": "b70912475868760a691e05bcab6bd0c1b1e909456b9712972133be1192fa0afa",
+      "size_bytes": 533636
+    },
+    {
+      "path": "artifacts/positions.csv",
+      "sha256": "6128d174494c67878118a1fa2e2b14a104aa6416336949680f7d9cdd6e2cf34b",
+      "size_bytes": 689802
+    },
+    {
+      "path": "artifacts/trades.csv",
+      "sha256": "9a2ebeada5535d450385cdf3ec9069c026f7dd73933767cfe891c41af7be7643",
+      "size_bytes": 73887
+    }
+  ],
+  "backtest": {
+    "codes": [
+      "BTC-USDT",
+      "ETH-USDT",
+      "SOL-USDT"
+    ],
+    "end_date": "2026-06-13",
+    "engine": "daily",
+    "interval": "4H",
+    "source": "okx",
+    "start_date": "2022-06-13"
+  },
+  "data_sources": [
+    "okx"
+  ],
+  "generated_at": "2026-06-14T00:08:27.347580Z",
+  "metrics": {
+    "annual_return": 0.09684530057683016,
+    "avg_holding_days": 47.8,
+    "benchmark_return": 1.385256,
+    "calmar": 0.1632,
+    "excess_return": -0.937452,
+    "final_value": 1447804.2061050243,
+    "information_ratio": -0.2422,
+    "max_consecutive_loss": 17,
+    "max_drawdown": -0.5935675895895947,
+    "profit_factor": 1.0819,
+    "profit_loss_ratio": 1.7804,
+    "sharpe": 0.4360567954025302,
+    "sortino": 0.5824,
+    "total_return": 0.44780420610502425,
+    "trade_count": 545,
+    "win_rate": 0.3779816513761468
+  },
+  "reproducibility": {
+    "config_hash": "2d96a2dc8f1f49d0b93394a5806bce7ac64779e2479377fac2e7751afcf82b95"
+  },
+  "run_dir": "runs\\suite\\Range_Breakout_4H",
+  "schema_version": "0.1",
+  "warnings": []
+}

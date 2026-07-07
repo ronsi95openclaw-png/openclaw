@@ -1,0 +1,79 @@
+{
+  "artifacts": [
+    {
+      "path": "artifacts/equity.csv",
+      "sha256": "2ddc870105dbec5d1b36f9bfa0b343ca6b48f5f7cda588ba4a68f1352b9f8f8e",
+      "size_bytes": 714394
+    },
+    {
+      "path": "artifacts/metrics.csv",
+      "sha256": "f79dbb542c7fd50619d4eed79c4ed6018355138e093f0236c53d7ba498eff2a2",
+      "size_bytes": 390
+    },
+    {
+      "path": "artifacts/ohlcv_BTC-USDT.csv",
+      "sha256": "d073743247584a87a44d4ed49776640e37b61da2235365bfa07ab936c0126c95",
+      "size_bytes": 718333
+    },
+    {
+      "path": "artifacts/ohlcv_ETH-USDT.csv",
+      "sha256": "011498312b05f211e1f742909dcc799789a0e49df18e4fc6f2d4063b3b1a52fa",
+      "size_bytes": 700999
+    },
+    {
+      "path": "artifacts/ohlcv_SOL-USDT.csv",
+      "sha256": "7b7067c0d3a8f003167681f26ef35584a026034301b6cae59975e2b4bd0ab31f",
+      "size_bytes": 660619
+    },
+    {
+      "path": "artifacts/positions.csv",
+      "sha256": "688bcbb1147b0661ce8ffa3e1f350e9cb9f69bd6e294e19d2cd1c15a724a0f69",
+      "size_bytes": 290636
+    },
+    {
+      "path": "artifacts/trades.csv",
+      "sha256": "1f91573c9ccb211924fea07cfee638197d9be9f1330e4fc2a40a5075c6d6af79",
+      "size_bytes": 13361
+    }
+  ],
+  "backtest": {
+    "codes": [
+      "BTC-USDT",
+      "ETH-USDT",
+      "SOL-USDT"
+    ],
+    "end_date": "2026-06-13",
+    "engine": "daily",
+    "interval": "4H",
+    "source": "okx",
+    "start_date": "2022-06-13"
+  },
+  "data_sources": [
+    "okx"
+  ],
+  "generated_at": "2026-06-14T00:08:34.772597Z",
+  "metrics": {
+    "annual_return": -0.03985672475995694,
+    "avg_holding_days": 5.3,
+    "benchmark_return": 1.417501,
+    "calmar": -0.1344,
+    "excess_return": -1.567758,
+    "final_value": 849743.2391527555,
+    "information_ratio": -0.7158,
+    "max_consecutive_loss": 10,
+    "max_drawdown": -0.29646186757785964,
+    "profit_factor": 0.804,
+    "profit_loss_ratio": 1.0657,
+    "sharpe": -0.41126641756467464,
+    "sortino": -0.1189,
+    "total_return": -0.15025676084724449,
+    "trade_count": 100,
+    "win_rate": 0.43
+  },
+  "reproducibility": {
+    "config_hash": "2d96a2dc8f1f49d0b93394a5806bce7ac64779e2479377fac2e7751afcf82b95"
+  },
+  "run_dir": "runs\\suite\\Funding_Rate_MR_4H",
+  "schema_version": "0.1",
+  "warnings": []
+}

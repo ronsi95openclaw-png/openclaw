@@ -21,6 +21,9 @@ build/
 # Archived clutter (kept on disk, out of git)
 _Archive/
 
+# Hermes / graphify outputs (rebuilt daily, never committed)
+graphify-out/
+
 # Stray binaries / artifacts that don't belong in the repo
 *.exe
 *.zip

@@ -1,0 +1,44 @@
+{
+  "strategy": "TJR ICT Kill Zone \u2014 Lucid 25K Edition",
+  "instrument": "ES",
+  "contracts": 1,
+  "period": {
+    "first_trade": "2026-06-22",
+    "last_trade": "2026-06-22",
+    "trading_days": 5
+  },
+  "performance": {
+    "total_trades": 1,
+    "winners": 1,
+    "losers": 0,
+    "win_rate_pct": 100.0,
+    "avg_win": 195.5,
+    "avg_loss": 0,
+    "profit_factor": Infinity,
+    "avg_r_multiple": 2.0,
+    "total_pnl": 195.5,
+    "tp1_exits": 1,
+    "tp2_exits": 0,
+    "sl_exits": 0,
+    "eod_exits": 0
+  },
+  "risk": {
+    "max_drawdown_dollar": 0.0,
+    "max_drawdown_pct": 0.0,
+    "stop_ticks": 8,
+    "stop_points": 2.0,
+    "risk_per_trade": 100.0
+  },
+  "lucid_compliance": {
+    "max_loss_limit": 1500,
+    "hit_max_loss": false,
+    "consistency_violations": [],
+    "estimated_pass": false,
+    "profit_target_met": false
+  },
+  "equity": {
+    "start": 25000,
+    "end": 25195.5,
+    "net_change": 195.5
+  }
+}

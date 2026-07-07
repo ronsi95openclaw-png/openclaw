@@ -1,0 +1,87 @@
+2026-06-21T02:30:08-04:00 [EVENT] runner_start reason=boot
+2026-06-21T02:30:08-04:00 [DECISION] data_loader:skip reason=no_bars size=0
+2026-06-21T02:30:08-04:00 [EVENT] once_done reason=skip
+2026-06-21T02:30:17-04:00 [EVENT] runner_start reason=boot
+2026-06-21T02:30:17-04:00 [EVENT] halt reason=kill_switch
+2026-06-21T02:30:17-04:00 [EVENT] flatten reason=kill_switch
+2026-06-21T02:30:17-04:00 [EVENT] once_done reason=flat
+2026-06-21T02:36:57-04:00 [EVENT] runner_start reason=boot
+2026-06-21T02:36:57-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger does not validate risk from fills; max-loss/daily-loss/consecutive-loss breakers WILL NOT trip until account.py replaces it. NOT a standalone paper-risk simulator.
+2026-06-21T02:36:57-04:00 [DECISION] data_loader:skip reason=no_bars size=0
+2026-06-21T02:36:57-04:00 [EVENT] once_done reason=skip
+2026-06-25T21:46:56-04:00 [EVENT] runner_start reason=boot
+2026-06-25T21:46:56-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-06-25T21:46:56-04:00 [DECISION] data_loader:skip reason=no_bars size=0
+2026-06-25T21:46:56-04:00 [EVENT] once_done reason=skip
+2026-06-25T21:47:26-04:00 [EVENT] runner_start reason=boot
+2026-06-25T21:47:26-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-06-25T21:47:26-04:00 [DECISION] strategy:skip reason=no_setup size=0
+2026-06-25T21:47:26-04:00 [EVENT] once_done reason=skip
+2026-06-25T22:04:38-04:00 [EVENT] runner_start reason=boot
+2026-06-25T22:04:38-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-06-25T22:04:38-04:00 [DECISION] strategy:skip reason=no_setup size=0
+2026-06-25T22:04:38-04:00 [EVENT] once_done reason=skip
+2026-06-25T22:05:21-04:00 [EVENT] runner_start reason=boot
+2026-06-25T22:05:21-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-06-25T22:05:21-04:00 [DECISION] strategy:skip reason=no_setup size=0
+2026-06-25T22:05:21-04:00 [EVENT] once_done reason=skip
+2026-06-25T22:49:31-04:00 [EVENT] runner_start reason=boot
+2026-06-25T22:49:31-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-06-25T22:49:31-04:00 [DECISION] strategy:skip reason=no_setup size=0
+2026-06-25T22:49:31-04:00 [EVENT] once_done reason=skip
+2026-06-26T10:00:20-04:00 [EVENT] runner_start reason=boot
+2026-06-26T10:00:20-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-06-26T10:00:20-04:00 [DECISION] strategy:skip reason=no_setup size=0
+2026-06-26T10:00:20-04:00 [EVENT] once_done reason=skip
+2026-06-29T10:00:08-04:00 [EVENT] runner_start reason=boot
+2026-06-29T10:00:08-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-06-29T10:00:08-04:00 [DECISION] data_loader:skip reason=no_bars size=0
+2026-06-29T10:00:08-04:00 [EVENT] once_done reason=skip
+2026-06-30T10:01:00-04:00 [EVENT] runner_start reason=boot
+2026-06-30T10:01:00-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-06-30T10:01:00-04:00 [DECISION] data_loader:skip reason=no_bars size=0
+2026-06-30T10:01:00-04:00 [EVENT] once_done reason=skip
+2026-07-01T10:00:15-04:00 [EVENT] runner_start reason=boot
+2026-07-01T10:00:15-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-07-01T10:00:15-04:00 [DECISION] data_loader:skip reason=no_bars size=0
+2026-07-01T10:00:15-04:00 [EVENT] once_done reason=skip
+2026-07-01T23:41:07-04:00 [EVENT] runner_start reason=boot
+2026-07-01T23:41:07-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-07-01T23:41:07-04:00 [DECISION] data_loader:skip reason=no_bars size=0
+2026-07-01T23:41:07-04:00 [EVENT] once_done reason=skip
+2026-07-02T10:00:52-04:00 [EVENT] runner_start reason=boot
+2026-07-02T10:00:52-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-07-02T10:00:52-04:00 [DECISION] data_loader:skip reason=no_bars size=0
+2026-07-02T10:00:52-04:00 [EVENT] once_done reason=skip
+2026-07-02T15:24:54-04:00 [EVENT] runner_start reason=boot
+2026-07-02T15:24:54-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-07-02T15:24:54-04:00 [DECISION] data_loader:skip reason=no_bars size=0
+2026-07-02T15:24:54-04:00 [EVENT] once_done reason=skip
+2026-07-02T15:26:18-04:00 [EVENT] runner_start reason=boot
+2026-07-02T15:26:18-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-07-02T15:26:18-04:00 [DECISION] strategy:skip reason=no_setup size=0
+2026-07-02T15:26:18-04:00 [EVENT] once_done reason=skip
+2026-07-02T15:29:09-04:00 [EVENT] runner_start reason=boot
+2026-07-02T15:29:09-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-07-02T15:29:10-04:00 [DECISION] strategy:skip reason=no_setup size=0
+2026-07-02T15:29:10-04:00 [EVENT] once_done reason=skip
+2026-07-02T23:13:56-04:00 [EVENT] runner_start reason=boot
+2026-07-02T23:13:56-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-07-02T23:13:59-04:00 [DECISION] strategy:skip reason=no_setup size=0
+2026-07-02T23:13:59-04:00 [EVENT] once_done reason=skip
+2026-07-02T23:19:40-04:00 [EVENT] runner_start reason=boot
+2026-07-02T23:19:40-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-07-02T23:19:40-04:00 [DECISION] strategy:skip reason=no_setup size=0
+2026-07-02T23:19:40-04:00 [EVENT] once_done reason=skip
+2026-07-02T23:40:28-04:00 [EVENT] runner_start reason=boot
+2026-07-02T23:40:28-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-07-02T23:40:29-04:00 [DECISION] risk_guard:flat reason=eod_flatten size=0
+2026-07-02T23:40:29-04:00 [EVENT] halt reason=risk_guard_flat:eod_flatten
+2026-07-02T23:40:29-04:00 [EVENT] flatten reason=risk_guard_flat:eod_flatten
+2026-07-02T09:42:00-04:00 [EVENT] runner_start reason=boot
+2026-07-02T09:42:00-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-07-02T09:42:00-04:00 [DECISION] risk_guard:approve reason=ok size=1
+2026-07-02T09:42:00-04:00 [EVENT] runner_start reason=boot
+2026-07-02T09:42:00-04:00 [EVENT] paper_ledger_not_risk_validating reason=fallback _PaperLedger exercises risk_guard breakers via an OHLC paper fill/close simulation (realized P&L + consecutive losses do move on stop/TP fills), but it is a minimal approximation, NOT a broker fill feed — replace with account.py before trusting paper P&L.
+2026-07-02T09:42:00-04:00 [DECISION] risk_guard:approve reason=ok size=1
+2026-07-02T09:42:00-04:00 [ORDER] dry_run:logged_only long 1 ES @mkt stop=4744.25 tp1=4762.25 tp2=4774.25 reason=DRY_RUN: HERMES_BOT_LIVE!=1 or go_live=false

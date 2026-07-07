@@ -1,0 +1,20 @@
+✗ Another gateway instance is already running (PID 7892).
+  Use 'hermes gateway restart' to replace it,
+  or 'hermes gateway stop' first.
+  Or use 'hermes gateway run --replace' to auto-replace.
+⚠️  hermes config: Failed to parse C:\Users\ronsi95openclaw\AppData\Local\hermes\config.yaml: while parsing a block mapping
+  in "C:\Users\ronsi95openclaw\AppData\Local\hermes\config.yaml", line 8, column 1
+expected <block end>, but found '<block mapping start>'
+  in "C:\Users\ronsi95openclaw\AppData\Local\hermes\config.yaml", line 41, column 3. Falling back to default config — every user override (auxiliary providers, fallback chain, model settings) is being IGNORED. Fix the YAML and restart.
+✗ Another gateway instance is already running (PID 7892).
+  Use 'hermes gateway restart' to replace it,
+  or 'hermes gateway stop' first.
+  Or use 'hermes gateway run --replace' to auto-replace.
+✗ Another gateway instance is already running (PID 16484).
+  Use 'hermes gateway restart' to replace it,
+  or 'hermes gateway stop' first.
+  Or use 'hermes gateway run --replace' to auto-replace.
+WARNING tools.mcp_tool: MCP server 'firecrawl-mcp' tool 'firecrawl_parse': suspicious description content — system prompt injection attempt. Description: 
+Parse a file using Firecrawl's /v2/parse endpoint.
+
+In local/non-cloud MCP mode, this tool reads filePath from the MCP server filesystem and posts multipart data to the configured self-hosted FIRECRA

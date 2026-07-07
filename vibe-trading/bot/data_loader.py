@@ -55,18 +55,34 @@ def _yf_ticker(instrument: str) -> str:
 
 
 def _build_from_csv(csv_path: str) -> Optional[dict]:
-    """Parse a NinjaTrader-format CSV (Date,Time,Open,High,Low,Close,Volume) into bars_by_tf."""
+    """Parse NinjaTrader or yfinance CSV into bars_by_tf.
+
+    NinjaTrader: Date,Time,Open,High,Low,Close,Volume (8-digit date + 6-digit time, no header tz)
+    yfinance:    Datetime,open,high,low,close,volume  (offset-aware ISO timestamp as index)
+    """
     try:
         import pandas as pd
-        df = pd.read_csv(csv_path, dtype=str)
-        df.columns = [c.strip() for c in df.columns]
-        df["_dt"] = pd.to_datetime(
-            df["Date"].str.zfill(8) + df["Time"].str.zfill(6),
-            format="%Y%m%d%H%M%S",
-        )
-        df = df.set_index("_dt")
-        df.index = df.index.tz_localize(ET)
-        df.rename(columns={c: c.lower() for c in df.columns}, inplace=True)
+        raw = pd.read_csv(csv_path, dtype=str)
+        raw.columns = [c.strip() for c in raw.columns]
+        first_col = raw.columns[0].lower()
+
+        if first_col in ("datetime", "date time", "timestamp"):
+            # yfinance format — first column is an offset-aware ISO datetime
+            raw = raw.rename(columns={raw.columns[0]: "_dt"})
+            raw["_dt"] = pd.to_datetime(raw["_dt"], utc=True).dt.tz_convert(ET)
+            df = raw.set_index("_dt")
+            df.columns = [c.lower() for c in df.columns]
+        else:
+            # NinjaTrader format — Date (YYYYMMDD) + Time (HHMMSS) columns
+            df = raw.copy()
+            df["_dt"] = pd.to_datetime(
+                df["Date"].str.zfill(8) + df["Time"].str.zfill(6),
+                format="%Y%m%d%H%M%S",
+            )
+            df = df.set_index("_dt")
+            df.index = df.index.tz_localize(ET)
+            df.columns = [c.lower() for c in df.columns]
+
         df = df[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric, errors="coerce")
         df = df.dropna(subset=["open", "high", "low", "close"])
         if df.empty:
@@ -74,7 +90,7 @@ def _build_from_csv(csv_path: str) -> Optional[dict]:
         agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
         return {
             "1m":  df,
-            "5m":  df,
+            "5m":  df.resample("5min").agg(agg).dropna(subset=["open", "close"]),
             "15m": df.resample("15min").agg(agg).dropna(subset=["open", "close"]),
             "1h":  df.resample("1h").agg(agg).dropna(subset=["open", "close"]),
         }

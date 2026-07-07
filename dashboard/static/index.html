@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#1a1a1a" />
+<title>OpenClaw HQ</title>
+<style>
+  :root {
+    --bg: #1a1a1a;
+    --panel: #232323;
+    --panel-2: #2b2b2b;
+    --line: #333;
+    --txt: #f2f2f2;
+    --muted: #9a9a9a;
+    --gold: #F5A623;
+    --green: #3fb950;
+    --red: #f04747;
+    --yellow: #e3b341;
+    --grey: #6e7681;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--txt);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  body { max-width: 480px; margin: 0 auto; padding: 16px 14px 40px; }
+  a { color: var(--gold); text-decoration: none; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding-bottom: 14px; border-bottom: 1px solid var(--line); margin-bottom: 16px;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .logo {
+    width: 34px; height: 34px; border-radius: 9px;
+    background: linear-gradient(135deg, var(--gold), #c97f12);
+    display: grid; place-items: center; font-weight: 800; color: #1a1a1a; font-size: 18px;
+  }
+  .brand h1 { font-size: 18px; margin: 0; letter-spacing: .2px; }
+  .badge {
+    font-size: 12px; font-weight: 700; color: var(--gold);
+    border: 1px solid var(--gold); border-radius: 999px; padding: 3px 9px;
+  }
+
+  .conn { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+  .conn .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--grey); }
+  .conn.live .pulse { background: var(--green); box-shadow: 0 0 0 0 rgba(63,185,80,.6); animation: pulse 1.8s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(63,185,80,.5);} 70%{box-shadow:0 0 0 7px rgba(63,185,80,0);} 100%{box-shadow:0 0 0 0 rgba(63,185,80,0);} }
+
+  .section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1.4px; color: var(--muted); margin: 18px 2px 8px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 13px 14px; margin-bottom: 10px; display: flex; align-items: center; gap: 12px;
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; flex: 0 0 auto; background: var(--grey); }
+  .dot.green { background: var(--green); } .dot.red { background: var(--red); }
+  .dot.yellow { background: var(--yellow); } .dot.grey { background: var(--grey); }
+  .card .body { flex: 1; min-width: 0; }
+  .card .name { font-size: 15px; font-weight: 650; }
+  .card .note { font-size: 12px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .meta { font-size: 11px; color: var(--grey); text-align: right; flex: 0 0 auto; }
+  .card .state { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+  .state.green { color: var(--green); } .state.red { color: var(--red); }
+  .state.yellow { color: var(--yellow); } .state.grey { color: var(--grey); }
+
+  .pw {
+    background: linear-gradient(160deg, var(--panel-2), var(--panel));
+    border: 1px solid var(--line); border-radius: 16px; padding: 16px; margin-bottom: 10px;
+  }
+  .pw .row { display: flex; align-items: baseline; justify-content: space-between; }
+  .pw .count { font-size: 38px; font-weight: 800; color: var(--gold); line-height: 1; }
+  .pw .label { font-size: 12px; color: var(--muted); }
+  .pw .last { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .pw a.cta { display: inline-block; margin-top: 12px; font-weight: 700; font-size: 13px; }
+
+  .links { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .link {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px; font-weight: 650; font-size: 14px; display: flex; align-items: center; justify-content: space-between;
+  }
+  .link span.arr { color: var(--gold); }
+
+  .qr { text-align: center; padding: 18px 14px; }
+  .qr img { width: 168px; height: 168px; background: #fff; border-radius: 12px; padding: 8px; }
+  .qr .url { font-size: 13px; color: var(--gold); margin-top: 10px; word-break: break-all; font-weight: 600; }
+  .qr .hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .qr img.missing + .url::before { content: ""; }
+
+  footer { text-align: center; color: var(--grey); font-size: 11px; margin-top: 22px; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="logo">◧</div>
+      <h1>OpenClaw HQ</h1>
+    </div>
+    <div class="badge" id="version">v—</div>
+  </header>
+
+  <div class="conn" id="conn"><span class="pulse"></span><span id="conn-txt">connecting…</span></div>
+
+  <div class="section-label">Components</div>
+  <div id="components">
+    <div class="card"><span class="dot grey"></span><div class="body"><div class="name">Loading…</div></div></div>
+  </div>
+
+  <div class="section-label">Paper Watch</div>
+  <div class="pw">
+    <div class="row">
+      <div><div class="count" id="pw-count">—</div><div class="label">liquidity-sweep signals logged</div></div>
+    </div>
+    <div class="last" id="pw-last">last signal: —</div>
+    <a class="cta" href="/signals">View signal table →</a>
+  </div>
+
+  <div class="section-label">Quick links</div>
+  <div class="links">
+    <a class="link" href="/signals">Paper Watch <span class="arr">→</span></a>
+    <a class="link" href="#components">Content Pipeline <span class="arr">→</span></a>
+  </div>
+
+  <div class="section-label">Scan to share</div>
+  <div class="card qr" style="display:block">
+    <img id="qr" src="/qr.png" alt="Scan to open this dashboard on your phone"
+         onerror="this.style.display='none';document.getElementById('qr-hint').textContent='QR not generated — run dashboard/start.py';" />
+    <div class="url" id="qr-url"></div>
+    <div class="hint" id="qr-hint">Scan with your phone camera to open OpenClaw HQ</div>
+  </div>
+
+  <footer>OpenClaw HQ · read-only status · updates live via WebSocket</footer>
+
+<script>
+  const STATE = { green:'ready', red:'broken', yellow:'attention', grey:'idle' };
+  function dotClass(status){
+    if (status === 'ready') return 'green';
+    if (status === 'broken') return 'red';
+    if (status === 'attention' || status === 'idle') return 'yellow';
+    return 'grey';
+  }
+  function pretty(key){
+    return ({openalice:'OpenAlice', clawbot:'ClawBot', content_pipeline:'Content Pipeline', haul:'Haul (HaulYeah)'})[key] || key;
+  }
+  function ago(iso){
+    if(!iso) return '—';
+    const t = new Date(iso).getTime(); if(isNaN(t)) return '—';
+    const s = Math.max(0, (Date.now()-t)/1000);
+    if (s < 60) return Math.floor(s)+'s ago';
+    if (s < 3600) return Math.floor(s/60)+'m ago';
+    if (s < 86400) return Math.floor(s/3600)+'h ago';
+    return Math.floor(s/86400)+'d ago';
+  }
+
+  function render(d){
+    document.getElementById('version').textContent = 'v' + (d.openclaw_version || '—');
+
+    const order = ['openalice','clawbot','content_pipeline','haul'];
+    const wrap = document.getElementById('components');
+    wrap.innerHTML = '';
+    for (const k of order){
+      const c = (d.components && d.components[k]) || {status:'grey', note:''};
+      const cls = dotClass(c.status);
+      const stateTxt = (c.status || '').toUpperCase();
+      const el = document.createElement('div');
+      el.className = 'card';
+      el.innerHTML =
+        '<span class="dot '+cls+'"></span>' +
+        '<div class="body"><div class="name">'+pretty(k)+'</div>' +
+        '<div class="note">'+(c.note||'')+'</div></div>' +
+        '<div class="meta"><div class="state '+cls+'">'+stateTxt+'</div>' +
+        '<div>'+ago(c.last_seen)+'</div></div>';
+      wrap.appendChild(el);
+    }
+
+    const pw = d.paper_watch || {};
+    document.getElementById('pw-count').textContent = (pw.total_signals ?? '—');
+    document.getElementById('pw-last').textContent = 'last signal: ' +
+      (pw.last_signal ? new Date(pw.last_signal).toLocaleString() + '  (' + ago(pw.last_signal) + ')' : '—');
+  }
+
+  function setConn(live){
+    const c = document.getElementById('conn');
+    c.classList.toggle('live', live);
+    document.getElementById('conn-txt').textContent = live ? 'live · auto-refreshing' : 'reconnecting…';
+  }
+
+  // Show the page URL beneath the QR (whatever host the phone loaded).
+  document.getElementById('qr-url').textContent = location.origin;
+
+  let ws;
+  function connect(){
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(proto + '://' + location.host + '/ws');
+    ws.onopen = () => setConn(true);
+    ws.onmessage = (ev) => { try { render(JSON.parse(ev.data)); } catch(e){} };
+    ws.onclose = () => { setConn(false); setTimeout(connect, 3000); };
+    ws.onerror = () => { try { ws.close(); } catch(e){} };
+  }
+  // Initial paint via REST (instant), then live via WS.
+  fetch('/status').then(r=>r.json()).then(render).catch(()=>{});
+  connect();
+</script>
+</body>
+</html>

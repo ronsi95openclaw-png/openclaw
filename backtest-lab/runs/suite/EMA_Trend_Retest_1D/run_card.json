@@ -1,0 +1,79 @@
+{
+  "artifacts": [
+    {
+      "path": "artifacts/equity.csv",
+      "sha256": "5490f7cb027a8af29d8529d6095427c00bff1bb2189f621d0d96e6fc3268a19b",
+      "size_bytes": 162739
+    },
+    {
+      "path": "artifacts/metrics.csv",
+      "sha256": "17ca1872e790efe244be541f4c25d777524e00044189ad2d207b87349107edf0",
+      "size_bytes": 378
+    },
+    {
+      "path": "artifacts/ohlcv_BTC-USDT.csv",
+      "sha256": "29cf71116a22ae0b247ecc79124cd13984869f30704da45e24a0a02b570887ca",
+      "size_bytes": 86028
+    },
+    {
+      "path": "artifacts/ohlcv_ETH-USDT.csv",
+      "sha256": "e5a86ba3a874fb71fcd76eb19c8c1fa1225f23d7b7352b2fc6d7da7f683a189a",
+      "size_bytes": 82877
+    },
+    {
+      "path": "artifacts/ohlcv_SOL-USDT.csv",
+      "sha256": "ddc7436b3cafdec4dd7c6edc64c5cdad5f3abbba5f3ea62addaffd7f8cdd58c5",
+      "size_bytes": 76937
+    },
+    {
+      "path": "artifacts/positions.csv",
+      "sha256": "911a546987570c7551997c57dd5e6e7ed9953b5ae4e7865b7b7a381e15f0951d",
+      "size_bytes": 73339
+    },
+    {
+      "path": "artifacts/trades.csv",
+      "sha256": "b9891ec833abaad7e7a6023d9c506bd72e70895e7a6262d13c87586cd1a1ca44",
+      "size_bytes": 9602
+    }
+  ],
+  "backtest": {
+    "codes": [
+      "BTC-USDT",
+      "ETH-USDT",
+      "SOL-USDT"
+    ],
+    "end_date": "2026-06-13",
+    "engine": "daily",
+    "interval": "1D",
+    "source": "okx",
+    "start_date": "2022-06-13"
+  },
+  "data_sources": [
+    "okx"
+  ],
+  "generated_at": "2026-06-14T00:06:49.072846Z",
+  "metrics": {
+    "annual_return": 0.154177764966976,
+    "avg_holding_days": 47.2,
+    "benchmark_return": 1.635106,
+    "calmar": 0.266,
+    "excess_return": -0.859151,
+    "final_value": 1775955.314288185,
+    "information_ratio": -0.2811,
+    "max_consecutive_loss": 14,
+    "max_drawdown": -0.5795789200601142,
+    "profit_factor": 1.3837,
+    "profit_loss_ratio": 3.2285,
+    "sharpe": 0.5404027870226996,
+    "sortino": 0.7673,
+    "total_return": 0.775955314288185,
+    "trade_count": 70,
+    "win_rate": 0.3
+  },
+  "reproducibility": {
+    "config_hash": "3aefa0bd27e938124f145d068f02d3e2472306e66e5368aa3672421dd63147b8"
+  },
+  "run_dir": "runs\\suite\\EMA_Trend_Retest_1D",
+  "schema_version": "0.1",
+  "warnings": []
+}
