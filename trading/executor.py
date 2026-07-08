@@ -31,12 +31,11 @@ _MIN_ORDER_USD = {
 
 
 def _log_trade(entry: dict) -> None:
-    """Append trade result to trades.log."""
+    """Append trade result to trades.log as JSONL (one JSON object per line)."""
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    ts   = datetime.now(timezone.utc).isoformat()
-    line = f"TRADE_DECISION | {ts} | {json.dumps(entry)}\n"
+    entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
     with open(_LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(line)
+        f.write(json.dumps(entry) + "\n")
     logger.info(f"Trade logged: {entry}")
 
 
@@ -56,13 +55,31 @@ def _place_order(instrument: str, side: str, notional_usd: float) -> dict:
 
     api_key, secret = _get_keys()
 
-    # Market orders use notional (USDT amount) for BUY, quantity for SELL
-    params = {
-        "instrument_name": instrument,
-        "side":            side,
-        "type":            "MARKET",
-        "notional":        str(round(notional_usd, 2)),
-    }
+    # Crypto.com market orders:
+    # BUY  → use "notional" (USD amount to spend)
+    # SELL → use "quantity" (coin amount to sell); derive from notional / current price
+    if side == "BUY":
+        params = {
+            "instrument_name": instrument,
+            "side":            side,
+            "type":            "MARKET",
+            "notional":        str(round(notional_usd, 2)),
+        }
+    else:
+        # For SELL, fetch current price to convert USD notional → coin quantity
+        from trading.exchange import fetch_ticker_price
+        try:
+            current_price = fetch_ticker_price(instrument)
+            quantity = round(notional_usd / current_price, 8)
+        except Exception:
+            # Fallback: send notional and let exchange reject cleanly rather than silently fail
+            raise ValueError(f"SELL sizing failed: could not fetch price for {instrument}")
+        params = {
+            "instrument_name": instrument,
+            "side":            side,
+            "type":            "MARKET",
+            "quantity":        str(quantity),
+        }
 
     body = _sign("private/create-order", params, api_key, secret)
 
@@ -114,7 +131,9 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
         _log_trade({"action": "SKIP", "coin": coin, "reason": msg, "confidence": signal.confidence, "mode": mode})
         return {"status": "skipped", "reason": msg}
 
-    # Position sizing: 1.5% of portfolio per trade
+    # Position sizing: TRADE_RISK_PCT% of portfolio per trade (default 5.0)
+    # Set TRADE_RISK_PCT in .env — e.g. 5.0 gives $5 on a $100 portfolio
+    risk_pct = float(os.getenv("TRADE_RISK_PCT", "5.0"))
     from trading.exchange import fetch_ticker_price
     try:
         price = fetch_ticker_price(coin)
@@ -123,7 +142,7 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
         _log_trade({"action": "ERROR", "coin": coin, "reason": msg, "mode": mode})
         return {"status": "error", "reason": msg}
 
-    sizing     = calculate_position_size(portfolio_usd, price, risk_pct=1.5)
+    sizing     = calculate_position_size(portfolio_usd, price, risk_pct=risk_pct)
     usd_amount = sizing["usd_amount"]
     min_order  = _MIN_ORDER_USD.get(coin, 5.0)
 
@@ -156,16 +175,36 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
 
     try:
         result = _place_order(coin, action, usd_amount)
+        # For SELL: compute PnL by comparing to avg cost basis from prior BUY logs
+        pnl = None
+        if action == "SELL":
+            try:
+                buys = []
+                if _LOG_FILE.exists():
+                    for line in _LOG_FILE.read_text(encoding="utf-8").splitlines():
+                        try:
+                            e = json.loads(line)
+                            if e.get("action") == "BUY" and e.get("coin") == coin and e.get("status") == "executed":
+                                buys.append(e)
+                        except Exception:
+                            pass
+                if buys:
+                    avg_buy_price = sum(b["price"] for b in buys) / len(buys)
+                    pnl = round((price - avg_buy_price) / avg_buy_price * 100, 2)
+            except Exception:
+                pass
+
         entry  = {
             "action":     action,
             "coin":       coin,
             "usd_amount": usd_amount,
             "price":      price,
-            "rsi":        round(signal.rsi, 2),
+            "rsi":        round(getattr(signal, "rsi", 0), 2),
             "confidence": signal.confidence,
             "order_id":   result.get("order_id", "unknown"),
             "status":     "executed",
             "mode":       "LIVE",
+            "pnl":        pnl,
         }
         _log_trade(entry)
         try:
