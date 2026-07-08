@@ -405,7 +405,14 @@ def ask_claude(
     """Ask Claude Haiku for complex tasks. Falls back to Ollama on error."""
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
-        return ask_llm(prompt, system=system, history=history)
+        # Only fall back to Ollama if it is actually reachable. Without this
+        # guard, ask_llm (Ollama offline) -> ask_claude (no key) -> ask_llm
+        # recurses infinitely instead of failing with a clear error.
+        if _ollama_importable_and_online():
+            return ask_llm(prompt, system=system, history=history)
+        raise RuntimeError(
+            "No LLM backend available: ANTHROPIC_API_KEY not set and Ollama is offline."
+        )
 
     client = anthropic.Anthropic(api_key=api_key)
     messages = []
