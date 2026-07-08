@@ -112,13 +112,13 @@ class StrategyConfig:
     """Operational tunables for the strategy (kept OUT of the mandate).
 
     Defaults match the TJR spec and the reference backtest:
-    NY-Open kill zone, 20-bar swing lookback, 3-bar sweep window, 5-bar MSB
+    NY-Open kill zone, 20-bar swing lookback, 2-bar sweep window, 5-bar MSB
     window, OTE 61.8%-79%, TP1=2R, TP2=4R, 1 contract.
     """
 
     kill_zones: tuple[str, ...] = ("ny_open", "london_open")
     lookback: int = 20
-    sweep_bars: int = 3
+    sweep_bars: int = 2
     msb_bars: int = 5
     ob_bars: int = 6          # back-scan window (bars) for the Order Block
     ote_low: float = 0.618

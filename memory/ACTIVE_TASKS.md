@@ -49,19 +49,31 @@
 
 ## BLOCKED — WAITING ON EXTERNAL
 
-### 6. Patch `infra/sync_to_vault.bat` to OPENCLAW_ prefix convention
-- **Status:** Hands-off notice received 2026-05-31 ~06:55 — another Claude Code session is reorganizing `Documents/Obsidian Vault/`. Don't touch the vault until cleared.
-- **What I did:** synced `memory/` to vault before the notice → un-prefixed duplicates of ACTIVE_TASKS/DECISIONS/SESSION_HANDOFF now sit alongside the prior reorg's `OPENCLAW_*.md` versions in `20 - OpenClaw/Memory/`. Reverted my un-committed `sync_to_vault.bat` naming patch.
-- **Steps after all-clear:**
-  1. See what naming convention the reorg session standardized on
-  2. Patch `infra/sync_to_vault.bat` to match (likely the `OPENCLAW_` prefix per prior commit `89b8ee2`)
-  3. Delete the un-prefixed duplicates I left in the vault if no longer wanted
-  4. Re-run `infra/sync_to_vault.bat`
-  5. From the vault: stage `20 - OpenClaw/Memory/` only, commit with `clawbot@openclaw.local`, push to `origin/main`
+### 6. ~~Patch `infra/sync_to_vault.bat` to OPENCLAW_ prefix convention~~ — DONE 2026-06-27
+- **Status:** ✅ Complete — `infra/sync_to_vault.bat` rewritten on branch `claude/graphify-ruflo-obsidian-0ebgmd`
+- **What changed:**
+  - Old `:sync` used bare `xcopy` (no prefix)
+  - New `:sync` uses a FOR loop: `ACTIVE_TASKS.md` → `OPENCLAW_ACTIVE_TASKS.md`, etc.
+  - `trash_hauling_bot/memory/*.md` → `HAULYALL_*.md` in vault `10 - HaulYA'LL!`
+  - `memory/*.md` → `OPENCLAW_*.md` in vault `20 - OpenClaw/Memory`
+  - `memory/strategy/*.md` → `OPENCLAW_*.md` in vault `20 - OpenClaw/Memory/Strategy`
+  - `graphify-out/GRAPH_REPORT.md` → `OPENCLAW_GRAPH_REPORT.md` in vault `20 - OpenClaw/Knowledge-Graph` ← NEW
+- **Still needed (manual, on Windows):**
+  1. Run `infra/sync_to_vault.bat` once to push the prefixed files to vault
+  2. Delete old un-prefixed duplicates in `20 - OpenClaw/Memory/` (ACTIVE_TASKS.md, DECISIONS.md, SESSION_HANDOFF.md)
+  3. From vault: stage `20 - OpenClaw/` only, commit with `clawbot@openclaw.local`, push `origin/main`
 
 ## DEFERRED INDEFINITELY
 
-### 7. Ruflo skill installation
-- **Status:** No `SKILL.md` on disk in any expected location
-- **Why deferred:** Lower priority than auth + daily routine; per-prompt hardcoded rules cover for now
-- **Action when ready:** Save Ruflo template to `skills/ruflo/SKILL.md`, install in Claude Code skills dir
+### 7. ~~Ruflo skill installation~~ — DONE 2026-06-27
+- **Status:** ✅ Complete — `skills/ruflo/SKILL.md` created on branch `claude/graphify-ruflo-obsidian-0ebgmd`
+- **Load path:** `skills/ruflo/SKILL.md` (Windows: `C:\Users\ronsi95openclaw\Claude-openclaw\skills\ruflo\SKILL.md`)
+- **Alt install:** copy to `%APPDATA%\Claude\skills\ruflo\SKILL.md` for global availability
+- **What's in it:** universal session rules, escalation hierarchy, memory paths, Hermes integration, session-end checklist
+
+### 8. Hermes knowledge-graph agent — DONE 2026-06-27
+- **Status:** ✅ Complete — `agents/hermes.py` + daily APScheduler job + `/hermes` Telegram command
+- **Enable:** `/hermes on` in Telegram (runs at 09:30 UTC daily)
+- **Manual:** `/hermes now` to trigger immediately
+- **Outputs:** `graphify-out/` (git-ignored) + `memory/HERMES_GRAPH_REPORT.md` (synced to vault via sync_to_vault.bat)
+- **Obsidian:** `graphify-out/obsidian/` — copy to vault `25 - AI/Knowledge-Graph/` after sync_to_vault.bat patch

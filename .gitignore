@@ -14,12 +14,11 @@ build/
 .superpowers/
 
 
-
-
-
-
 # Archived clutter (kept on disk, out of git)
 _Archive/
+
+# Hermes / graphify outputs (rebuilt daily, never committed)
+graphify-out/
 
 # Stray binaries / artifacts that don't belong in the repo
 *.exe
@@ -29,3 +28,12 @@ CC-Session-Logs/
 
 # Watchdog runtime state (per-host, never commit)
 infra/watchdog_state.json
+
+# Secrets / credentials (never commit)
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+service_account*.json

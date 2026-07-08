@@ -48,11 +48,15 @@ def status():
             with open(bts[-1], encoding="utf-8") as f:
                 r = json.load(f)
             perf = r.get("performance", r) if isinstance(r, dict) else {}
+            risk = r.get("risk", {}) if isinstance(r, dict) else {}
             print("latest backtest:", os.path.basename(bts[-1]))
-            for k in ("trades", "win_rate", "total_pnl", "max_drawdown",
-                      "sharpe", "avg_trades_per_day", "worst_day"):
+            for k in ("total_trades", "win_rate_pct", "total_pnl",
+                      "sharpe_per_trade", "avg_trades_per_day"):
                 if isinstance(perf, dict) and k in perf:
                     print(f"  {k}: {perf[k]}")
+            for k in ("max_drawdown_dollar", "max_drawdown_pct", "worst_day"):
+                if isinstance(risk, dict) and k in risk:
+                    print(f"  {k}: {risk[k]}")
             if isinstance(r, dict) and "decisions" in r:
                 print("  decisions:", r["decisions"])
         except Exception as e:
@@ -97,7 +101,7 @@ def ready():
         try:
             r = json.load(open(bts[-1], encoding="utf-8"))
             perf = r.get("performance", r) if isinstance(r, dict) else {}
-            trades = int(perf.get("trades", 0) or 0)
+            trades = int(perf.get("total_trades", 0) or 0)
             pnl = perf.get("total_pnl")
             profitable = pnl is not None and float(pnl) > 0
         except Exception:

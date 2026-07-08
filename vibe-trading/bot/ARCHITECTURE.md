@@ -6,7 +6,7 @@ strategy into mandate-checked, audit-logged, paper-by-default order decisions.
 **Authoritative inputs (read at runtime, never copied/hardcoded):**
 - Rules: `vibe-trading/lucid_mandate.json`
 - Strategy spec: `vibe-trading/strategies/tjr_lucid_strategy.md`
-- Reference backtests: `vibe-trading/backtest/tjr_backtest.py`, `vibe-trading/backtest/backtest_4yr/tjr_backtest_4yr.py`
+- Reference backtests: `vibe-trading/bot/backtest.py` (the validated engine — reuses this package's own `strategy.py`/`risk_guard.py`; use this one). `vibe-trading/backtest/tjr_backtest.py` is an older, unsynced standalone implementation — do not use for anything that needs to match live behavior. `backtest_4yr/` was a one-off experiment, archived 2026-07-02 to `_Archive/2026-07-02-vibe-trading-cleanup/`.
 
 > This document is the single source of truth for module boundaries and function
 > signatures. Every module is implemented independently against THIS contract.

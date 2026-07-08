@@ -1,0 +1,99 @@
+{
+  "name": "Haul Y'all",
+  "tagline": "Got junk? We'll haul y'all out.",
+  "business_type": "Junk removal & trash hauling",
+  "contact": {
+    "phone": "(469) 618-7677",
+    "phone_e164": "+14696187677",
+    "email": "junkgone@haulya-ll.com"
+  },
+  "hours": "Mon-Sat 7am-7pm",
+  "service_area": {
+    "region": "Dallas-Fort Worth (DFW), Texas",
+    "cities": [
+      "Dallas",
+      "Fort Worth",
+      "Arlington",
+      "Irving",
+      "Garland",
+      "Plano",
+      "Frisco",
+      "McKinney",
+      "Denton",
+      "Grand Prairie",
+      "Mesquite"
+    ],
+    "travel_note": "Travel surcharge applies beyond 20 miles from central DFW"
+  },
+  "colors": {
+    "haul_gold": "#F5A623",
+    "yeah_orange": "#D84A1F",
+    "texas_night": "#2A2D34",
+    "dust_cream": "#F5F0E8"
+  },
+  "color_roles": {
+    "primary": "#F5A623",
+    "accent": "#D84A1F",
+    "dark": "#2A2D34",
+    "light": "#F5F0E8"
+  },
+  "voice": {
+    "personality": "Friendly Texas, upfront and honest, hardworking, no-nonsense",
+    "tone": "Casual, warm, neighborly, confident",
+    "principles": [
+      "Upfront flat-rate pricing - no hidden fees, no surprises",
+      "Locally owned and DFW-based",
+      "Show up when we say we will",
+      "Any size job, same-week service"
+    ],
+    "do_say": [
+      "Got junk?",
+      "Haul y'all out",
+      "Upfront flat-rate",
+      "No hassle",
+      "Free quote"
+    ],
+    "avoid": [
+      "Corporate jargon",
+      "Pushy hard-sell language",
+      "Overpromising or fake urgency"
+    ]
+  },
+  "messaging": {
+    "value_props": [
+      "Upfront flat-rate pricing",
+      "Same-week pickup across DFW",
+      "Any size job - single item to full cleanout",
+      "Locally owned, honest, reliable"
+    ],
+    "services": [
+      "Garage cleanouts",
+      "Estate cleanouts",
+      "Construction & yard debris removal",
+      "Furniture & appliance haul-away",
+      "Property turnovers for realtors & landlords"
+    ]
+  },
+  "pricing_summary": {
+    "base_minimum": 75,
+    "additional_item": 25,
+    "heavy_bulky_item": 25,
+    "travel_over_20mi": 25,
+    "same_or_next_day": 50,
+    "note": "Base $75 includes first item. See bot pricing for full breakdown."
+  },
+  "assets": {
+    "logo_treatment": "Haul Gold logo on Texas Night background",
+    "image_text_rule": "Keep text on ad images under 20%; logo bottom corner; phone number on image is fine.",
+    "preferred_creatives": [
+      "Before/after of a cleared space",
+      "Truck or crew with branded logo",
+      "Clean, bright, friendly Texas vibe"
+    ]
+  },
+  "meta_ads": {
+    "ad_account_id": "795836823772411",
+    "status": "Not enabled yet: is_ads_mcp_enabled=false, no payment method, no connected Page",
+    "draft_reference": "HaulYeah_Meta_Ads_Draft.md"
+  }
+}

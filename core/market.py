@@ -69,11 +69,35 @@ def get_market_summary() -> str:
     prompt = _ANALYSIS_PROMPT.format(price_block=price_block)
     analysis, brain = ask_hybrid(prompt, force="simple")   # use Ollama — quick task
 
+    # Strip Markdown bold/italic that Ollama sometimes emits (**text**, *text*)
+    import re
+    analysis = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', analysis)
+    analysis = re.sub(r'\*(.+?)\*', r'<i>\1</i>', analysis)
+
+    # ── Stocks (optional — requires yfinance) ────────────────────────────────
+    stock_line = ""
+    try:
+        import yfinance as yf
+        tickers = yf.Tickers("SPY QQQ NVDA")
+        spy_price  = tickers.tickers["SPY"].fast_info["last_price"]
+        qqq_price  = tickers.tickers["QQQ"].fast_info["last_price"]
+        nvda_price = tickers.tickers["NVDA"].fast_info["last_price"]
+        stock_line = (
+            f"📈 <b>Stocks</b>\n"
+            f"SPY ${spy_price:,.2f} | QQQ ${qqq_price:,.2f} | NVDA ${nvda_price:,.2f}"
+        )
+    except Exception:
+        pass  # stocks optional — don't break crypto
+
     lines = [
         "📊 <b>Market Update</b>",
         "",
         "<b>Live Prices:</b>",
         price_block,
+    ]
+    if stock_line:
+        lines += ["", stock_line]
+    lines += [
         "",
         f"<b>ClawBot Analysis</b> <i>(via {brain})</i>:",
         analysis,

@@ -107,17 +107,16 @@ To produce it: NinjaTrader → **Tools → Historical Data Manager** → downloa
 ```bash
 cd C:\Users\ronsi95openclaw\Claude-openclaw
 
-# Reference 2-year backtest (proves the strategy detection helpers the bot reuses)
+# Preferred: the validated engine, reuses THIS package's strategy.py/risk_guard.py
+python vibe-trading/bot/trade_ops.py backtest vibe-trading/backtest/data/ES_5M.csv
+
+# Older, standalone, unsynced with live strategy logic — avoid unless you need it specifically
 python vibe-trading/backtest/tjr_backtest.py --csv vibe-trading/backtest/data/ES_5M.csv --daily
-
-# Restrict to one instrument / year
-python vibe-trading/backtest/tjr_backtest.py --csv vibe-trading/backtest/data/ES_5M.csv --instrument ES --year 2024
-
-# 4-year run
-python vibe-trading/backtest/backtest_4yr/tjr_backtest_4yr.py --csv <path>
 ```
 
-Results print to console and are saved to `vibe-trading/backtest/results/`. The backtest reads the **same** `lucid_mandate.json` the bot does.
+Results print to console and are saved to `vibe-trading/backtest/results/` (standalone engine) or `vibe-trading/bot/logs/backtests/` (preferred engine). The backtest reads the **same** `lucid_mandate.json` the bot does.
+
+(A one-off 4-year backtest experiment, `backtest_4yr/`, was archived 2026-07-02 to `_Archive/2026-07-02-vibe-trading-cleanup/` — it was never wired to the live strategy or any cron job.)
 
 ---
 
@@ -228,5 +227,6 @@ Enforced in **pure code** (never by model output), on every order path:
 - **Locked contract:** [`ARCHITECTURE.md`](ARCHITECTURE.md)
 - **Mandate (source of truth):** [`../lucid_mandate.json`](../lucid_mandate.json)
 - **Strategy spec:** [`../strategies/tjr_lucid_strategy.md`](../strategies/tjr_lucid_strategy.md)
-- **Reference backtests:** [`../backtest/tjr_backtest.py`](../backtest/tjr_backtest.py), `../backtest/backtest_4yr/tjr_backtest_4yr.py`
+- **Backtest engine (preferred, validated):** [`backtest.py`](backtest.py)
+- **Reference backtest (older, unsynced — avoid):** [`../backtest/tjr_backtest.py`](../backtest/tjr_backtest.py)
 - **Security invariants:** `llm-trading-agent-security` skill (S1–S9)
