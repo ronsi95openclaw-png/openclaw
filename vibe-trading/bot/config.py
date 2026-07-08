@@ -14,10 +14,13 @@ Locked-contract role (see vibe-trading/bot/ARCHITECTURE.md §11):
 
 HARD SAFETY INVARIANTS honoured here (ARCHITECTURE.md §0):
 
-  * Paper / DRY_RUN by DEFAULT. A live TraderPost POST may happen ONLY if BOTH
-    os.environ["HERMES_BOT_LIVE"] == "1" AND config.go_live is True. Both default off.
-    This module exposes ``is_live_enabled(config)`` so every caller agrees on the gate,
-    but it NEVER POSTs anything — it only reports the gate state.
+  * Paper / DRY_RUN by DEFAULT. A live TraderPost POST may happen ONLY if ALL THREE
+    of: os.environ["HERMES_BOT_LIVE"] == "1", config.go_live is True, AND
+    eval_gate.passed_evaluation(...) is True (2026-07-08: added third gate -- the bot
+    must have a qualifying PAPER track record, not just two booleans, before live can
+    ever arm). All three default off/failing. This module exposes
+    ``is_live_enabled(config)`` so every caller agrees on the gate, but it NEVER POSTs
+    anything — it only reports the gate state.
 
   * NO secrets are ever stored in BotConfig or in this file. The TraderPost webhook URL
     and secret are read from os.environ ONLY, inside traderpost.py, at call time. This
@@ -41,6 +44,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+
+try:  # package context: `from bot import config` / `python -m bot.xxx`
+    from . import eval_gate as _eval_gate
+except ImportError:  # direct-run context: `python config.py`
+    import eval_gate as _eval_gate  # type: ignore
 from dataclasses import dataclass, field
 from datetime import time
 from pathlib import Path
@@ -178,13 +186,33 @@ def is_live_enabled(config: BotConfig) -> bool:
     """
     The single source of truth for the live gate (ARCHITECTURE.md §0.1 / §9.1).
 
-    Returns True ONLY if BOTH halves are armed:
-        os.environ["HERMES_BOT_LIVE"] == "1"   AND   config.go_live is True
+    2026-07-08: a THIRD condition was added alongside the original two-boolean
+    gate — the bot must have PROVEN itself in paper mode first. Returns True
+    ONLY if ALL THREE are armed:
+        os.environ["HERMES_BOT_LIVE"] == "1"   AND
+        config.go_live is True                  AND
+        eval_gate.passed_evaluation(trade_journal, mandate) is True
 
-    If either is missing/false => DRY_RUN. This helper performs NO I/O and POSTs nothing;
-    traderpost.py still re-checks the gate itself as defence in depth before any POST.
+    If ANY of the three is missing/false => DRY_RUN. The eval_gate check reads
+    ``bot/logs/trade_journal.jsonl`` (paper trade history) and the live mandate
+    JSON; it never raises (fails closed to False on any I/O problem), so a
+    missing/thin journal keeps the bot in DRY_RUN rather than crashing or
+    fail-opening. This helper performs NO I/O beyond that read-only eval-gate
+    check and POSTs nothing; traderpost.py still re-checks the gate itself as
+    defence in depth before any POST.
     """
-    return env_live_armed() and bool(config.go_live)
+    if not (env_live_armed() and bool(config.go_live)):
+        return False
+    journal_path = config.log_dir / "trade_journal.jsonl"
+    try:
+        passed, _reasons = _eval_gate.passed_evaluation(journal_path, config.mandate_file)
+    except Exception as exc:  # never let the eval-gate check crash the live decision
+        logger.warning(
+            "config: eval_gate.passed_evaluation raised %s — treating as NOT PASSED "
+            "(fail-closed, live gate stays OFF)", exc,
+        )
+        return False
+    return bool(passed)
 
 
 # ── Mandate convenience loader (raw rules; mandate.py owns the typed MandateView) ───
@@ -528,8 +556,17 @@ if __name__ == "__main__":
         assert is_live_enabled(cfg) is False, "SAFETY FAIL: env half alone must NOT arm live"
         live_cfg = load_config()
         object.__setattr__(live_cfg, "go_live", True)  # simulate config half ON
-        assert is_live_enabled(live_cfg) is True, "gate should arm when BOTH halves on"
-        print("Gate check                   : env-only=OFF, env+go_live=ON  OK")
+        # 2026-07-08: is_live_enabled now requires a THIRD condition (eval_gate
+        # passed_evaluation on the paper trade_journal). With both booleans on but
+        # an empty/thin trade_journal.jsonl (the normal state pre-go-live), the
+        # gate MUST still read False -- flipping both booleans is no longer enough
+        # on its own. This is the whole point of the eval-gate wiring.
+        assert is_live_enabled(live_cfg) is False, (
+            "SAFETY FAIL (or eval_gate regression): both booleans ON should still "
+            "be False while the paper trade_journal has not passed eval_gate"
+        )
+        print("Gate check                   : env+go_live=ON but eval_gate not passed -> "
+              "still OFF (correct; third gate holds)")
     finally:
         if _saved is None:
             os.environ.pop(ENV_LIVE_FLAG, None)

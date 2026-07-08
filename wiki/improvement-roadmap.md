@@ -34,6 +34,12 @@ scheduler.add_job(sweep_stale_tasks, "interval", hours=12, id="stale_sweep")
 **Effort:** Very low (10 lines + 1 registration)  
 **Fix:** See [[failure-log#FAIL-002]]
 
+### 11. Give ClawBot a Startup launcher
+**Impact:** ClawBot has no watchdog/Startup entry (unlike Hermes and HaulYeah), so any crash, manual stop, or reboot leaves the Telegram bot down indefinitely with nothing to bring it back — happened twice on 2026-07-04 alone.  
+**Effort:** Low (mirror the Hermes/HaulYeah Startup-launcher pattern for `start.py`)  
+**Fix:** See [[failure-log#FAIL-006]]  
+**Also unresolved:** confirm whether the `core/scheduler.py` asyncio-loop crash fix from FAIL-006 still applies after the file's subsequent external edits.
+
 ---
 
 ## P2 — Medium (data + income tracking)
@@ -89,3 +95,4 @@ Currently `/backtest run` outputs rankings but doesn't auto-select the top strat
 | 8 | Google Sheets config | ⬜ OPTIONAL |
 | 9 | Whisper end-to-end test | ⬜ OPTIONAL |
 | 10 | Backtest → auto-strategy | ⬜ OPTIONAL |
+| 11 | ClawBot Startup launcher | ⬜ TODO |

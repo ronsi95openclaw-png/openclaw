@@ -17,8 +17,9 @@ bar-for-bar consistent with the validated backtest — the "live == backtest" go
   - kill-zone time gate          (same logic as ``is_in_kill_zone`` / ``KILL_ZONES``)
   - HTF bias via discount/premium of the swing range (50% midpoint)
   - liquidity sweep              (same logic as ``detect_liquidity_sweep``)
-  - 3-candle Fair Value Gap      (same logic as ``detect_fvg``) — REQUIRED to trigger
-  - Order Block                  (last opposing candle) — CONFIRM-only, never triggers
+  - 3-candle Fair Value Gap      (same logic as ``detect_fvg``) — trigger OR confirm
+  - Order Block                  (last opposing candle) — trigger OR confirm (either
+                                  the FVG or the OB may trigger; 2026-07-08 change)
   - OTE fib zone 61.8%-79%       (TJR spec Step 5)
   - 1M Market Structure Break    (same logic as ``detect_msb``)
   - protective stop beyond the sweep (sweep level ±1 tick)  — same as ``_open_trade``
@@ -37,10 +38,13 @@ ORDER GEOMETRY — matches ``backtest/tjr_backtest.py`` exactly:
   - Protective stop. Placed at ``sweep_level ± 1 tick`` (long: below the swept
     swing low; short: above the swept swing high), exactly as
     ``tjr_backtest._open_trade``. This is the stop-out price, not the R basis.
-  - Entry zone. A direction-matched 3-candle FVG is REQUIRED to trigger
-    (mirrors the backtest's ``if not fvg: continue``). An Order Block may only
-    CONFIRM (recorded in the reason as ``fvg+ob``) and can NEVER trigger a setup
-    on its own. There is no OB-only entry path.
+  - Entry zone. EITHER a direction-matched 3-candle FVG OR a direction-matched
+    Order Block may trigger a setup (2026-07-08: FVG is no longer a hard
+    requirement -- it demoted from mandatory-trigger to confirm-only, mirroring
+    the role the OB always had). If both are present the reason is annotated
+    ``fvg+ob`` (strongest confirmation); if only one is present the reason is
+    ``fvg`` or ``ob``. Every OTHER ICT condition (kill-zone timing, HTF bias,
+    liquidity sweep, OTE 61.8%-79%, closed 1M MSB) remains a hard requirement.
 
 ONE deliberate, documented divergence remains (a leaf, pure, no-look-ahead
 signal generator cannot do otherwise):
@@ -341,10 +345,10 @@ def detect_order_block(df: pd.DataFrame, direction: str,
 
     Returns ``(ob_low, ob_high)`` of that candle, or ``None`` if none found.
 
-    NOTE: The OB is CONFIRM-only in ``generate_signal`` — an FVG is required to
-    trigger (mirroring ``tjr_backtest.py``'s ``if not fvg: continue``). A present
-    OB only annotates the reason (``fvg+ob``); it can never trigger a trade on its
-    own, so this helper does not open an entry path the backtest does not validate.
+    NOTE (2026-07-08): the OB may now TRIGGER a setup on its own, exactly as the
+    FVG does, when no direction-matched FVG is present -- ``generate_signal`` no
+    longer requires an FVG (that requirement demoted to confirm-only). When both
+    are present the reason is annotated ``fvg+ob``.
     """
     if len(df) < 2 or ob_bars < 2:
         return None
@@ -507,9 +511,11 @@ def generate_signal(
         return None
     _sweep_kind, sweep_level, swept_lo, swept_hi = sweep
 
-    # Step 4 — FVG (3-candle) REQUIRED in the swept zone, direction-matched
-    # (mirrors tjr_backtest 'if not fvg: continue'). An Order Block may only
-    # CONFIRM (annotated as 'fvg+ob'); it never triggers a setup on its own.
+    # Step 4 — Entry zone: EITHER a direction-matched 3-candle FVG OR a
+    # direction-matched Order Block may trigger (2026-07-08: FVG demoted from a
+    # hard "must be present" requirement to confirm-only, mirroring the role the
+    # OB always had -- an OB-only path is now valid, same as an FVG-only path).
+    # When both are present the reason is annotated 'fvg+ob'.
     zone = _direction_matched_zone(df_5m, side, cfg)
     if zone is None:
         return None
@@ -673,30 +679,43 @@ def _get_tf(bars_by_tf: dict[str, pd.DataFrame],
 def _direction_matched_zone(
     df_5m: pd.DataFrame, side: str, cfg: StrategyConfig
 ) -> Optional[tuple[float, float, str]]:
-    """Resolve the entry zone, matched to ``side``. An FVG is REQUIRED.
+    """Resolve the entry zone, matched to ``side``. FVG is now confirm-only.
 
-    Mirrors ``tjr_backtest.py``'s ``if not fvg: continue`` — a direction-matched
-    3-candle FVG is the ONLY thing that may trigger a trade. An Order Block may
-    only CONFIRM (it is appended to the reason when present) and can NEVER trigger
-    a setup on its own, so the live path stays bar-for-bar consistent with the
-    validated backtest.
+    2026-07-08 change: previously a direction-matched 3-candle FVG was the ONLY
+    thing that could trigger a trade (mirroring ``tjr_backtest.py``'s
+    ``if not fvg: continue``), and the Order Block was confirm-only. That made
+    the FVG a hard blocker among 6 simultaneous required conditions, and the
+    live bot fired effectively zero real signals. FVG is now OPTIONAL/CONFIRMING,
+    exactly mirroring the role the OB always had: EITHER a direction-matched FVG
+    OR a direction-matched Order Block may trigger the setup. All other ICT
+    conditions (kill-zone timing, HTF bias, liquidity sweep, OTE band, 1M MSB)
+    are unchanged hard requirements enforced elsewhere in ``generate_signal``.
 
-    Returns ``(zone_low, zone_high, kind)`` where ``kind`` is ``'fvg'`` (no OB
-    present) or ``'fvg+ob'`` (an OB confirms in the same direction), or ``None``
-    when there is no direction-matched FVG.
+    Returns ``(zone_low, zone_high, kind)`` where ``kind`` is:
+      - ``'fvg+ob'``  — both a direction-matched FVG and OB are present (uses the
+        FVG's price range; strongest confirmation).
+      - ``'fvg'``     — only a direction-matched FVG is present.
+      - ``'ob'``      — only a direction-matched Order Block is present (the new
+        OB-only trigger path).
+    Returns ``None`` only when NEITHER a direction-matched FVG NOR a
+    direction-matched OB is present.
     """
     fvg = detect_fvg(df_5m)
-    if fvg is None:
-        return None                       # FVG REQUIRED (mirror backtest 'if not fvg: continue')
-    lo, hi, kind = fvg
-    if not ((side == "long" and kind == "bullish") or
-            (side == "short" and kind == "bearish")):
-        return None                       # FVG present but wrong direction -> no setup
-    # FVG triggers. An Order Block, if present in the same direction, only
-    # CONFIRMS (never triggers); record it in the zone kind for the reason string.
-    ob = detect_order_block(df_5m, side, cfg.ob_bars)
-    zone_kind = "fvg+ob" if ob is not None else "fvg"
-    return lo, hi, zone_kind
+    fvg_zone = None
+    if fvg is not None:
+        lo, hi, kind = fvg
+        if (side == "long" and kind == "bullish") or (side == "short" and kind == "bearish"):
+            fvg_zone = (lo, hi)            # direction-matched FVG available (may trigger)
+
+    ob = detect_order_block(df_5m, side, cfg.ob_bars)   # already direction-matched internally
+
+    if fvg_zone is not None and ob is not None:
+        return fvg_zone[0], fvg_zone[1], "fvg+ob"
+    if fvg_zone is not None:
+        return fvg_zone[0], fvg_zone[1], "fvg"
+    if ob is not None:
+        return ob[0], ob[1], "ob"          # OB-only trigger path (new: FVG no longer required)
+    return None                            # neither FVG nor OB direction-matched -> no setup
 
 
 def _iso_et(now_et: datetime) -> Optional[str]:
