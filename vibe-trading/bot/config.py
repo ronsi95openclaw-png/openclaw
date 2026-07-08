@@ -49,6 +49,10 @@ try:  # package context: `from bot import config` / `python -m bot.xxx`
     from . import eval_gate as _eval_gate
 except ImportError:  # direct-run context: `python config.py`
     import eval_gate as _eval_gate  # type: ignore
+try:  # package context: `from bot import config` / `python -m bot.xxx`
+    from .strategy import StrategyConfig
+except ImportError:  # direct-run context: `python config.py`
+    from strategy import StrategyConfig  # type: ignore
 from dataclasses import dataclass, field
 from datetime import time
 from pathlib import Path
@@ -110,21 +114,13 @@ TRADERPOST_ENV_VARS: Tuple[str, str] = (ENV_TRADERPOST_WEBHOOK_URL, ENV_TRADERPO
 # ── StrategyConfig (strategy-local tunables; NOT the mandate) ───────────────────────
 # Mirrors ARCHITECTURE.md §3.4. Kill-zone bounds and fib/OTE/MSB params live here, not
 # in the mandate. tp1_rr/tp2_rr match tjr_backtest.py (2.0 / 4.0).
-
-
-@dataclass(frozen=True)
-class StrategyConfig:
-    """Pure-strategy tunables fed to strategy.generate_signal(). No mandate numbers."""
-
-    kill_zones: Tuple[str, ...] = ("ny_open",)   # NY Open 08:30–11:00 ET (primary window)
-    lookback: int = 20                            # swing-range / sweep reference bars
-    sweep_bars: int = 3                           # recent bars examined for the sweep
-    msb_bars: int = 5                             # 1M swing window for MSB confirmation
-    ote_low: float = 0.618                        # OTE fib retrace lower bound
-    ote_high: float = 0.79                        # OTE fib retrace upper bound
-    tp1_rr: float = 2.0                           # TP1 == 2R  (matches tjr_backtest.py)
-    tp2_rr: float = 4.0                           # TP2 == 4R  (matches tjr_backtest.py)
-    default_contracts: int = 1                    # risk_guard clamps to mandate cap
+#
+# StrategyConfig itself is imported from strategy.py (see imports above) rather than
+# redefined here. A local duplicate previously drifted out of sync with strategy.py
+# (missing ob_bars/stop_ticks/max_stop_points/max_minutes_in_kz, and stale kill_zones/
+# sweep_bars defaults) which crashed generate_signal() with
+# "'StrategyConfig' object has no attribute 'max_minutes_in_kz'" on every run — fixed
+# 2026-07-08 by making strategy.py the single source of truth.
 
 
 # ── BotConfig (operational config — NOT secrets, NOT mandate limits) ────────────────
@@ -471,12 +467,22 @@ def load_config(path: Optional[Path] = None) -> BotConfig:
             msb_bars=_parse_bounded_int(
                 strat_over.get("msb_bars", base_strat.msb_bars),
                 base_strat.msb_bars, name="strategy.msb_bars", min_val=1),
+            ob_bars=_parse_bounded_int(
+                strat_over.get("ob_bars", base_strat.ob_bars),
+                base_strat.ob_bars, name="strategy.ob_bars", min_val=1),
             ote_low=_parse_bounded_float(
                 strat_over.get("ote_low", base_strat.ote_low),
                 base_strat.ote_low, name="strategy.ote_low", low=0.0, high=1.0),
             ote_high=_parse_bounded_float(
                 strat_over.get("ote_high", base_strat.ote_high),
                 base_strat.ote_high, name="strategy.ote_high", low=0.0, high=1.0),
+            stop_ticks=_parse_bounded_int(
+                strat_over.get("stop_ticks", base_strat.stop_ticks),
+                base_strat.stop_ticks, name="strategy.stop_ticks", min_val=1),
+            max_stop_points=_parse_bounded_float(
+                strat_over.get("max_stop_points", base_strat.max_stop_points),
+                base_strat.max_stop_points, name="strategy.max_stop_points",
+                low=0.0, high=1000.0),
             tp1_rr=_parse_bounded_float(
                 strat_over.get("tp1_rr", base_strat.tp1_rr),
                 base_strat.tp1_rr, name="strategy.tp1_rr", low=0.0, high=1000.0),
@@ -486,6 +492,9 @@ def load_config(path: Optional[Path] = None) -> BotConfig:
             default_contracts=_parse_bounded_int(
                 strat_over.get("default_contracts", base_strat.default_contracts),
                 base_strat.default_contracts, name="strategy.default_contracts", min_val=1),
+            max_minutes_in_kz=_parse_bounded_int(
+                strat_over.get("max_minutes_in_kz", base_strat.max_minutes_in_kz),
+                base_strat.max_minutes_in_kz, name="strategy.max_minutes_in_kz", min_val=0),
         )
 
         # eod_flatten_et: parse + clamp to the no-overnight safety ceiling (fail-closed).
