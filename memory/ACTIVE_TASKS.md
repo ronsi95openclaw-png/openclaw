@@ -61,7 +61,6 @@
 
 ## DEFERRED INDEFINITELY
 
-### 7. Ruflo skill installation
-- **Status:** No `SKILL.md` on disk in any expected location
-- **Why deferred:** Lower priority than auth + daily routine; per-prompt hardcoded rules cover for now
-- **Action when ready:** Save Ruflo template to `skills/ruflo/SKILL.md`, install in Claude Code skills dir
+### 7. ~~Ruflo skill installation~~ — SUPERSEDED 2026-07-08
+- **Status:** Ruflo template never materialized; instead added a repo-native `.claude/skills/daily-routine/SKILL.md` (wraps this file + `memory/DAILY_ROUTINE.md`) plus `.claude/agents/trading-risk-reviewer.md` and `.claude/agents/security-auditor.md` subagents for proactive trading-safety and auth review
+- **Why:** Solves the same underlying need (a real skill on disk instead of per-prompt hardcoded rules) without waiting on the Ruflo template
