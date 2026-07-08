@@ -38,6 +38,10 @@ logging.basicConfig(
         logging.FileHandler(f"{config.data_dir}/bot.log"),
     ],
 )
+# httpx logs every Telegram poll at INFO with the full bot-token URL — that both
+# leaks the token into data/bot.log and bloats the log (~1 line / 10s). Keep
+# only warnings/errors from httpx; bot behavior is unchanged.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

@@ -43,3 +43,12 @@ Tests: HaulYeah 90 pass, crypto bot 51 pass.
 1. ~~Wire `quote.estimate` / `review.review_request_message` into outreach flow.~~ DONE (`2c2a404`).
 2. Install watchdog scheduled task when ready.
 3. Decide whether to add exit/position tracking so `/report` can show real P&L.
+
+---
+
+## 2026-07-08 — Audit pass (Claude Code, no git in this dir)
+- Full audit of agents/, integrations/, utils/, main.py, config.py, tests/ — 134/134 tests pass.
+- Fixed: httpx INFO logging leaked the bot token into data/bot.log (main.py now sets httpx to WARNING; effective on next restart). Stale docstring in utils/scoring.py corrected.
+- New doc: docs/ARCHITECTURE.md — pipeline map, compliance guardrails, known-issues punch list (pricing/brand drift, unwired scoring/quicksend, no log rotation, second main.py process, unwired utils/compliance guards).
+- Backups: main.py.bak-audit-2026-07-08, utils/scoring.py.bak-audit-2026-07-08, memory/SESSION_HANDOFF.md.bak-audit-2026-07-08.
+- Bot was live during the audit — no behavior-affecting edits made; risky items left as proposals in docs/ARCHITECTURE.md.

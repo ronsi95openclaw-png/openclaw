@@ -10,7 +10,9 @@ dict (see integrations.sheets.COLUMNS and agents.scraper):
   * location — proximity to the DFW service area (description + location text)
 
 No I/O, no network, no Sheets — everything here is a pure function so it can
-be tested in isolation and reused by the (separate) Telegram /topleads handler.
+be tested in isolation. NOTE: not yet wired into production — the live
+Telegram /topleads handler (integrations/telegram_bot.py) currently uses its
+own simpler urgency+size sum instead of rank_leads()/format_topleads_digest().
 
 The Sheets layer stores urgency_score / size_score as strings and reads them
 back via get_all_records() (which may return str or int), so every numeric
