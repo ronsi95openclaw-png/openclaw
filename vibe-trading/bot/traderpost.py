@@ -7,13 +7,19 @@ trading bot. Default = DRY_RUN (paper). Implements §9 of the locked ARCHITECTUR
 contract: build a TraderPost webhook JSON payload from an APPROVED signal and send it.
 
 Hard safety invariants enforced here (never violated):
-  * Paper / DRY_RUN by default. A live POST happens ONLY when BOTH
-        os.environ["HERMES_BOT_LIVE"] == "1"  AND  config.go_live is True.
-    If either is off → build payload, audit a dry_run "logged_only" order, return — no POST.
+  * Paper / DRY_RUN by default. A live POST happens ONLY when ALL THREE hold (B2 fix,
+    2026-07-09 — see config.is_live_enabled, the single source of truth for this gate):
+        os.environ["HERMES_BOT_LIVE"] == "1"  AND  config.go_live is True  AND
+        eval_gate.passed_evaluation(trade_journal, mandate) is True (proven paper track
+        record — NOT just the two-boolean flag flip).
+    If any is off → build payload, audit a dry_run "logged_only" order, return — no POST.
   * Validate-before-send (independent of the caller / any model output): reject with
     result="rejected" (no POST) if the order is missing a stop or size, size is out of
     the mandate cap, the instrument is off the mandate allowlist, the side is invalid,
-    or the kill switch is engaged (re-checked here as defense in depth).
+    or the kill switch is engaged (re-checked here as defense in depth). A reduce-only
+    MARKET-CLOSE (flatten: kill-switch/EOD/circuit-breaker exit) is EXEMPT from the
+    stop/tp1/tp2 requirements — those apply only to new protective-bracket entries (B1
+    fix, 2026-07-09).
   * Secrets (TRADERPOST_WEBHOOK_URL, TRADERPOST_SECRET) come from os.environ ONLY. They
     are NEVER hardcoded and NEVER written to a log line. Audit records receive only a
     redacted webhook HOST + a boolean — never the URL, query string, secret, or headers.
@@ -253,7 +259,32 @@ class TraderPostClient:
         return bool(getattr(self.config, "go_live", False))
 
     def _live_requested(self) -> bool:
-        """ALL of §9.1 must hold to POST live: env HERMES_BOT_LIVE==1 AND config.go_live."""
+        """ALL of §9.1 must hold to POST live (B2 fix, 2026-07-09): env
+        HERMES_BOT_LIVE==1 AND config.go_live AND eval_gate.passed_evaluation
+        (a proven paper track record). Delegates to config.is_live_enabled — the
+        single source of truth for this gate — so traderpost.py can never drift
+        out of sync with it (that drift was exactly B2: this method used to stop
+        at the first two conditions and never called eval_gate at all). Falls
+        back to the conservative two-boolean check ONLY if config.is_live_enabled
+        itself is unavailable (e.g. self.config is None) — never fail-open.
+        """
+        if self.config is None:
+            return False
+        try:
+            from config import is_live_enabled as _is_live_enabled
+        except ImportError:
+            try:
+                from .config import is_live_enabled as _is_live_enabled  # type: ignore
+            except ImportError:
+                _is_live_enabled = None
+        if _is_live_enabled is not None:
+            try:
+                return bool(_is_live_enabled(self.config))
+            except Exception:
+                return False  # fail-closed: any error in the live gate keeps it OFF
+        # config.py unimportable: fail closed to the conservative two-boolean
+        # check rather than crash. This should not happen in production (config
+        # is a real, always-present module) — it's a defense-in-depth floor only.
         return (os.environ.get(ENV_LIVE) == "1") and self._go_live_config()
 
     # -- validation (§9.2) --------------------------------------------------------
@@ -280,13 +311,24 @@ class TraderPostClient:
             return "instrument_not_allowed"
 
         entry = signal.get("entry")
-        stop = signal.get("stop")
         if not _is_finite_number(entry):
             return "bad_entry"
-        if stop is None or not _is_finite_number(stop):
-            return "missing_stop"
-        if float(stop) == float(entry):
-            return "stop_equals_entry"
+
+        # B1 fix (2026-07-09): a reduce-only MARKET-CLOSE (flatten — kill-switch,
+        # EOD, or circuit-breaker exit) carries NO protective stop/tp1/tp2 by
+        # design (see runner.py::_flatten): the exit side is geometrically
+        # inverted from the original entry, so a stop/target computed against
+        # entry would be nonsensical. Require stop/tp1/tp2 for new protective-
+        # bracket entries only, never for a flatten — this was the root cause of
+        # every kill-switch/EOD auto-flatten being rejected as "missing_stop".
+        is_flatten = bool(signal.get("reduce_only")) or signal.get("order_type") == "market"
+
+        if not is_flatten:
+            stop = signal.get("stop")
+            if stop is None or not _is_finite_number(stop):
+                return "missing_stop"
+            if float(stop) == float(entry):
+                return "stop_equals_entry"
 
         if not isinstance(approved_size, int) or approved_size < 1:
             return "missing_size"
@@ -304,15 +346,18 @@ class TraderPostClient:
         if approved_size > cap:
             return "size_over_cap"
 
-        # tp1/tp2 are REQUIRED by the locked §2 Signal schema. They must be PRESENT and
-        # finite — not merely "valid if present". Missing/NaN tp keys would otherwise
-        # reach build_payload's direct signal['tp1']/['tp2'] access on the live path and
-        # raise KeyError BEFORE the network try/except, crashing the runner.
-        for k in ("tp1", "tp2"):
-            if k not in signal:
-                return f"missing_{k}"
-            if not _is_finite_number(signal.get(k)):
-                return f"missing_{k}"
+        # tp1/tp2 are REQUIRED by the locked §2 Signal schema for new entries. They
+        # must be PRESENT and finite — not merely "valid if present". Missing/NaN tp
+        # keys would otherwise reach build_payload's direct signal['tp1']/['tp2']
+        # access on the live path and raise KeyError BEFORE the network try/except,
+        # crashing the runner. A flatten is exempt (see is_flatten above) — it has
+        # no targets by design, only entry/side/size/reduce_only/order_type.
+        if not is_flatten:
+            for k in ("tp1", "tp2"):
+                if k not in signal:
+                    return f"missing_{k}"
+                if not _is_finite_number(signal.get(k)):
+                    return f"missing_{k}"
 
         return None
 
@@ -559,8 +604,31 @@ def main() -> None:
     over_result = client.send(sig, approved_size=cap + 5)
     print(f"send(size>cap) -> {over_result}   (expected result='rejected')")
 
+    # B1 regression tests (2026-07-09): a reduce-only MARKET-CLOSE flatten must be
+    # ACCEPTED (not rejected as missing_stop/missing_tp1/missing_tp2) regardless of
+    # which safety mechanism triggered it. Simulate both triggers explicitly.
+    def _flatten_signal(reason: str) -> dict:
+        return {
+            "side": "short", "instrument": "ES", "entry": sig["entry"],
+            "stop": None, "tp1": None, "tp2": None, "size": approved_size,
+            "order_type": "market", "reduce_only": True, "reason": reason,
+        }
+
+    kill_switch_flatten = client.send(_flatten_signal("flatten:kill_switch"),
+                                      approved_size=approved_size)
+    assert kill_switch_flatten["result"] != "rejected", (
+        f"B1 regression: kill-switch flatten was rejected -> {kill_switch_flatten}")
+    print(f"send(kill_switch flatten)  -> {kill_switch_flatten}   (expected: NOT rejected)")
+
+    eod_flatten = client.send(_flatten_signal("flatten:risk_guard_flat:eod_flatten"),
+                              approved_size=approved_size)
+    assert eod_flatten["result"] != "rejected", (
+        f"B1 regression: 16:30 ET EOD flatten was rejected -> {eod_flatten}")
+    print(f"send(16:30 ET EOD flatten) -> {eod_flatten}   (expected: NOT rejected)")
+
     print("=" * 70)
     print("DRY_RUN complete. No live POST was made.")
+    print("B1 regression PASSED: both flatten triggers were accepted, not rejected.")
 
 
 if __name__ == "__main__":

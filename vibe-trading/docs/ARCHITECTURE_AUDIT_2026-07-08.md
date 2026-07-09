@@ -178,3 +178,42 @@ on the order path calls it (finding B2)**.
 No existing file was modified. This document is the only artifact added, on branch
 `audit-fable-vibetrading-wt-2026-07-08` in the isolated worktree
 `C:\Users\ronsi95openclaw\Claude-openclaw-vibetrading-audit`.
+
+---
+
+## Addendum — 2026-07-09
+
+**A crash bug this audit missed, found and fixed the same day it was written
+(commit `75a42dd`, a few hours after this document was published):**
+
+`config.py` defined its own local `StrategyConfig` dataclass instead of importing
+the one in `strategy.py`. It had drifted out of sync — missing `ob_bars`,
+`stop_ticks`, `max_stop_points`, `max_minutes_in_kz` entirely, and stale
+`kill_zones`/`sweep_bars` defaults. Since the `max_minutes_in_kz` field was added
+to the real `StrategyConfig` (commit `ce13678`, predating this audit), **every
+15-minute cron evaluation had been crashing inside `generate_signal()`** with
+`'StrategyConfig' object has no attribute 'max_minutes_in_kz'`, fail-closed to
+`skip`/`no_setup` every single time. In other words: for an unknown window before
+the fix, the strategy was **never actually capable of evaluating a real setup at
+all** — every "no_setup" decision in that window was a swallowed crash, not the
+strategy legitimately finding nothing.
+
+This is a materially different (and arguably more serious) issue than anything in
+§6 above (B1–B12), and this audit did not catch it — §1's description of the
+pipeline as functioning end-to-end was itself inaccurate for that window. Fixed by
+making `strategy.py` the single source of truth for `StrategyConfig`; verified via
+`runner.py --once` reaching `skip`/`no_setup` with no `strategy_error`, and
+`decisions.jsonl` confirms clean decisions since the fix landed.
+
+**Also corrected 2026-07-09** (full-ecosystem fix pass, separate from this crash
+fix): `lucid_mandate.json`'s `max_loss_limit` was wrong ($1,500 instead of the
+real $1,000), `profit_target` ($1,250) was missing entirely, the account name was
+corrected to `LucidFlex_25K`, and the five conflicting internal flatten times
+scattered across this codebase and the Hermes-side scripts/skills/cron prompts
+(15:45/15:55/16:00/16:30/16:45 ET) were reconciled to two authoritative values:
+internal flatten trigger 16:30 ET, Lucid's own hard EOD cutoff 16:45 ET. B1
+(kill-switch/EOD flatten rejected by `traderpost.py`) and B2 (`eval_gate` not
+wired into the live-send path) from §6 above were also fixed in this same pass —
+see `bot/traderpost.py` and `bot/runner.py` for the current implementation; §5's
+"Verdict: NOT ready for live" still holds, now solely because the trade journal
+has 0 of the 25 trades `eval_gate` requires, not because of B1/B2.
