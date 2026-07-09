@@ -275,3 +275,17 @@ Entry format:
 **Approved by:** Ronnie (interactive, step by step)
 **Status:** APPLIED
 ---
+
+## [2026-07-08 20:22] — A — 4-project Fable subagent audit (OpenClaw, Hermes, HaulYeah, vibe-trading)
+**Trigger:** Ronnie asked to review/improve all projects and audit skills using subagents (Fable model)
+**Action:**
+- 4 parallel `Agent` calls (model: fable), each scoped to one project with explicit safety rails (no push, no merge to main/master, trade-logic files locked for vibe-trading). Isolation via `git checkout -b` per agent; when two agents collided on a shared working directory (OpenClaw + vibe-trading both live under `Claude-openclaw/`), manually created a real `git worktree add` for one of them on resume.
+- Fixed: `core/brain.py` infinite-recursion fallback crash; `agent_team_orchestrator.py` swallowed `TypeError` from a `log_lesson()` call missing a required arg; stale "/remind = daily" docs; 3 Hermes skill files with stale live-trading/phantom-cron-job claims; HaulYeah bot-token leak into `data/bot.log` via unsuppressed httpx INFO logging.
+- Root-cause fixed a separate crashing bug found live in vibe-trading: `bot/config.py` had its own drifted duplicate of `strategy.py`'s `StrategyConfig` dataclass (missing 4 fields incl. `max_minutes_in_kz`), crashing `generate_signal()` every 15-min paper cycle since commit `ce13678`. Fixed by importing from `strategy.py` instead (commit `75a42dd` on `hermes/auto-2026-07-08`).
+- Restarted the HaulYeah bot process (PID 7288, running since 2026-07-07, pre-dated the token-leak fix so was still leaking in memory) and truncated `data/bot.log`/`data/stdout.log` (33MB/44MB) to clear the leaked token from disk.
+- Merged all 4 audit branches back onto their source branches (`hermes/auto-2026-07-08` here, `master` in the Hermes repo) — not pushed to origin. New `ARCHITECTURE.md` generated for OpenClaw, Hermes, HaulYeah; new read-only audit doc for vibe-trading.
+**Result:** All 3 live systems (Hermes gateway, vibe-trading paper bot, HaulYeah scraper) confirmed operating correctly. vibe-trading now actually evaluates strategy setups instead of erroring into skip every cycle. HaulYeah token leak stopped at the source; token itself still needs manual rotation via @BotFather (not automatable). vibe-trading go-live blockers (kill-switch flatten rejected by broker client; new eval_gate not wired into order path) found but intentionally not fixed — flagged for an explicit go-live review, bot correctly remains paper-only.
+**Files touched:** `core/brain.py`, `skills/agent_team_orchestrator.py`, `content/receiver.py`, `ARCHITECTURE.md` (new), `trash_hauling_bot/main.py`, `trash_hauling_bot/utils/scoring.py`, `trash_hauling_bot/memory/SESSION_HANDOFF.md`, `trash_hauling_bot/docs/ARCHITECTURE.md` (new), `trash_hauling_bot/data/bot.log`+`stdout.log` (truncated), `vibe-trading/bot/config.py`, `vibe-trading/docs/ARCHITECTURE_AUDIT_2026-07-08.md` (new), `AppData/Local/hermes/skills/ronsi95/floor-{clawbot,general,haulyeah-partners}/SKILL.md`, `AppData/Local/hermes/ARCHITECTURE.md` (new), `CC-Session-Logs/08-07-2026-20_22-fable-multi-project-audit-fix.md`
+**Approved by:** Ronnie (interactive; log truncation and the vibe-trading commit each required a separate explicit confirmation, per the permission system's higher bar for destructive/trade-logic-adjacent actions)
+**Status:** APPLIED
+---
