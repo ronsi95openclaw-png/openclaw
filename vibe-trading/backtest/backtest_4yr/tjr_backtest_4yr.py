@@ -288,6 +288,16 @@ class TJRBacktester4yr:
         self.tp2_rr     = tp2_rr
         self.commission = commission
 
+        # Live-parity stop cap (bug fix, 2026-07-10): strategy.py's StrategyConfig
+        # hard-clamps every stop to max_stop_points=6.0, floored at stop_ticks=8
+        # (2.0 pts), instrument-agnostic (bot/strategy.py lines 130-131, 555-566).
+        # This proxy previously placed stops at the raw, uncapped sweep level,
+        # which let losses run 7x-81x wider than the live bot could ever risk
+        # (verified across all four combos, session of 2026-07-09/10). Mirroring
+        # strategy.py's own clamp exactly, not reinventing it.
+        self.max_stop_points = 6.0
+        self.stop_floor_points = 8 * self.tick_size   # 8 ticks = 2.0 pts, same as strategy.py
+
         # Timeframe-specific defaults
         if self.timeframe == "1d":
             self.lookback    = lookback   or 10
@@ -349,7 +359,14 @@ class TJRBacktester4yr:
         if day.pnl <= -gate:
             return False, "daily_loss_gate"
 
-        # Consistency cap enforced LIVE at 45% (scoring rule is 50%)  [v2: was self.consistency_cap=0.50]
+        # In-sim trade-halting safety margin (NOT the scoring rule -- see run()'s
+        # post-hoc consistency check below for the real Lucid rule, fixed
+        # 2026-07-10). This is a conservative, forward-looking approximation:
+        # a live system can't know the eval's eventual final total profit in
+        # advance, so it guards against a large day skewing the ratio by halting
+        # new entries once today's P&L would exceed 45% of cumulative-so-far.
+        # Deliberately left as-is by the 2026-07-10 fix -- changing this would
+        # alter which trades get taken, not just how they're scored.
         running_profit = self.equity - self.account_size
         if running_profit > 0 and day.pnl >= running_profit * 0.45:
             return False, "consistency_cap"
@@ -367,12 +384,22 @@ class TJRBacktester4yr:
             return None
 
         entry = bar.open
+        # Stop starts at the sweep level (structure-based), then clamped to
+        # strategy.py's live cap/floor (bug fix, 2026-07-10) -- see __init__.
         if direction == "long":
             stop = sweep_level - self.tick_size
+            stop = max(stop, entry - self.max_stop_points)     # never risk more than the cap
+            stop = min(stop, entry - self.stop_floor_points)   # never tighter than the floor
+            if stop >= entry:
+                return None                                    # sweep on the wrong side -> no order
             tp1  = entry + self.tp1_points
             tp2  = entry + self.tp2_points
         else:
             stop = sweep_level + self.tick_size
+            stop = min(stop, entry + self.max_stop_points)
+            stop = max(stop, entry + self.stop_floor_points)
+            if stop <= entry:
+                return None
             tp1  = entry - self.tp1_points
             tp2  = entry - self.tp2_points
 
@@ -555,17 +582,27 @@ class TJRBacktester4yr:
             max_dd = max(max_dd, peak - eq)
         max_dd_pct = max_dd / self.account_size * 100
 
-        # Consistency violations (post-hoc, still uses 50% scoring rule)
+        # Consistency check (bug fix, 2026-07-10): Lucid's actual rule, confirmed
+        # against their own help center (support.lucidtrading.com), is a SINGLE
+        # ratio over the whole evaluation -- largest single-day profit divided
+        # by total account profit -- not a sequential day-by-day check against a
+        # shifting prior-cumulative baseline. Their own worked example: $750 best
+        # day / $3,000 total = 25%, compliant. The previous version of this check
+        # walked day-by-day comparing each day's P&L against the running total
+        # BEFORE that day, which flags an ordinary win as a "violation" purely
+        # because it landed early in a sequence (thin prior base) or right after
+        # a large loss reset the running total near zero -- neither of those is
+        # what Lucid actually measures.
+        positive_days = [s.pnl for s in self.day_stats.values() if s.pnl > 0]
+        best_day_pnl = max(positive_days, default=0.0)
+        best_day_date = next((d for d, s in self.day_stats.items()
+                              if s.pnl == best_day_pnl), None) if positive_days else None
+        consistency_ratio = (best_day_pnl / total_pnl) if total_pnl > 0 else 0.0
         cv_list = []
-        running = 0.0
-        for d in sorted(self.day_stats):
-            dp = self.day_stats[d].pnl
-            if dp > 0 and running > 0:
-                if dp / running > self.consistency_cap:
-                    cv_list.append({"date": str(d), "day_pnl": round(dp, 2),
-                                    "total_at_time": round(running, 2),
-                                    "pct": round(dp / running * 100, 1)})
-            running += dp
+        if total_pnl > 0 and consistency_ratio > self.consistency_cap:
+            cv_list.append({"date": str(best_day_date), "day_pnl": round(best_day_pnl, 2),
+                            "total_at_time": round(total_pnl, 2),
+                            "pct": round(consistency_ratio * 100, 1)})
 
         lucid_pass = (
             total_pnl >= self.profit_target
