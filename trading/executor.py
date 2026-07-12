@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -29,6 +30,16 @@ _MIN_ORDER_USD = {
     "XRP_USDT": 5.0,
 }
 
+# Quantity decimal precision per coin — Crypto.com lot-size step for market
+# SELL orders (which take base-currency quantity, not notional). Truncated
+# (never rounded up) so we never try to sell more than we hold.
+_QTY_DECIMALS = {
+    "BTC_USDT": 6,
+    "ETH_USDT": 5,
+    "SOL_USDT": 2,
+    "XRP_USDT": 1,
+}
+
 
 def _log_trade(entry: dict) -> None:
     """Append trade result to trades.log."""
@@ -40,14 +51,17 @@ def _log_trade(entry: dict) -> None:
     logger.info(f"Trade logged: {entry}")
 
 
-def _place_order(instrument: str, side: str, notional_usd: float) -> dict:
+def _place_order(instrument: str, side: str, notional_usd: float, price: float) -> dict:
     """
     Place a market order on Crypto.com.
 
     Args:
         instrument:   e.g. "BTC_USDT"
         side:         "BUY" or "SELL"
-        notional_usd: USD value to trade (for BUY) or full position (for SELL)
+        notional_usd: USD value to trade
+        price:        current price, used to convert notional_usd -> base-currency
+                       quantity for SELL orders (Crypto.com's v2 API requires
+                       quantity, not notional, for market SELL)
 
     Returns:
         API response dict with order details.
@@ -56,13 +70,20 @@ def _place_order(instrument: str, side: str, notional_usd: float) -> dict:
 
     api_key, secret = _get_keys()
 
-    # Market orders use notional (USDT amount) for BUY, quantity for SELL
     params = {
         "instrument_name": instrument,
         "side":            side,
         "type":            "MARKET",
-        "notional":        str(round(notional_usd, 2)),
     }
+    if side == "BUY":
+        # Market BUY takes notional: USDT amount to spend.
+        params["notional"] = str(round(notional_usd, 2))
+    else:
+        # Market SELL takes quantity: base-currency amount to sell.
+        decimals = _QTY_DECIMALS.get(instrument, 6)
+        factor   = 10 ** decimals
+        quantity = math.floor((notional_usd / price) * factor) / factor
+        params["quantity"] = str(quantity)
 
     body = _sign("private/create-order", params, api_key, secret)
 
@@ -155,7 +176,7 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
         return entry
 
     try:
-        result = _place_order(coin, action, usd_amount)
+        result = _place_order(coin, action, usd_amount, price)
         entry  = {
             "action":     action,
             "coin":       coin,

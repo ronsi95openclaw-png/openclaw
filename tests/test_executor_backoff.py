@@ -65,7 +65,7 @@ def test_place_order_retries_on_connection_error_then_succeeds(monkeypatch):
 
     monkeypatch.setattr(executor.requests, "post", fake_post)
 
-    result = executor._place_order("BTC_USDT", "BUY", 25.0)
+    result = executor._place_order("BTC_USDT", "BUY", 25.0, 60000.0)
     assert calls["n"] == 2, "should have retried exactly once"
     assert result == {"order_id": "fake-123"}
 
@@ -82,7 +82,7 @@ def test_place_order_retries_on_timeout_then_succeeds(monkeypatch):
 
     monkeypatch.setattr(executor.requests, "post", fake_post)
 
-    result = executor._place_order("ETH_USDT", "SELL", 50.0)
+    result = executor._place_order("ETH_USDT", "SELL", 50.0, 3000.0)
     assert calls["n"] == 2
     assert result == {"order_id": "fake-123"}
 
@@ -98,7 +98,7 @@ def test_place_order_reraises_after_second_connection_error(monkeypatch):
     monkeypatch.setattr(executor.requests, "post", fake_post)
 
     with pytest.raises(requests.ConnectionError):
-        executor._place_order("BTC_USDT", "BUY", 25.0)
+        executor._place_order("BTC_USDT", "BUY", 25.0, 60000.0)
 
     assert calls["n"] == 2, "must retry exactly once, then raise"
 
@@ -114,7 +114,7 @@ def test_place_order_reraises_after_second_timeout(monkeypatch):
     monkeypatch.setattr(executor.requests, "post", fake_post)
 
     with pytest.raises(requests.Timeout):
-        executor._place_order("BTC_USDT", "BUY", 25.0)
+        executor._place_order("BTC_USDT", "BUY", 25.0, 60000.0)
 
     assert calls["n"] == 2
 
@@ -133,7 +133,7 @@ def test_place_order_does_not_retry_on_http_error(monkeypatch):
     monkeypatch.setattr(executor.requests, "post", fake_post)
 
     with pytest.raises(requests.HTTPError):
-        executor._place_order("BTC_USDT", "BUY", 25.0)
+        executor._place_order("BTC_USDT", "BUY", 25.0, 60000.0)
 
     assert calls["n"] == 1, "HTTPError after the wire-level success must NOT trigger retry"
 
@@ -148,7 +148,7 @@ def test_place_order_first_attempt_success_no_retry(monkeypatch):
 
     monkeypatch.setattr(executor.requests, "post", fake_post)
 
-    result = executor._place_order("BTC_USDT", "BUY", 25.0)
+    result = executor._place_order("BTC_USDT", "BUY", 25.0, 60000.0)
     assert calls["n"] == 1
     assert result == {"order_id": "fake-123"}
 
@@ -164,6 +164,6 @@ def test_place_order_rejects_on_nonzero_code(monkeypatch):
     monkeypatch.setattr(executor.requests, "post", fake_post)
 
     with pytest.raises(ValueError, match="insufficient balance"):
-        executor._place_order("BTC_USDT", "BUY", 25.0)
+        executor._place_order("BTC_USDT", "BUY", 25.0, 60000.0)
 
     assert calls["n"] == 1
