@@ -35,6 +35,7 @@ Run with:
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import signal
@@ -153,11 +154,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         response, brain = ask_hybrid(text, system=CLAWBOT_SYSTEM, history=history)
         add_message(chat_id, "assistant", response)
         await thinking_msg.edit_text(
-            f"🦾 <b>ClawBot</b> <i>({brain})</i>\n\n{response}",
+            f"🦾 <b>ClawBot</b> <i>({brain})</i>\n\n{html.escape(response)}",
             parse_mode="HTML",
         )
     except Exception as exc:
-        await thinking_msg.edit_text(f"🚨 Error: <code>{exc}</code>", parse_mode="HTML")
+        await thinking_msg.edit_text(f"🚨 Error: <code>{html.escape(str(exc))}</code>", parse_mode="HTML")
 
 
 # ── /ask ──────────────────────────────────────────────────────────────────────
@@ -184,11 +185,11 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         response, brain = ask_hybrid(prompt, system=CLAWBOT_SYSTEM, history=history)
         add_message(chat_id, "assistant", response)
         await thinking_msg.edit_text(
-            f"🦾 <b>ClawBot</b> <i>({brain})</i>\n\n{response}",
+            f"🦾 <b>ClawBot</b> <i>({brain})</i>\n\n{html.escape(response)}",
             parse_mode="HTML",
         )
     except Exception as exc:
-        await thinking_msg.edit_text(f"🚨 Error: <code>{exc}</code>", parse_mode="HTML")
+        await thinking_msg.edit_text(f"🚨 Error: <code>{html.escape(str(exc))}</code>", parse_mode="HTML")
 
 
 # ── /plan ─────────────────────────────────────────────────────────────────────
@@ -225,10 +226,10 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         response, brain = ask_hybrid(prompt, system=CLAWBOT_SYSTEM, history=history, force="complex")
         add_message(chat_id, "assistant", response)
         await thinking_msg.edit_text(
-            f"📋 <b>Plan: {idea[:40]}</b>\n\n{response}", parse_mode="HTML"
+            f"📋 <b>Plan: {html.escape(idea[:40])}</b>\n\n{html.escape(response)}", parse_mode="HTML"
         )
     except Exception as exc:
-        await thinking_msg.edit_text(f"🚨 Error: <code>{exc}</code>", parse_mode="HTML")
+        await thinking_msg.edit_text(f"🚨 Error: <code>{html.escape(str(exc))}</code>", parse_mode="HTML")
 
 
 # ── /research ─────────────────────────────────────────────────────────────────
@@ -263,10 +264,10 @@ async def cmd_research(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         response, brain = ask_hybrid(prompt, system=CLAWBOT_SYSTEM, history=history, force="complex")
         add_message(chat_id, "assistant", response)
         await thinking_msg.edit_text(
-            f"🔬 <b>Research: {topic[:40]}</b>\n\n{response}", parse_mode="HTML"
+            f"🔬 <b>Research: {html.escape(topic[:40])}</b>\n\n{html.escape(response)}", parse_mode="HTML"
         )
     except Exception as exc:
-        await thinking_msg.edit_text(f"🚨 Error: <code>{exc}</code>", parse_mode="HTML")
+        await thinking_msg.edit_text(f"🚨 Error: <code>{html.escape(str(exc))}</code>", parse_mode="HTML")
 
 
 # ── /clear ────────────────────────────────────────────────────────────────────
@@ -382,10 +383,10 @@ async def cmd_dca(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         response, brain = ask_hybrid(prompt, system=CLAWBOT_SYSTEM, force="complex")
         await thinking_msg.edit_text(
-            f"📈 <b>DCA: {asset}</b>\n\n{price_context}{response}", parse_mode="HTML"
+            f"📈 <b>DCA: {html.escape(asset)}</b>\n\n{html.escape(price_context)}{html.escape(response)}", parse_mode="HTML"
         )
     except Exception as exc:
-        await thinking_msg.edit_text(f"🚨 Error: <code>{exc}</code>", parse_mode="HTML")
+        await thinking_msg.edit_text(f"🚨 Error: <code>{html.escape(str(exc))}</code>", parse_mode="HTML")
 
 
 # ── /run — execute shell command on this PC ───────────────────────────────────
@@ -417,7 +418,7 @@ async def cmd_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     audit.log_command(actor, command, source="run", outcome="allowed")
 
     thinking_msg = await update.message.reply_text(
-        f"<i>Running:</i> <code>{command}</code>", parse_mode="HTML"
+        f"<i>Running:</i> <code>{html.escape(command)}</code>", parse_mode="HTML"
     )
 
     def _execute():
@@ -449,7 +450,7 @@ async def cmd_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     status = "✅" if rc == 0 else "❌"
     await thinking_msg.edit_text(
-        f"{status} <b>/run</b> <code>{command}</code>\n\n<pre>{output}</pre>",
+        f"{status} <b>/run</b> <code>{html.escape(command)}</code>\n\n<pre>{html.escape(output)}</pre>",
         parse_mode="HTML",
     )
 
@@ -483,7 +484,7 @@ async def cmd_py(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     audit.log_command(actor, code, source="py", outcome="allowed")
 
     thinking_msg = await update.message.reply_text(
-        f"<i>Running Python:</i> <code>{code}</code>", parse_mode="HTML"
+        f"<i>Running Python:</i> <code>{html.escape(code)}</code>", parse_mode="HTML"
     )
 
     def _execute():
@@ -514,7 +515,7 @@ async def cmd_py(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     status = "✅" if rc == 0 else "❌"
     await thinking_msg.edit_text(
-        f"{status} <b>/py</b>\n<code>{code}</code>\n\n<pre>{output}</pre>",
+        f"{status} <b>/py</b>\n<code>{html.escape(code)}</code>\n\n<pre>{html.escape(output)}</pre>",
         parse_mode="HTML",
     )
 
@@ -742,7 +743,11 @@ async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if arg == "on":
         scan_time = context.args[1] if len(context.args) > 1 else "08:00"
         timeframe = context.args[2] if len(context.args) > 2 else "4h"
-        cfg = sched.enable_autotrade(chat_id, scan_time=scan_time, timeframe=timeframe)
+        try:
+            cfg = sched.enable_autotrade(chat_id, scan_time=scan_time, timeframe=timeframe)
+        except ValueError as exc:
+            await update.message.reply_text(f"❌ {html.escape(str(exc))}")
+            return
         await update.message.reply_text(
             f"🤖 <b>Auto-Trade ENABLED</b>\n\n"
             f"⏰ Daily scan: <code>{cfg['scan_time']} UTC</code>\n"
@@ -944,8 +949,8 @@ def main() -> None:
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN is not set in .env")
 
-    if not os.getenv("ALLOWED_CHAT_ID", "").strip():
-        print("⚠️  WARNING: ALLOWED_CHAT_ID is not set in .env")
+    if not (os.getenv("ALLOWED_CHAT_ID", "").strip() or os.getenv("ALLOWED_CHAT_IDS", "").strip()):
+        print("⚠️  WARNING: ALLOWED_CHAT_ID / ALLOWED_CHAT_IDS is not set in .env")
         print("   The bot will start but will silently ignore ALL messages.")
         print("   Get your chat ID from @userinfobot, then add it to .env")
 
@@ -990,7 +995,16 @@ def main() -> None:
     from core import __version__ as _bot_version
     print(f"🦾 ClawBot v{_bot_version} running.")
     print("   Chat freely or use commands. /help for the full list.")
-    _app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
+    # PTB installs OS signal handlers by default, which only works from the
+    # main thread. start.py runs this bot in a background thread (Flask owns
+    # the main thread there), so skip signal handling in that case — running
+    # standalone via `python -m content.receiver` still gets normal ctrl-c
+    # shutdown.
+    run_kwargs = {"allowed_updates": Update.ALL_TYPES, "drop_pending_updates": True}
+    if threading.current_thread() is not threading.main_thread():
+        run_kwargs["stop_signals"] = None
+    _app.run_polling(**run_kwargs)
 
 
 if __name__ == "__main__":

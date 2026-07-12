@@ -40,14 +40,16 @@ def _log_trade(entry: dict) -> None:
     logger.info(f"Trade logged: {entry}")
 
 
-def _place_order(instrument: str, side: str, notional_usd: float) -> dict:
+def _place_order(instrument: str, side: str, notional_usd: float, price: float) -> dict:
     """
     Place a market order on Crypto.com.
 
     Args:
         instrument:   e.g. "BTC_USDT"
         side:         "BUY" or "SELL"
-        notional_usd: USD value to trade (for BUY) or full position (for SELL)
+        notional_usd: USD value to size the order from
+        price:        Current price, used to convert notional_usd into a
+                      base-currency quantity for SELL orders
 
     Returns:
         API response dict with order details.
@@ -56,25 +58,35 @@ def _place_order(instrument: str, side: str, notional_usd: float) -> dict:
 
     api_key, secret = _get_keys()
 
-    # Market orders use notional (USDT amount) for BUY, quantity for SELL
+    # Crypto.com v2 MARKET orders take `notional` (quote currency, e.g. USDT)
+    # for BUY but `quantity` (base currency, e.g. BTC) for SELL — sending
+    # `notional` on a SELL is rejected by the exchange, which would leave a
+    # LIVE position that entered but can never exit via this path.
     params = {
         "instrument_name": instrument,
         "side":            side,
         "type":            "MARKET",
-        "notional":        str(round(notional_usd, 2)),
     }
+    if side == "SELL":
+        if not price or price <= 0:
+            raise ValueError(f"Cannot size MARKET SELL for {instrument}: invalid price {price}")
+        params["quantity"] = str(round(notional_usd / price, 8))
+    else:
+        params["notional"] = str(round(notional_usd, 2))
 
-    body = _sign("private/create-order", params, api_key, secret)
-
-    # Retry transient network errors ONCE. Do NOT retry once the server has
-    # responded (raise_for_status below) — the order may have been accepted
-    # and a retry would double-fill. Create-order is not idempotent.
+    # Retry transient network errors ONCE, and only when we know the request
+    # never reached the exchange. A ReadTimeout is ambiguous — the order may
+    # already have been accepted server-side — so it is NOT retried here;
+    # only ConnectionError/ConnectTimeout (failed before the request landed)
+    # are safe to retry. Create-order is not idempotent, and each attempt is
+    # freshly signed since the signature is bound to a nonce/timestamp.
     r = None
     for attempt in range(2):
+        body = _sign("private/create-order", params, api_key, secret)
         try:
             r = requests.post(f"{_PRIVATE}/create-order", json=body, timeout=15)
             break
-        except (requests.ConnectionError, requests.Timeout) as exc:
+        except (requests.ConnectionError, requests.ConnectTimeout) as exc:
             if attempt == 1:
                 raise
             logger.warning(f"_place_order transient network error (attempt 1/2): {exc}")
@@ -132,8 +144,10 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
         _log_trade({"action": "SKIP", "coin": coin, "reason": msg, "mode": mode})
         return {"status": "skipped", "reason": msg}
 
-    # DEMO mode: simulate without placing a real order
-    if mode == "DEMO":
+    # Simulate without placing a real order unless mode is exactly "LIVE" —
+    # fail-safe so a corrupted/unexpected mode value never reaches the
+    # exchange (trading/mode.py already guards this too; belt and suspenders).
+    if mode != "LIVE":
         entry = {
             "action":     action,
             "coin":       coin,
@@ -143,7 +157,7 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
             "confidence": signal.confidence,
             "order_id":   "DEMO",
             "status":     "demo",
-            "mode":       "DEMO",
+            "mode":       mode,
         }
         _log_trade(entry)
         try:
@@ -155,7 +169,7 @@ def execute_signal(signal, portfolio_usd: float) -> dict:
         return entry
 
     try:
-        result = _place_order(coin, action, usd_amount)
+        result = _place_order(coin, action, usd_amount, price=price)
         entry  = {
             "action":     action,
             "coin":       coin,
