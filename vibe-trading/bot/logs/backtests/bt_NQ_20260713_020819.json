@@ -1,0 +1,113 @@
+{
+  "strategy": "TJR ICT Kill Zone \u2014 Lucid 25K (bot path)",
+  "instrument": "NQ",
+  "strategy_source": "bot.strategy",
+  "risk_guard_source": "in-file fallback",
+  "mandate_fallback": false,
+  "period": {
+    "first_trade": "2026-05-28",
+    "last_trade": "2026-06-09",
+    "trading_days": 2,
+    "bars": 13223
+  },
+  "performance": {
+    "total_trades": 3,
+    "winners": 0,
+    "losers": 3,
+    "win_rate_pct": 0.0,
+    "total_pnl": -373.5,
+    "avg_win": 0.0,
+    "avg_loss": -124.5,
+    "avg_r_multiple": -1.0,
+    "tp1_exits": 0,
+    "tp2_exits": 0,
+    "sl_exits": 3,
+    "eod_exits": 0,
+    "avg_trades_per_day": 1.5,
+    "sharpe_per_trade": 0.0
+  },
+  "risk": {
+    "max_drawdown_dollar": 373.5,
+    "max_drawdown_pct": 1.49,
+    "worst_day": {
+      "date": "2026-05-28",
+      "pnl": -249.0
+    },
+    "best_day": {
+      "date": "2026-06-09",
+      "pnl": -124.5
+    },
+    "worst_trade_excursion": -120.0
+  },
+  "equity": {
+    "start": 25000.0,
+    "end": 24626.5,
+    "net_change": -373.5
+  },
+  "decisions": {
+    "skip": 13219,
+    "approve": 3,
+    "flat": 1
+  },
+  "lucid_compliance": {
+    "max_loss_limit": 1000,
+    "max_position_size": 2,
+    "daily_trade_cap": 10,
+    "consistency_rule_eval": 0.5,
+    "any_breach": false,
+    "breaches": []
+  },
+  "trades": [
+    {
+      "entry_dt": "2026-05-28T09:30:00-04:00",
+      "exit_dt": "2026-05-28T09:35:00-04:00",
+      "side": "short",
+      "entry": 30010.75,
+      "exit": 30016.75,
+      "size": 1,
+      "status": "sl",
+      "pnl": -124.5,
+      "r_multiple": -1.0,
+      "worst_adverse_pnl": -120.0,
+      "kill_zone": "ny_open",
+      "bars_held": 2,
+      "r_ticks": 24,
+      "signal_reason": "kill_zone=ny_open; htf_bias=short; bearish_sweep@30099; ob_in_ote; msb_1m_confirmed",
+      "entry_r_pts": 6.0
+    },
+    {
+      "entry_dt": "2026-05-28T09:35:00-04:00",
+      "exit_dt": "2026-05-28T09:40:00-04:00",
+      "side": "short",
+      "entry": 29981.75,
+      "exit": 29987.75,
+      "size": 1,
+      "status": "sl",
+      "pnl": -124.5,
+      "r_multiple": -1.0,
+      "worst_adverse_pnl": -120.0,
+      "kill_zone": "ny_open",
+      "bars_held": 2,
+      "r_ticks": 24,
+      "signal_reason": "kill_zone=ny_open; htf_bias=short; bearish_sweep@30099; fvg+ob_in_ote; msb_1m_confirmed",
+      "entry_r_pts": 6.0
+    },
+    {
+      "entry_dt": "2026-06-09T09:30:00-04:00",
+      "exit_dt": "2026-06-09T09:35:00-04:00",
+      "side": "short",
+      "entry": 29649.75,
+      "exit": 29655.75,
+      "size": 1,
+      "status": "sl",
+      "pnl": -124.5,
+      "r_multiple": -1.0,
+      "worst_adverse_pnl": -120.0,
+      "kill_zone": "ny_open",
+      "bars_held": 2,
+      "r_ticks": 24,
+      "signal_reason": "kill_zone=ny_open; htf_bias=short; bearish_sweep@29747.2; ob_in_ote; msb_1m_confirmed",
+      "entry_r_pts": 6.0
+    }
+  ]
+}

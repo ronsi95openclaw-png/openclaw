@@ -820,7 +820,11 @@ def _smoke_test() -> int:
     assert msb_confirmed(bars["1m"], "long") is True, "expected 1M MSB up"
     print("[ok] helpers: kill-zone, htf_bias=long, bullish sweep, bullish FVG, MSB up")
 
-    sig = generate_signal(bars, now_et, instrument="ES")
+    # sweep_bars=3 to match this fixture's hand-built slicing assumption
+    # (StrategyConfig defaults to sweep_bars=2; the fixture comments above
+    # document the base/recent split assuming 3 -- keep them in sync).
+    sig = generate_signal(bars, now_et, instrument="ES",
+                          config=StrategyConfig(sweep_bars=3))
     assert sig is not None, "generate_signal returned None on a valid LONG setup"
     assert sig["side"] == "long", f"side={sig['side']}"
     assert sig["instrument"] == "ES"
@@ -873,7 +877,8 @@ def _smoke_test() -> int:
     # And the equivalent ET instant of a UTC-tagged 13:42 (== 09:42 ET) DOES fire,
     # with a correctly ET-offset ts.
     utc_for_0942_et = now_et.astimezone(timezone.utc)  # same instant as 09:42 ET
-    sig_utc = generate_signal(bars, utc_for_0942_et, instrument="ES")
+    sig_utc = generate_signal(bars, utc_for_0942_et, instrument="ES",
+                              config=StrategyConfig(sweep_bars=3))
     assert sig_utc is not None and sig_utc["ts"].endswith("-04:00"), \
         f"expected an ET-offset ts from a UTC-tagged instant, got {sig_utc}"
     print("[ok] non-ET tz-aware converted to ET wall clock")
