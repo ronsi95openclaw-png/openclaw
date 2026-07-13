@@ -1,6 +1,29 @@
-# Master Compact — Updated 2026-07-10
+# Master Compact — Updated 2026-07-13
 
 ## Decisions Made (keep forever)
+- 2026-07-13: Fixed both bugs in `tjr_backtest_4yr.py` (commit `d166c3a`,
+  separate repo history) and re-ran all four original combos as real
+  re-simulations: **NQ 1D and NQ 1H now PASS cleanly** (0 consistency
+  violations under the corrected rule); **ES 1D and ES 1H remain genuine
+  FAILs** (real negative edge, not a proxy artifact). This overturns the
+  2026-07-10 "structural mismatch across all four combos" conclusion —
+  that finding's premise (the design can't satisfy the consistency rule)
+  was itself built on the proxy's bugs. The real finding is instrument
+  selection: NQ has the edge, ES doesn't.
+- 2026-07-13: Validated against the live twin engine (`bot/backtest.py`) —
+  inconclusive due to yfinance's 60-day 5-minute data ceiling (only 3 NQ /
+  1 ES trades available to test), but nothing contradicted the NQ finding,
+  and full regression suite (`runner.py --selftest`, `risk_guard.py`,
+  `traderpost.py`) passed clean. Found `bot/backtest.py`'s own audit
+  function has the same consistency-rule bug the proxy had — logged as a
+  carry-forward item, not yet fixed.
+- 2026-07-13: Switched the automated paper-trading roster from ES to NQ
+  (`fetch_nq_data.py` added, Hermes's `vibe_paper_scan.py` cron repointed).
+  ES remains mandate-eligible, just not the active automated instrument.
+  eval_gate still at 0/25 trades — no live paper trades have executed yet.
+  **Time-to-25-trades estimate is NOT "weeks"**: extrapolating from observed
+  NQ trade frequency (thin sample) puts it in the 500-1,140 calendar day
+  range. Surface this directly, don't soften it.
 - 2026-07-10: **Strategy-level finding, supersedes the 2026-07-02 per-combo summary below.** Investigated why NQ 1H (the only profitable combo in `TJR_BACKTEST_SUMMARY.md`) still carried an eval-FAIL flag. Found and confirmed a real bug in `backtest/backtest_4yr/tjr_backtest_4yr.py`: its `stop_points` field only feeds TP1/TP2 target math — the actual stop is placed at the raw, uncapped sweep level, unlike live `strategy.py` which hard-clamps every stop to `max_stop_points=6.0` regardless of instrument/timeframe. Verified across all four original combos (ES 1D/1H, NQ 1D/1H): proxy losses ran 7x-81x wider than the live cap would ever allow (worst: a single NQ 1D trade with a 1,015.50-point stop, -$20,314.50). Correcting for this fully explains NQ 1D's implausible 168.8%-of-account drawdown (no second bug) and flips ES 1D and NQ 1D from deeply negative to solidly profitable. **But recomputing the 50% consistency rule with corrected losses reveals violations in ALL FOUR combos that were completely hidden in the original (buggy) numbers** — the wild proxy losses were incidentally masking a consistency-rule failure by dragging the running-cumulative total negative/chaotic. Once corrected, every combo shows the same failure mode: low trade frequency + near-uniform win sizes (fixed R-multiple TP2 payouts) is structurally hard to reconcile with a running-cumulative 50% check, independent of instrument or timeframe. **This is now a strategy-design-level finding, not an instrument-selection one** — scoping to a different instrument/timeframe within this same TJR/kill-zone design will not fix it, because the mechanism is about how the strategy wins, not what it trades. One exception: ES 1H stayed net negative even after correction — a real (if smaller) negative edge, not explained by this bug, and not contaminated by the masking effect the other three combos had.
 - 2026-07-08: Multi-project audit (OpenClaw, Hermes, HaulYeah, vibe-trading) run via 4 parallel Fable subagents. Fixes merged onto each project's live working branch (`hermes/auto-2026-07-08` here, `master` in Hermes) — NOT into `main`/`origin`, per the standing rule that `hermes/auto-*` branches diverge hard from main and need careful per-file reconciliation, not blind merges.
 - 2026-07-08: Fixed a real crashing bug in `vibe-trading/bot/config.py` — it had its own drifted duplicate of `strategy.py`'s `StrategyConfig` dataclass, missing 4 fields including `max_minutes_in_kz`. This crashed `generate_signal()` on every single 15-min paper-trading cycle since the field was added (commit `ce13678`), fail-closing to a silent skip — the bot had not actually evaluated a real setup all session, only errored into skip. Fixed by importing `StrategyConfig` from `strategy.py` instead of duplicating it (commit `75a42dd`). Also silently corrected two drifted defaults in the process: `sweep_bars` was stuck at `3` instead of the tuned `2`, and `kill_zones` was missing `london_open` entirely.
