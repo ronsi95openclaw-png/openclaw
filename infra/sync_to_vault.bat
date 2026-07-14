@@ -15,7 +15,7 @@ if not exist "%VAULT%\" (
 )
 
 REM  source dir                                vault target                              label               prefix
-call :sync "%REPO%\trash_hauling_bot\memory"  "%VAULT%\10 - HaulYA'LL!"                "HaulYeah"          HAULYALL_
+call :sync "%REPO%\trash_hauling_bot\memory"  "%VAULT%\35 - HaulYA'LL"                "HaulYeah"          HAULYALL_
 call :sync "%REPO%\memory"                    "%VAULT%\20 - OpenClaw\Memory"            "OpenClaw"          OPENCLAW_
 call :sync "%REPO%\memory\strategy"           "%VAULT%\20 - OpenClaw\Memory\Strategy"   "OpenClaw-Strategy" OPENCLAW_
 
