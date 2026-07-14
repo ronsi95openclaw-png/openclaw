@@ -25,7 +25,7 @@ Just type anything to chat. Commands for structured tasks:
     /py [code]         — run Python code on this PC
 
   Reminders:
-    /remind HH:MM text — set a daily reminder (UTC)
+    /remind HH:MM text — set a one-time reminder for the next HH:MM UTC
     /tasks             — list pending reminders
     /cancel <id>       — cancel a reminder
 
@@ -225,7 +225,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /run [command]      — run shell command\n"
         "  /py [code]          — run Python code\n\n"
         "<b>⏰ Reminders:</b>\n"
-        "  /remind HH:MM text  — set daily reminder\n"
+        "  /remind HH:MM text  — set one-time reminder\n"
         "  /tasks              — list reminders\n\n"
         "<b>📓 Knowledge Base:</b>\n"
         "  /save [text]        — save last chat or a custom note\n"
@@ -1778,7 +1778,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /run [command]      — run shell command\n"
         "  /py [code]          — run Python code\n\n"
         "<b>⏰ Reminders:</b>\n"
-        "  /remind HH:MM text  — set daily reminder\n"
+        "  /remind HH:MM text  — set one-time reminder\n"
         "  /tasks              — list reminders\n"
         "  /cancel [id]        — cancel reminder\n\n"
         "<b>⚙️ System:</b>\n"

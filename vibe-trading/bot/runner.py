@@ -350,6 +350,25 @@ def _fallback_load_config(path: Optional[Path] = None) -> Any:
     return _FallbackBotConfig()
 
 
+def _fallback_is_live_enabled(config: Any) -> bool:
+    """Defense-in-depth copy of config.is_live_enabled's contract, used only if
+    the real config module can't be imported (see _resolve_siblings). Requires
+    ALL THREE: HERMES_BOT_LIVE==1, config.go_live, and eval_gate.passed_evaluation
+    — never fail-open. Mirrors config.py:181-211 (B2 fix, 2026-07-09)."""
+    if not (os.environ.get("HERMES_BOT_LIVE") == "1" and bool(getattr(config, "go_live", False))):
+        return False
+    try:
+        eval_gate = _try_import("eval_gate")
+        if eval_gate is None:
+            return False
+        journal_path = getattr(config, "log_dir", LOG_DIR) / "trade_journal.jsonl"
+        mandate_file = getattr(config, "mandate_file", MANDATE_FILE)
+        passed, _reasons = eval_gate.passed_evaluation(journal_path, mandate_file)
+        return bool(passed)
+    except Exception:
+        return False  # fail-closed: any error in the eval-gate check keeps live OFF
+
+
 # ── mandate fallback (§6) — runtime read of lucid_mandate.json; fail-closed ───
 
 @dataclass(frozen=True)
@@ -366,6 +385,8 @@ class _FallbackMandateView:
     auto_flatten_on_kill: bool
     mode: str
     is_fallback: bool = False   # True => file missing => loud audit + force DRY_RUN
+    profit_target: Optional[float] = None       # informational; not a risk gate
+    flatten_trigger_et: Optional[str] = None    # "HH:MM"; internal safety-buffer flatten
 
     @classmethod
     def from_file(cls, path: Optional[Path] = None) -> "_FallbackMandateView":
@@ -376,6 +397,7 @@ class _FallbackMandateView:
                 raw = json.loads(p.read_text(encoding="utf-8"))
                 rules = raw.get("rules", {})
                 ks = raw.get("kill_switch", {}) or {}
+                profit_target = rules.get("profit_target")
                 return cls(
                     account_size=float(rules["account_size"]),
                     max_loss_limit=float(rules["max_loss_limit"]),
@@ -389,18 +411,25 @@ class _FallbackMandateView:
                     auto_flatten_on_kill=bool(ks.get("auto_flatten_on_kill", True)),
                     mode=str(raw.get("mode", "paper")),
                     is_fallback=False,
+                    profit_target=float(profit_target) if profit_target is not None else None,
+                    flatten_trigger_et=rules.get("flatten_trigger_et"),
                 )
             except Exception:
                 pass
         # File missing/unreadable: fail closed (paper, conservative caps) and
         # flag fallback so the runner logs `mandate_fallback` and stays DRY_RUN.
+        # max_loss_limit/flatten_trigger_et mirror the current known-good Lucid
+        # LucidFlex_25K numbers (source of truth: lucid_mandate.json) so a
+        # transiently-missing file fails closed to the CORRECT conservative
+        # values, not stale ones.
         return cls(
-            account_size=25000.0, max_loss_limit=1500.0,
+            account_size=25000.0, max_loss_limit=1000.0,
             consistency_rule_eval=0.50, overnight_holds=False, close_eod=True,
             instruments_allowed=("ES", "MES", "NQ", "MNQ"),
             max_position_size=1, daily_trade_cap=0,   # cap 0 => no new entries
             kill_switch_file="./KILL_SWITCH", auto_flatten_on_kill=True,
             mode="paper", is_fallback=True,
+            profit_target=1250.0, flatten_trigger_et="16:30",
         )
 
 
@@ -815,7 +844,10 @@ class _FallbackTraderPostClient:
         self._kill = kill_switch_check or (lambda: False)
 
     def _live_requested(self) -> bool:
-        return (os.environ.get("HERMES_BOT_LIVE") == "1") and bool(getattr(self.config, "go_live", False))
+        # B2 fix (2026-07-09): same three-condition gate as config.is_live_enabled /
+        # runner._fallback_is_live_enabled — env + go_live + proven eval_gate pass.
+        # Kept in sync so the fallback and real TraderPostClient never diverge.
+        return _fallback_is_live_enabled(self.config)
 
     def send(self, signal: dict, *, approved_size: int) -> dict:
         m = self.mandate_view
@@ -1009,6 +1041,7 @@ def _resolve_siblings() -> dict:
         "AuditLogger": pick("audit", "AuditLogger", _FallbackAuditLogger),
         "kill_switch_engaged": pick("killswitch", "kill_switch_engaged", None),
         "paper_ledger_open_position": pick("paper_ledger", "open_position", None),
+        "is_live_enabled": pick("config", "is_live_enabled", _fallback_is_live_enabled),
         "_real_modules": {k: (v is not None) for k, v in mods.items()},
     }
 
@@ -1277,7 +1310,18 @@ def run_cycle(ctx: BotContext) -> dict:
     #    reads the freshly re-loaded mandate_view.
     guard = _build_risk_guard(ctx, mandate_view)
     result = guard.check(signal, account_state)
-    live_requested = (os.environ.get("HERMES_BOT_LIVE") == "1") and bool(getattr(ctx.config, "go_live", False))
+    # B2 fix (2026-07-09): the live-send decision is the real three-condition
+    # eval_gate.is_live_enabled() (env + go_live + proven paper track record),
+    # not the old two-boolean check. No parallel gate remains — this is now the
+    # only place run_cycle decides "live requested" for audit/log purposes, and
+    # traderpost.py's own send() re-checks the SAME is_live_enabled as defense
+    # in depth before any POST (see traderpost.py::_live_requested).
+    is_live_enabled = ctx.siblings["is_live_enabled"]
+    try:
+        live_requested = bool(is_live_enabled(ctx.config))
+    except Exception as e:
+        ctx.audit.log_event("live_gate_error", reason=str(e))
+        live_requested = False  # fail-closed: any error in the live gate keeps it OFF
     ctx.audit.log_decision(signal=signal, result=result, account_state=account_state,
                            stage="risk_guard", dry_run=not live_requested,
                            live_send=bool(live_requested and result.get("decision") == "approve"))
@@ -1325,12 +1369,29 @@ def run_cycle(ctx: BotContext) -> dict:
     return summary
 
 
+def _parse_hhmm(s: Any) -> Optional[time]:
+    """Parse an "HH:MM" string into a time; None if absent/unparseable."""
+    if not isinstance(s, str):
+        return None
+    try:
+        h, m = s.strip().split(":")
+        return time(int(h), int(m))
+    except (ValueError, AttributeError):
+        return None
+
+
 def _build_risk_guard(ctx: BotContext, mandate_view: Any):
     RiskGuard = ctx.siblings["RiskGuard"]
+    # Flatten trigger: mandate's flatten_trigger_et (lucid_mandate.json) is the
+    # single source of truth (S1) — fall back to ctx.config, then the 15:55
+    # historical default only if neither is present.
+    mandate_flatten = _parse_hhmm(getattr(mandate_view, "flatten_trigger_et", None))
+    eod_flatten_et = mandate_flatten if mandate_flatten is not None \
+        else getattr(ctx.config, "eod_flatten_et", time(15, 55))
     kwargs = dict(
         daily_gate_pct=getattr(ctx.config, "daily_gate_pct", 0.80),
         consecutive_loss_limit=getattr(ctx.config, "consecutive_loss_limit", 3),
-        eod_flatten_et=getattr(ctx.config, "eod_flatten_et", time(15, 55)),
+        eod_flatten_et=eod_flatten_et,
         session_open_et=getattr(ctx.config, "session_open_et", time(8, 30)),
     )
     # the fallback guard accepts a kill_switch_check; a real one may not

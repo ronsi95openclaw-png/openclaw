@@ -75,13 +75,15 @@ def load_mandate(path: "Optional[Path]" = None) -> dict:
     return {
         "rules": {
             "account_size": 25000,
-            "max_loss_limit": 1500,
+            "max_loss_limit": 1000,
+            "profit_target": 1250,
             "consistency_rule_eval": 0.50,
             "overnight_holds": False,
             "close_eod": True,
             "instruments_allowed": ["ES", "MES", "NQ", "MNQ"],
             "max_position_size": 2,
             "daily_trade_cap": 10,
+            "flatten_trigger_et": "16:30",
         },
         "kill_switch": {"file": "./KILL_SWITCH", "auto_flatten_on_kill": True},
         "mode": "paper",
@@ -110,6 +112,8 @@ class MandateView:
     auto_flatten_on_kill: bool
     mode: str                        # mandate's own mode flag ('paper')
     is_fallback: bool = False        # True if loaded from the crash-avoidance default
+    profit_target: "Optional[float]" = None       # informational; not a risk gate
+    flatten_trigger_et: "Optional[str]" = None    # "HH:MM"; internal safety-buffer flatten
 
     @classmethod
     def from_dict(cls, mandate: dict) -> "MandateView":
@@ -121,9 +125,10 @@ class MandateView:
         ks_path = Path(raw_ks_file)
         if not ks_path.is_absolute():
             ks_path = (VIBE_DIR / raw_ks_file).resolve()
+        profit_target = rules.get("profit_target")
         return cls(
             account_size=float(rules.get("account_size", 25000)),
-            max_loss_limit=float(rules.get("max_loss_limit", 1500)),
+            max_loss_limit=float(rules.get("max_loss_limit", 1000)),
             consistency_rule_eval=float(rules.get("consistency_rule_eval", 0.50)),
             overnight_holds=bool(rules.get("overnight_holds", False)),
             close_eod=bool(rules.get("close_eod", True)),
@@ -135,6 +140,8 @@ class MandateView:
             auto_flatten_on_kill=bool(ks.get("auto_flatten_on_kill", True)),
             mode=str(mandate.get("mode", "paper")),
             is_fallback=bool(mandate.get("_fallback", False)),
+            profit_target=float(profit_target) if profit_target is not None else None,
+            flatten_trigger_et=rules.get("flatten_trigger_et"),
         )
 
     @classmethod
@@ -228,7 +235,7 @@ class RiskGuard:
                 (max_loss_limit, max_position_size, daily_trade_cap,
                 consistency_rule_eval, instruments_allowed) ALWAYS come from here.
             daily_gate_pct: soft daily-loss gate as a fraction of ``max_loss_limit``
-                (default 0.80 => -$1,200 of $1,500). Operational tunable.
+                (default 0.80 => -$800 of $1,000). Operational tunable.
             consecutive_loss_limit: consecutive-loss circuit-breaker threshold.
             eod_flatten_et: end-of-day flatten time in ET (default 15:55).
             audit_log: override path for the decisions JSONL (defaults to
@@ -593,11 +600,14 @@ def _smoke() -> int:
          _base_account(realized_pnl_today=-(mv.max_loss_limit * 0.80)),
          "flat", None),
         # Bug #1 regression: soft gate must use COMBINED realized+unrealized.
-        # realized=-100, unrealized=-1100 => total -$1,200 == soft gate (80% of
-        # $1,500). Must be 'flat', NOT 'approve' (open risk already at the stop).
+        # realized=-100, unrealized=(soft gate - 100) => total == soft gate (80%
+        # of max_loss_limit). Must be 'flat', NOT 'approve' (open risk already at
+        # the stop). Derived from mv.max_loss_limit so it holds regardless of the
+        # mandate's actual dollar figure.
         ("flat_soft_daily_gate_combined",
          _base_signal(),
-         _base_account(realized_pnl_today=-100.0, unrealized_pnl=-1100.0),
+         _base_account(realized_pnl_today=-100.0,
+                       unrealized_pnl=-(mv.max_loss_limit * 0.80 - 100.0)),
          "flat", None),
         ("flat_consecutive_losses",
          _base_signal(),

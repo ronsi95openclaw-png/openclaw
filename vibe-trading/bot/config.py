@@ -14,10 +14,13 @@ Locked-contract role (see vibe-trading/bot/ARCHITECTURE.md §11):
 
 HARD SAFETY INVARIANTS honoured here (ARCHITECTURE.md §0):
 
-  * Paper / DRY_RUN by DEFAULT. A live TraderPost POST may happen ONLY if BOTH
-    os.environ["HERMES_BOT_LIVE"] == "1" AND config.go_live is True. Both default off.
-    This module exposes ``is_live_enabled(config)`` so every caller agrees on the gate,
-    but it NEVER POSTs anything — it only reports the gate state.
+  * Paper / DRY_RUN by DEFAULT. A live TraderPost POST may happen ONLY if ALL THREE
+    of: os.environ["HERMES_BOT_LIVE"] == "1", config.go_live is True, AND
+    eval_gate.passed_evaluation(...) is True (2026-07-08: added third gate -- the bot
+    must have a qualifying PAPER track record, not just two booleans, before live can
+    ever arm). All three default off/failing. This module exposes
+    ``is_live_enabled(config)`` so every caller agrees on the gate, but it NEVER POSTs
+    anything — it only reports the gate state.
 
   * NO secrets are ever stored in BotConfig or in this file. The TraderPost webhook URL
     and secret are read from os.environ ONLY, inside traderpost.py, at call time. This
@@ -41,6 +44,15 @@ from __future__ import annotations
 import json
 import logging
 import os
+
+try:  # package context: `from bot import config` / `python -m bot.xxx`
+    from . import eval_gate as _eval_gate
+except ImportError:  # direct-run context: `python config.py`
+    import eval_gate as _eval_gate  # type: ignore
+try:  # package context: `from bot import config` / `python -m bot.xxx`
+    from .strategy import StrategyConfig
+except ImportError:  # direct-run context: `python config.py`
+    from strategy import StrategyConfig  # type: ignore
 from dataclasses import dataclass, field
 from datetime import time
 from pathlib import Path
@@ -102,21 +114,13 @@ TRADERPOST_ENV_VARS: Tuple[str, str] = (ENV_TRADERPOST_WEBHOOK_URL, ENV_TRADERPO
 # ── StrategyConfig (strategy-local tunables; NOT the mandate) ───────────────────────
 # Mirrors ARCHITECTURE.md §3.4. Kill-zone bounds and fib/OTE/MSB params live here, not
 # in the mandate. tp1_rr/tp2_rr match tjr_backtest.py (2.0 / 4.0).
-
-
-@dataclass(frozen=True)
-class StrategyConfig:
-    """Pure-strategy tunables fed to strategy.generate_signal(). No mandate numbers."""
-
-    kill_zones: Tuple[str, ...] = ("ny_open",)   # NY Open 08:30–11:00 ET (primary window)
-    lookback: int = 20                            # swing-range / sweep reference bars
-    sweep_bars: int = 3                           # recent bars examined for the sweep
-    msb_bars: int = 5                             # 1M swing window for MSB confirmation
-    ote_low: float = 0.618                        # OTE fib retrace lower bound
-    ote_high: float = 0.79                        # OTE fib retrace upper bound
-    tp1_rr: float = 2.0                           # TP1 == 2R  (matches tjr_backtest.py)
-    tp2_rr: float = 4.0                           # TP2 == 4R  (matches tjr_backtest.py)
-    default_contracts: int = 1                    # risk_guard clamps to mandate cap
+#
+# StrategyConfig itself is imported from strategy.py (see imports above) rather than
+# redefined here. A local duplicate previously drifted out of sync with strategy.py
+# (missing ob_bars/stop_ticks/max_stop_points/max_minutes_in_kz, and stale kill_zones/
+# sweep_bars defaults) which crashed generate_signal() with
+# "'StrategyConfig' object has no attribute 'max_minutes_in_kz'" on every run — fixed
+# 2026-07-08 by making strategy.py the single source of truth.
 
 
 # ── BotConfig (operational config — NOT secrets, NOT mandate limits) ────────────────
@@ -178,13 +182,33 @@ def is_live_enabled(config: BotConfig) -> bool:
     """
     The single source of truth for the live gate (ARCHITECTURE.md §0.1 / §9.1).
 
-    Returns True ONLY if BOTH halves are armed:
-        os.environ["HERMES_BOT_LIVE"] == "1"   AND   config.go_live is True
+    2026-07-08: a THIRD condition was added alongside the original two-boolean
+    gate — the bot must have PROVEN itself in paper mode first. Returns True
+    ONLY if ALL THREE are armed:
+        os.environ["HERMES_BOT_LIVE"] == "1"   AND
+        config.go_live is True                  AND
+        eval_gate.passed_evaluation(trade_journal, mandate) is True
 
-    If either is missing/false => DRY_RUN. This helper performs NO I/O and POSTs nothing;
-    traderpost.py still re-checks the gate itself as defence in depth before any POST.
+    If ANY of the three is missing/false => DRY_RUN. The eval_gate check reads
+    ``bot/logs/trade_journal.jsonl`` (paper trade history) and the live mandate
+    JSON; it never raises (fails closed to False on any I/O problem), so a
+    missing/thin journal keeps the bot in DRY_RUN rather than crashing or
+    fail-opening. This helper performs NO I/O beyond that read-only eval-gate
+    check and POSTs nothing; traderpost.py still re-checks the gate itself as
+    defence in depth before any POST.
     """
-    return env_live_armed() and bool(config.go_live)
+    if not (env_live_armed() and bool(config.go_live)):
+        return False
+    journal_path = config.log_dir / "trade_journal.jsonl"
+    try:
+        passed, _reasons = _eval_gate.passed_evaluation(journal_path, config.mandate_file)
+    except Exception as exc:  # never let the eval-gate check crash the live decision
+        logger.warning(
+            "config: eval_gate.passed_evaluation raised %s — treating as NOT PASSED "
+            "(fail-closed, live gate stays OFF)", exc,
+        )
+        return False
+    return bool(passed)
 
 
 # ── Mandate convenience loader (raw rules; mandate.py owns the typed MandateView) ───
@@ -443,12 +467,22 @@ def load_config(path: Optional[Path] = None) -> BotConfig:
             msb_bars=_parse_bounded_int(
                 strat_over.get("msb_bars", base_strat.msb_bars),
                 base_strat.msb_bars, name="strategy.msb_bars", min_val=1),
+            ob_bars=_parse_bounded_int(
+                strat_over.get("ob_bars", base_strat.ob_bars),
+                base_strat.ob_bars, name="strategy.ob_bars", min_val=1),
             ote_low=_parse_bounded_float(
                 strat_over.get("ote_low", base_strat.ote_low),
                 base_strat.ote_low, name="strategy.ote_low", low=0.0, high=1.0),
             ote_high=_parse_bounded_float(
                 strat_over.get("ote_high", base_strat.ote_high),
                 base_strat.ote_high, name="strategy.ote_high", low=0.0, high=1.0),
+            stop_ticks=_parse_bounded_int(
+                strat_over.get("stop_ticks", base_strat.stop_ticks),
+                base_strat.stop_ticks, name="strategy.stop_ticks", min_val=1),
+            max_stop_points=_parse_bounded_float(
+                strat_over.get("max_stop_points", base_strat.max_stop_points),
+                base_strat.max_stop_points, name="strategy.max_stop_points",
+                low=0.0, high=1000.0),
             tp1_rr=_parse_bounded_float(
                 strat_over.get("tp1_rr", base_strat.tp1_rr),
                 base_strat.tp1_rr, name="strategy.tp1_rr", low=0.0, high=1000.0),
@@ -458,6 +492,9 @@ def load_config(path: Optional[Path] = None) -> BotConfig:
             default_contracts=_parse_bounded_int(
                 strat_over.get("default_contracts", base_strat.default_contracts),
                 base_strat.default_contracts, name="strategy.default_contracts", min_val=1),
+            max_minutes_in_kz=_parse_bounded_int(
+                strat_over.get("max_minutes_in_kz", base_strat.max_minutes_in_kz),
+                base_strat.max_minutes_in_kz, name="strategy.max_minutes_in_kz", min_val=0),
         )
 
         # eod_flatten_et: parse + clamp to the no-overnight safety ceiling (fail-closed).
@@ -528,8 +565,17 @@ if __name__ == "__main__":
         assert is_live_enabled(cfg) is False, "SAFETY FAIL: env half alone must NOT arm live"
         live_cfg = load_config()
         object.__setattr__(live_cfg, "go_live", True)  # simulate config half ON
-        assert is_live_enabled(live_cfg) is True, "gate should arm when BOTH halves on"
-        print("Gate check                   : env-only=OFF, env+go_live=ON  OK")
+        # 2026-07-08: is_live_enabled now requires a THIRD condition (eval_gate
+        # passed_evaluation on the paper trade_journal). With both booleans on but
+        # an empty/thin trade_journal.jsonl (the normal state pre-go-live), the
+        # gate MUST still read False -- flipping both booleans is no longer enough
+        # on its own. This is the whole point of the eval-gate wiring.
+        assert is_live_enabled(live_cfg) is False, (
+            "SAFETY FAIL (or eval_gate regression): both booleans ON should still "
+            "be False while the paper trade_journal has not passed eval_gate"
+        )
+        print("Gate check                   : env+go_live=ON but eval_gate not passed -> "
+              "still OFF (correct; third gate holds)")
     finally:
         if _saved is None:
             os.environ.pop(ENV_LIVE_FLAG, None)

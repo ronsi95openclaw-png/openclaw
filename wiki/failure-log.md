@@ -184,4 +184,82 @@ def sweep_stale_tasks(ttl_hours: int = 48) -> list:
 
 `.env` had `OLLAMA_MODEL=gemma4` (not installed). Fixed to `gemma3:4b`.  
 `core/brain.py` DEFAULT_OLLAMA_MODEL also updated.  
+
+---
+
+## FAIL-006 — ClawBot Telegram Bot Down, No Autostart (Resolved, Recurring Risk)
+
+**Severity:** HIGH
+**Category:** Process management
+**Affected:** `start.py`, `content/receiver.py`, `core/scheduler.py`
+
+**Root cause:**
+Two compounding issues found 2026-07-04:
+1. `core/scheduler.py` `start_scheduler()` called `AsyncIOScheduler.start()` in a background thread. On Python 3.13, `asyncio.get_event_loop()` no longer auto-creates a loop in non-main threads → `RuntimeError: There is no current event loop in thread 'clawbot'`. Bot thread crashed instantly on every restart attempt since 2026-06-25.
+2. Unlike Hermes and HaulYeah, ClawBot has **no Startup/watchdog launcher** — any manual stop, crash, or reboot leaves it down indefinitely with nothing to bring it back.
+
+**Fix applied:**
+Patched `start_scheduler()` to explicitly create/set an event loop before `.start()` when none exists in the thread. Manually restarted via `.venv/Scripts/python.exe start.py`.
+
+**Status: not fully closed.** `core/scheduler.py` was subsequently edited externally (reload_lifeos_schedule() added, other refactoring) and no longer contains the asyncio fix as of 2026-07-04 — unverified whether the underlying crash risk is still present under the new code. ClawBot also went down again the same day after a session/reboot event (no launcher to bring it back).
+
+**Fix still required:** give ClawBot a Startup launcher (same pattern as Hermes/HaulYeah) so it survives reboots without manual intervention. See [[improvement-roadmap]].
+
+---
+
+## FAIL-007 — HaulYeah Scraper: UnicodeEncodeError Flood on Emoji Leads (Resolved)
+
+**Severity:** MEDIUM
+**Category:** Logging / encoding
+**Affected:** `trash_hauling_bot/main.py`
+
+**Root cause:**
+`logging.FileHandler` and `sys.stdout` had no explicit UTF-8 encoding. FB Marketplace lead text routinely contains emoji (🔥🚨✨), which the default Windows console codepage (cp1252/charmap) can't encode. Every `lead_rejected`/`lead_added` audit log call touching such text threw `UnicodeEncodeError`, logged via Python's internal `--- Logging error ---` handler (non-fatal but noisy) — 305 ERROR-level lines and thousands of stderr crash dumps found in one day of logs, drowning real signal.
+
+**Fix applied:**
+Added `encoding="utf-8"` to the `FileHandler` and `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` at startup in `main.py`.
+
+---
+
+## FAIL-008 — Hermes Cron: Redundant Craigslist Scraper Job (Resolved)
+
+**Severity:** LOW
+**Category:** Redundant work / wasted agent runs
+**Affected:** Hermes cron jobs `haulyeah-web-leads`, `haulyeah-playwright-leads`
+
+**Root cause:**
+`haulyeah-web-leads` (9:30am M-F) scraped 3 Craigslist Dallas/Fort Worth URLs. `haulyeah-playwright-leads` (11:00am M-F) scraped the *same* 3 URLs plus Thumbtack and Angi — a strict superset. Both ran as full agent sessions daily; flagged in a prior cron inventory but never actioned.
+
+**Fix applied:**
+Paused `haulyeah-web-leads` via `hermes cron pause haulyeah-web-leads` (not a raw JSON edit — `cron/jobs.json` has a history of corruption from direct writes, e.g. `jobs.json.bak-20260702-corrupted-bom`).
+
+---
+
+## FAIL-009 — Hermes Cron: push-cron-health Failing Every Run Since Creation (Resolved)
+
+**Severity:** MEDIUM
+**Category:** Missing credential
+**Affected:** `%LOCALAPPDATA%\hermes\scripts\push_cron_health.py`, Supabase project `openclaw` (`gotdcwcdcampwysydbzg`)
+
+**Root cause:**
+`push_cron_health.py` snapshots `cron/jobs.json` into a Supabase `cron_health` table every 4 hours so the cloud `hermes-cron-health-watch` routine (no local filesystem access) can check job health. `SUPABASE_SERVICE_ROLE_KEY` was never set in `%LOCALAPPDATA%\hermes\.env` — the job had failed on every run (`last_status: error`) since it was created 2026-07-01, meaning the cloud watchdog had been reading a permanently stale/empty table the entire time with no one aware.
+
+**Fix applied:**
+User supplied the Supabase `service_role` key; added to Hermes `.env`. Verified via `hermes cron run push-cron-health` → `last_status: ok`, `last_error: null`.
+
+**Related, not applied:** an alternative fix (add an anon-INSERT RLS policy on `cron_health`, matching the existing pattern on `telegram_outbox`, and switch the script to the publishable key) was proposed but not executed — the service-role-key path was used instead.
+
+---
+
+## FAIL-010 — Duplicate Hermes Gateway Process (Resolved)
+
+**Severity:** LOW
+**Category:** Process management
+**Affected:** Hermes gateway (`hermes_cli.main serve`)
+
+**Root cause:**
+Two gateway processes running simultaneously — one from the venv Python, one from system Python 3.11 — a known recurring issue where the watchdog spawns a second gateway instead of detecting the first.
+
+**Fix applied:**
+Killed the system-Python duplicate (confirmed by command line, user-authorized). Underlying watchdog dupe-detection bug not fixed — will likely recur.
 **Status:** ✅ RESOLVED

@@ -29,6 +29,9 @@ CC-Session-Logs/
 # Watchdog runtime state (per-host, never commit)
 infra/watchdog_state.json
 
+# signal_watcher.py runtime log (parked 2026-07-13, never commit its running log)
+vibe-trading/signals/mnq_signals.log
+
 # Secrets / credentials (never commit)
 *.key
 *.pem

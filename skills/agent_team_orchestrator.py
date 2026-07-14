@@ -222,10 +222,13 @@ def forward_message(task_id: str, agent_id: str, message: str,
     """Pass a sub-agent message directly without supervisor paraphrase."""
     task = orchestrator.tasks.get(task_id)
     if task:
+        # Use the same comment schema as every other lifecycle method
+        # (timestamp/action/agent/message) so consumers can parse uniformly.
         task.comments.append({
-            "author": agent_id,
-            "text": f"[forwarded] {message[:500]}",
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "action": "forwarded",
+            "agent": agent_id,
+            "message": message[:500],
         })
         orchestrator.save_tasks()
     return {
@@ -243,8 +246,11 @@ def validate_agent_output(output: dict, required_keys: list,
     if missing and log_failure:
         try:
             from agents.failure_memory import log_lesson
+            # log_lesson(error, fix, file="", tags=None) — fix is required.
             log_lesson(
                 f"Agent {agent_id} output missing keys: {missing}",
+                f"Ensure agent {agent_id} returns all required keys: {required_keys}",
+                file=task_id or "",
                 tags=["validation", agent_id],
             )
         except Exception:
