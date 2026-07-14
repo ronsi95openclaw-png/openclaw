@@ -132,7 +132,12 @@ class StrategyConfig:
     tp1_rr: float = 2.0
     tp2_rr: float = 4.0
     default_contracts: int = 1
-    max_minutes_in_kz: int = 75  # reject entries more than N min into any kill zone (0 = off)
+    max_minutes_in_kz: int = 135  # reject entries more than N min into any kill zone (0 = off).
+    # 2026-07-14: raised from 75 -> 135. The 75 default was an overfit correction from a
+    # 3-trade sample (see Step 1b comment below) that ended up silently discarding the back
+    # half (min 80-145) of the 150-min NY-open window -- 686 of 1,470 (47%) kill-zone-pass
+    # bars in ES_5M.csv. 135 keeps a small buffer before the 150-min session end instead of
+    # using a hard cutoff sized off 3 trades.
 
 
 # ── Internal helpers (pure; mirror the backtest semantics) ───────────────────
@@ -489,10 +494,12 @@ def generate_signal(
         return None
 
     # Step 1b — Late-entry filter: reject if we are past max_minutes_in_kz into
-    # the active kill zone. Setups triggered >75 min after session open tend to
-    # chase already-extended moves where the sweep liquidity has been consumed
-    # and the reversal lacks follow-through. Loss analysis confirmed 2 of 3
-    # stopped trades were entered at 125–135 min into NY open.
+    # the active kill zone. Originally set to 75 min off a 3-trade sample (2 of 3
+    # stopped trades entered 125-135 min into NY open) -- too small a sample to justify
+    # discarding the back half of the 150-min NY-open window (confirmed: 47% of
+    # kill-zone-pass bars in ES_5M.csv were rejected solely by this cutoff). Revised
+    # 2026-07-14 to 135 min, leaving only a small buffer before session end rather than
+    # a hard mid-window cutoff.
     if cfg.max_minutes_in_kz > 0:
         mins_in = minutes_into_kill_zone(now_et_norm, cfg.kill_zones)
         if mins_in is not None and mins_in > cfg.max_minutes_in_kz:
