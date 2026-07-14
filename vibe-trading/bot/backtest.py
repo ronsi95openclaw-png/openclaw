@@ -1013,29 +1013,31 @@ class BotBacktester:
             breaches.append({"rule": "max_loss_limit_drawdown", "limit": mll,
                              "max_drawdown": round(max_dd, 2)})
 
-        # 4. Consistency 50% — running check that no single positive day exceeds
-        #    50% of cumulative eval profit at that time.
-        #
-        #    DENOMINATOR NOTE (intentional, documented): this auditor uses
-        #    ``running`` = sum of PRIOR days' P&L only, i.e. cumulative profit
-        #    BEFORE the day under test. risk_guard gate #10 instead compares the
-        #    day's realized against ``total_eval_profit`` = (equity - account_size),
-        #    the all-time cumulative INCLUDING the current day's open progress.
-        #    The two denominators differ by design: the gate is a forward-looking
-        #    pre-trade block (does this new fill risk crossing 50%?), while this
-        #    audit is an independent after-the-fact ledger check. They are NOT
-        #    expected to be numerically identical; this audit is the authority for
-        #    "did a consistency violation actually occur".
+        # 4. Consistency 50% (bug fix, 2026-07-13): Lucid's actual rule, confirmed
+        #    against their own help center (support.lucidtrading.com/en/articles/
+        #    12945805), is a SINGLE ratio over the whole evaluation -- largest
+        #    single-day profit divided by total account profit -- checked once,
+        #    not a sequential day-by-day check against a shifting prior-cumulative
+        #    baseline. This audit previously walked day-by-day, flagging a
+        #    violation whenever a day's P&L exceeded 50% of the running total
+        #    BEFORE that day -- the same mechanic already found and fixed in
+        #    tjr_backtest_4yr.py (commit d166c3a, 2026-07-10). That version
+        #    manufactured "violations" whenever an ordinary win landed early in
+        #    a sequence or right after a large loss reset the running total near
+        #    zero -- neither of which Lucid's real rule cares about.
         cap_pct = float(rules["consistency_rule_eval"])
-        running = 0.0
+        total_pnl = sum(t.pnl for t in trades)
+        positive_days = [p for p in self.day_pnl.values() if p > 0]
+        best_day_pnl = max(positive_days, default=0.0)
+        best_day_date = (
+            max(self.day_pnl, key=lambda d: self.day_pnl[d]) if positive_days else None
+        )
+        consistency_ratio = (best_day_pnl / total_pnl) if total_pnl > 0 else 0.0
         viol = []
-        for d in sorted(self.day_pnl.keys()):
-            dp = self.day_pnl[d]
-            if dp > 0 and running > 0 and dp / running > cap_pct:
-                viol.append({"date": str(d), "day_pnl": round(dp, 2),
-                             "total_at_time": round(running, 2),
-                             "pct": round(dp / running * 100, 1)})
-            running += dp
+        if total_pnl > 0 and consistency_ratio > cap_pct:
+            viol.append({"date": str(best_day_date), "day_pnl": round(best_day_pnl, 2),
+                         "total_at_time": round(total_pnl, 2),
+                         "pct": round(consistency_ratio * 100, 1)})
         if viol:
             breaches.append({"rule": "consistency_50pct", "limit_pct": cap_pct * 100,
                              "violations": viol})
