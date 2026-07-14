@@ -6,6 +6,7 @@ __pycache__/
 data/
 .venv/
 venv/
+backtest-lab/.venv-backtest/
 *.egg-info/
 dist/
 build/
