@@ -77,3 +77,7 @@
 - **Manual:** `/hermes now` to trigger immediately
 - **Outputs:** `graphify-out/` (git-ignored) + `memory/HERMES_GRAPH_REPORT.md` (synced to vault via sync_to_vault.bat)
 - **Obsidian:** `graphify-out/obsidian/` — copy to vault `25 - AI/Knowledge-Graph/` after sync_to_vault.bat patch
+
+### 9. Repo-native daily-routine skill + review subagents — DONE 2026-07-11 (Fable audit)
+- **Status:** ✅ Complete — added `.claude/skills/daily-routine/SKILL.md` (wraps this file + `memory/DAILY_ROUTINE.md`) plus `.claude/agents/trading-risk-reviewer.md` and `.claude/agents/security-auditor.md` proactive review subagents
+- **Note:** this branch was cut before #7 landed, so its own changelog entry (`memory/CHANGES.md`, 2026-07-11) describes itself as "closing" a still-deferred Ruflo skill — that premise was stale by the time it merged. Ruflo (#7) and this repo-native skill are separate and both now present; no conflict between them.

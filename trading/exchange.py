@@ -140,7 +140,15 @@ def fetch_ticker_price(instrument: str) -> float:
     """Latest ask price for an instrument."""
     r = requests.get(f"{_PUBLIC}/get-ticker", params={"instrument_name": instrument}, timeout=8)
     r.raise_for_status()
-    return float(r.json()["result"]["data"][0]["a"])
+    payload = r.json()
+
+    if payload.get("code", 0) != 0:
+        raise ValueError(f"Crypto.com error: {payload.get('message', payload)}")
+
+    data = payload.get("result", {}).get("data")
+    if not data:
+        raise ValueError(f"No ticker data for {instrument}")
+    return float(data[0]["a"])
 
 
 # ── Private endpoints ─────────────────────────────────────────────────────────
@@ -201,8 +209,8 @@ def get_portfolio_value_usd(balances: dict) -> float:
             try:
                 price  = fetch_ticker_price(f"{currency}_USDT")
                 total += qty * price
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(f"Portfolio valuation: ticker fetch failed for {currency}_USDT, excluding from total: {exc}")
     return round(total, 2)
 
 

@@ -27,6 +27,10 @@ for _d in ["data", "data/logs"]:
 
 def _run_bot() -> None:
     """Start the Telegram bot in this thread (blocking)."""
+    import asyncio
+    # AsyncIOScheduler (core/scheduler.py) grabs the current thread's event
+    # loop on start(); a background thread has none by default, which raises.
+    asyncio.set_event_loop(asyncio.new_event_loop())
     from content.receiver import main
     main()
 

@@ -39,6 +39,14 @@ _BLOCKED_PATTERNS: List[str] = [
     ":(){:|:&};:",  # classic fork bomb
 ]
 
+# Whitespace-stripped form of each pattern, matched against a whitespace-
+# stripped haystack. Catches the trivial "curl | sh" / "wget  |  sh" bypass
+# of the pipe-based patterns above, which a plain substring check misses
+# because it only tests the exact spacing written into _BLOCKED_PATTERNS.
+_BLOCKED_PATTERNS_NOSPACE: List[str] = [
+    "".join(p.split()) for p in _BLOCKED_PATTERNS
+]
+
 
 def is_blocked(command: str) -> Optional[str]:
     """Return the first matching blocklist pattern, or None if the command is clean.
@@ -56,7 +64,8 @@ def is_blocked(command: str) -> Optional[str]:
     if not command:
         return None
     haystack = command.lower()
-    for pattern in _BLOCKED_PATTERNS:
-        if pattern in haystack:
+    haystack_nospace = "".join(haystack.split())
+    for pattern, pattern_nospace in zip(_BLOCKED_PATTERNS, _BLOCKED_PATTERNS_NOSPACE):
+        if pattern in haystack or pattern_nospace in haystack_nospace:
             return pattern
     return None
