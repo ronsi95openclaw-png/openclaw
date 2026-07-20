@@ -84,6 +84,8 @@ class Config:
         missing = []
         if not self.bot_token:
             missing.append("TRASH_BOT_TOKEN")
+        if not self.authorized_chat_ids:
+            missing.append("TRASH_BOT_CHAT_IDS")
         if self.dry_run:
             return missing  # Google credentials and FB location not required in dry-run
         if not self.google_sheet_id:
