@@ -1,0 +1,79 @@
+{
+  "artifacts": [
+    {
+      "path": "artifacts/equity.csv",
+      "sha256": "23e1e53694aee85d091c929432931699c8717f1c73cdde7e3af8f10964f6d0e1",
+      "size_bytes": 105258
+    },
+    {
+      "path": "artifacts/metrics.csv",
+      "sha256": "0da61b4e8cafe7cfd2f5f903e757890a0eac0e989543747741297036d45cadc1",
+      "size_bytes": 398
+    },
+    {
+      "path": "artifacts/ohlcv_BTC-USDT.csv",
+      "sha256": "0c8a584ee91c8d68931084beaef48f73a32fba4dc8a91190c38ebc14967e82a9",
+      "size_bytes": 107952
+    },
+    {
+      "path": "artifacts/ohlcv_ETH-USDT.csv",
+      "sha256": "4e6dfc443b97b3026a5759582201d213a599747fdd42890554ea05ff84ccb6db",
+      "size_bytes": 104913
+    },
+    {
+      "path": "artifacts/ohlcv_SOL-USDT.csv",
+      "sha256": "d82f931c45704c2e0c91f8eac25ae04cbe3c62bdfac48a7df1a0f8b83deaa9b4",
+      "size_bytes": 82999
+    },
+    {
+      "path": "artifacts/positions.csv",
+      "sha256": "3aca1537ba88ff3cbabc41f15e8763dc6451b02a9a792eca6d4c8a0d51708f9c",
+      "size_bytes": 35666
+    },
+    {
+      "path": "artifacts/trades.csv",
+      "sha256": "d6619297cdbd24cb13c5c3c2114add04bdbc431a165472bbcc2593870ff97821",
+      "size_bytes": 3289
+    }
+  ],
+  "backtest": {
+    "codes": [
+      "BTC-USDT",
+      "ETH-USDT",
+      "SOL-USDT"
+    ],
+    "end_date": "2026-06-13",
+    "engine": "daily",
+    "interval": "1D",
+    "source": "okx",
+    "start_date": "2022-06-13"
+  },
+  "data_sources": [
+    "okx"
+  ],
+  "generated_at": "2026-06-14T00:06:51.459927Z",
+  "metrics": {
+    "annual_return": 0.008101498927506334,
+    "avg_holding_days": 3.4,
+    "benchmark_return": 1.666661,
+    "calmar": 0.0508,
+    "excess_return": -1.633813,
+    "final_value": 1032847.5968705063,
+    "information_ratio": -0.6822,
+    "max_consecutive_loss": 3,
+    "max_drawdown": -0.15947684182801092,
+    "profit_factor": 1.1799,
+    "profit_loss_ratio": 1.3944,
+    "sharpe": 0.1385033561905991,
+    "sortino": 0.0449,
+    "total_return": 0.0328475968705062,
+    "trade_count": 24,
+    "win_rate": 0.4583333333333333
+  },
+  "reproducibility": {
+    "config_hash": "3aefa0bd27e938124f145d068f02d3e2472306e66e5368aa3672421dd63147b8"
+  },
+  "run_dir": "runs\\suite\\Funding_Rate_MR_1D",
+  "schema_version": "0.1",
+  "warnings": []
+}

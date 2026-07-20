@@ -26,6 +26,11 @@ State out loud:
 - Any open ACTIVE_TASKS that crossed the night
 - Whether vault is in sync
 
+**Checkpoint (do this last, once the step above is actually done):**
+```
+C:/Users/ronsi95openclaw/Claude-openclaw/.venv/Scripts/python.exe C:/Users/ronsi95openclaw/Claude-openclaw/infra/mark_routine_step.py 0 "<one-line note>"
+```
+
 ---
 
 ## STEP 1 — MORNING NOTIFICATION
@@ -74,6 +79,11 @@ schtasks /query /tn "ClawBot-LiquiditySweep-Watch" /fo LIST |
   Select-String "Status|Last Result|Next Run"
 schtasks /query /tn "ClawBot-Watchdog" /fo LIST |
   Select-String "Status|Last Result|Next Run"
+```
+
+**Checkpoint (do this last, once the step above is actually done):**
+```
+C:/Users/ronsi95openclaw/Claude-openclaw/.venv/Scripts/python.exe C:/Users/ronsi95openclaw/Claude-openclaw/infra/mark_routine_step.py 2 "<one-line note>"
 ```
 
 ---
@@ -143,6 +153,11 @@ else:
 
 Any FAIL -> fix in Step 6 (if Category A) or escalate (B/C).
 
+**Checkpoint (do this last, once the step above is actually done):**
+```
+C:/Users/ronsi95openclaw/Claude-openclaw/.venv/Scripts/python.exe C:/Users/ronsi95openclaw/Claude-openclaw/infra/mark_routine_step.py 4 "<one-line note>"
+```
+
 ---
 
 ## STEP 5 — DETECT STUCK STATE & ANOMALIES
@@ -196,12 +211,23 @@ Write to `memory/STRATEGY_DECISIONS.md`, wait for explicit "yes apply".
 - The unverified `private/create-order` on v2 (ACTIVE_TASKS #1) is a hard
   prerequisite to ANY LIVE-mode consideration
 
+**Checkpoint (do this last, once the step above is actually done):**
+```
+C:/Users/ronsi95openclaw/Claude-openclaw/.venv/Scripts/python.exe C:/Users/ronsi95openclaw/Claude-openclaw/infra/mark_routine_step.py 6 "<one-line note>"
+```
+
 ---
 
 ## STEP 7 — UPDATE memory/CHANGES.md
 
 Format:
 ```markdown
+
+**Checkpoint (do this last, once the step above is actually done):**
+```
+C:/Users/ronsi95openclaw/Claude-openclaw/.venv/Scripts/python.exe C:/Users/ronsi95openclaw/Claude-openclaw/infra/mark_routine_step.py 7 "<one-line note>"
+```
+
 ## [YYYY-MM-DD HH:MM] - [A/B/C] - <Title>
 **Trigger:** what was detected (with the measurement)
 **Action:** what was done (or proposed)
@@ -238,6 +264,11 @@ status: active
 Content sections: balance, trades count, compliance, notable trades,
 bot health, auto-fixes, proposals pending, escalations, tomorrow's focus.
 
+**Checkpoint (do this last, once the step above is actually done):**
+```
+C:/Users/ronsi95openclaw/Claude-openclaw/.venv/Scripts/python.exe C:/Users/ronsi95openclaw/Claude-openclaw/infra/mark_routine_step.py 8 "<one-line note>"
+```
+
 ---
 
 ## STEP 9 — UPDATE MEMORY FILES (bot repo, root memory/)
@@ -247,6 +278,11 @@ Refresh in `memory/`:
 - ACTIVE_TASKS.md (if priorities shifted)
 - BUGS.md (new entries if anomalies found)
 - CHANGES.md (already updated in Step 7)
+
+**Checkpoint (do this last, once the step above is actually done):**
+```
+C:/Users/ronsi95openclaw/Claude-openclaw/.venv/Scripts/python.exe C:/Users/ronsi95openclaw/Claude-openclaw/infra/mark_routine_step.py 9 "<one-line note>"
+```
 
 ---
 
@@ -267,6 +303,11 @@ Note: per vault contract from 2026-05-31 reorg, bare names like
 the renames automatically when patched (see ACTIVE_TASKS for the deferred
 sync_to_vault.bat OPENCLAW_ patch).
 
+**Checkpoint (do this last, once the step above is actually done):**
+```
+C:/Users/ronsi95openclaw/Claude-openclaw/.venv/Scripts/python.exe C:/Users/ronsi95openclaw/Claude-openclaw/infra/mark_routine_step.py 10 "<one-line note>"
+```
+
 ---
 
 ## STEP 11 — GIT COMMIT (LOCAL ONLY)
@@ -280,6 +321,11 @@ git -c user.email="clawbot@openclaw.local" -c user.name="ClawBot" `
 
 Do NOT push unless Ronnie says "yes push" explicitly.
 
+**Checkpoint (do this last, once the step above is actually done):**
+```
+C:/Users/ronsi95openclaw/Claude-openclaw/.venv/Scripts/python.exe C:/Users/ronsi95openclaw/Claude-openclaw/infra/mark_routine_step.py 11 "<one-line note>"
+```
+
 ---
 
 ## STEP 12 — EOD TELEGRAM SUMMARY
@@ -291,6 +337,11 @@ load_dotenv()
 chat_id = os.getenv("TELEGRAM_CHAT_ID")
 # Build EOD: balance, trade count, compliance, auto-fixes, proposals pending,
 #           escalations, top-of-stack for tomorrow
+```
+
+**Checkpoint (do this last, once the step above is actually done):**
+```
+C:/Users/ronsi95openclaw/Claude-openclaw/.venv/Scripts/python.exe C:/Users/ronsi95openclaw/Claude-openclaw/infra/mark_routine_step.py 12 "<one-line note>"
 ```
 
 ---

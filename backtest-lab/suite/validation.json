@@ -1,0 +1,112 @@
+[
+  {
+    "interval": "4H",
+    "robustness": {
+      "EMA_Trend_Retest": {
+        "combos": 5,
+        "pct_positive_sharpe": 1.0,
+        "median_sharpe": 0.26,
+        "best_sharpe": 0.77,
+        "worst_sharpe": 0.18
+      },
+      "Range_Breakout": {
+        "combos": 5,
+        "pct_positive_sharpe": 1.0,
+        "median_sharpe": 0.46,
+        "best_sharpe": 0.58,
+        "worst_sharpe": 0.19
+      }
+    },
+    "holdout": {
+      "EMA_Trend_Retest": {
+        "is_selected_params": {
+          "fast": 10,
+          "slow": 50
+        },
+        "is_sharpe": 0.78,
+        "oos_sharpe_selected": 0.41,
+        "oos_return_selected": 0.13740861569064888,
+        "oos_maxdd_selected": -0.3933323301918494,
+        "oos_sharpe_default": 0.62,
+        "oos_return_default": 0.33433713834126166
+      },
+      "Range_Breakout": {
+        "is_selected_params": {
+          "lookback": 20
+        },
+        "is_sharpe": 0.92,
+        "oos_sharpe_selected": -0.42,
+        "oos_return_selected": -0.40429759537978605,
+        "oos_maxdd_selected": -0.5935675892882718,
+        "oos_sharpe_default": -0.42,
+        "oos_return_default": -0.40429759537978605
+      }
+    },
+    "yearly": {
+      "EMA_Trend_Retest": {
+        "2022": {
+          "sharpe": -0.98,
+          "return": -0.3156039486892209,
+          "maxdd": -0.429194106690062,
+          "trades": 63
+        },
+        "2023": {
+          "sharpe": 0.54,
+          "return": 0.15406520695054038,
+          "maxdd": -0.42070301047157105,
+          "trades": 96
+        },
+        "2024": {
+          "sharpe": 0.79,
+          "return": 0.3268810225208616,
+          "maxdd": -0.2776322604807766,
+          "trades": 117
+        },
+        "2025": {
+          "sharpe": -0.04,
+          "return": -0.11200334503265308,
+          "maxdd": -0.315221778107038,
+          "trades": 120
+        },
+        "2026": {
+          "sharpe": 1.47,
+          "return": 0.2544837389607242,
+          "maxdd": -0.2628812926234178,
+          "trades": 50
+        }
+      },
+      "Range_Breakout": {
+        "2022": {
+          "sharpe": -0.23,
+          "return": -0.16017762530410318,
+          "maxdd": -0.3007123128395946,
+          "trades": 80
+        },
+        "2023": {
+          "sharpe": 1.75,
+          "return": 1.285129755716857,
+          "maxdd": -0.31153089360893094,
+          "trades": 126
+        },
+        "2024": {
+          "sharpe": 0.89,
+          "return": 0.37268124584645634,
+          "maxdd": -0.2449327729586918,
+          "trades": 131
+        },
+        "2025": {
+          "sharpe": -0.81,
+          "return": -0.4131611593358945,
+          "maxdd": -0.5477899823592886,
+          "trades": 151
+        },
+        "2026": {
+          "sharpe": -0.12,
+          "return": -0.0678404307086754,
+          "maxdd": -0.40971262721049434,
+          "trades": 58
+        }
+      }
+    }
+  }
+]

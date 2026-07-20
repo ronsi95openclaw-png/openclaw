@@ -1,0 +1,74 @@
+{
+  "strategy": "TJR ICT Kill Zone \u2014 Lucid 25K (bot path)",
+  "instrument": "ES",
+  "strategy_source": "bot.strategy",
+  "risk_guard_source": "in-file fallback",
+  "mandate_fallback": false,
+  "period": {
+    "first_trade": "2026-05-01",
+    "last_trade": "2026-06-12",
+    "trading_days": 3,
+    "bars": 4410
+  },
+  "performance": {
+    "total_trades": 3,
+    "winners": 0,
+    "losers": 3,
+    "win_rate_pct": 0.0,
+    "total_pnl": -913.5,
+    "avg_win": 0.0,
+    "avg_loss": -304.5,
+    "avg_r_multiple": -1.0,
+    "tp1_exits": 0,
+    "tp2_exits": 0,
+    "sl_exits": 3,
+    "eod_exits": 0,
+    "avg_trades_per_day": 1.0,
+    "sharpe_per_trade": 0.0
+  },
+  "risk": {
+    "max_drawdown_dollar": 913.5,
+    "max_drawdown_pct": 3.65,
+    "worst_day": {
+      "date": "2026-05-01",
+      "pnl": -304.5
+    },
+    "best_day": {
+      "date": "2026-05-01",
+      "pnl": -304.5
+    },
+    "worst_trade_excursion": -2187.5
+  },
+  "equity": {
+    "start": 25000.0,
+    "end": 24086.5,
+    "net_change": -913.5
+  },
+  "decisions": {
+    "skip": 4394,
+    "approve": 3,
+    "flat": 1
+  },
+  "lucid_compliance": {
+    "max_loss_limit": 1500,
+    "max_position_size": 2,
+    "daily_trade_cap": 10,
+    "consistency_rule_eval": 0.5,
+    "any_breach": true,
+    "breaches": [
+      {
+        "rule": "max_loss_limit_intratrade",
+        "limit": -1500.0,
+        "count": 1,
+        "trades": [
+          {
+            "entry": "2026-06-12 10:45:00-04:00",
+            "exit": "2026-06-12 10:50:00-04:00",
+            "worst_adverse_pnl": -2187.5,
+            "realized_pnl": -304.5
+          }
+        ]
+      }
+    ]
+  }
+}

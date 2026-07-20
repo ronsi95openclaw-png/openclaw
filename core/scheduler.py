@@ -1,7 +1,8 @@
-"""APScheduler-based reminder + auto-trade system for ClawBot.
+"""APScheduler-based reminder, auto-trade, and Hermes knowledge-graph system.
 
 Reminders are persisted to data/tasks.json and survive bot restarts.
 Auto-trade job runs daily at 08:00 UTC when enabled.
+Hermes job runs daily at 09:30 UTC when enabled — builds graphify knowledge graph.
 The scheduler is started once in receiver.py and shared globally.
 """
 from __future__ import annotations
@@ -19,7 +20,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 _DATA_DIR        = Path(__file__).parent.parent / "data"
-_TASKS_FILE      = _DATA_DIR / "tasks.json"
+_TASKS_FILE      = _DATA_DIR / "reminders.json"   # separate from orchestrator tasks.json
 _AUTOTRADE_FILE  = _DATA_DIR / "autotrade.json"
 _AUTOTRADE_JOB   = "clawbot_autotrade_daily"
 
@@ -41,7 +42,13 @@ def start_scheduler() -> AsyncIOScheduler:
     _scheduler = AsyncIOScheduler(timezone="UTC")
     _scheduler.start()
     _reload_from_disk()
+    reload_lifeos_schedule()
     return _scheduler
+
+
+def get_scheduler() -> Optional[AsyncIOScheduler]:
+    """Return the running scheduler instance (for external job registration)."""
+    return _scheduler if _scheduler and _scheduler.running else None
 
 
 def _load_tasks() -> List[dict]:
@@ -55,7 +62,10 @@ def _load_tasks() -> List[dict]:
 
 def _save_tasks(tasks: List[dict]) -> None:
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _TASKS_FILE.write_text(json.dumps(tasks, indent=2), encoding="utf-8")
+    try:
+        _TASKS_FILE.write_text(json.dumps(tasks, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"[scheduler] Failed to save tasks: {exc}")
 
 
 def _reload_from_disk() -> None:
@@ -188,7 +198,10 @@ def _load_autotrade() -> dict:
 
 def _save_autotrade(cfg: dict) -> None:
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _AUTOTRADE_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    try:
+        _AUTOTRADE_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"[scheduler] Failed to save autotrade config: {exc}")
 
 
 _autotrade_lock = asyncio.Lock()
@@ -382,3 +395,205 @@ def reload_autotrade(from_env: bool = False) -> None:
             id=_AUTOTRADE_JOB,
             replace_existing=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# Hermes knowledge-graph daily job
+# ---------------------------------------------------------------------------
+
+_HERMES_FILE = _DATA_DIR / "hermes.json"
+_HERMES_JOB  = "clawbot_hermes_daily"
+
+
+def _load_hermes() -> dict:
+    if _HERMES_FILE.exists():
+        try:
+            return json.loads(_HERMES_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"enabled": False, "chat_id": None, "scan_time": "09:30"}
+
+
+def _save_hermes(cfg: dict) -> None:
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _HERMES_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+
+async def _run_hermes_job() -> None:
+    cfg = _load_hermes()
+    if not cfg.get("enabled") or not cfg.get("chat_id"):
+        return
+    try:
+        from agents.hermes import run_hermes
+        await run_hermes(send_fn=_send_fn, chat_id=cfg["chat_id"])
+    except Exception as exc:
+        if _send_fn:
+            await _send_fn(cfg["chat_id"], f"🧠 <b>Hermes error:</b> <code>{exc}</code>")
+
+
+def enable_hermes(chat_id: int, scan_time: str = "09:30") -> dict:
+    """Enable the daily Hermes knowledge-graph job."""
+    parts = scan_time.split(":")
+    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+        raise ValueError(f"Invalid time '{scan_time}'. Use HH:MM (UTC).")
+    cfg = {
+        "enabled":    True,
+        "chat_id":    chat_id,
+        "scan_time":  scan_time,
+        "enabled_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _save_hermes(cfg)
+    if _scheduler:
+        hour, minute = scan_time.split(":")
+        _scheduler.add_job(
+            _run_hermes_job,
+            CronTrigger(hour=int(hour), minute=int(minute), timezone="UTC"),
+            id=_HERMES_JOB,
+            replace_existing=True,
+        )
+    return cfg
+
+
+def disable_hermes() -> None:
+    """Disable the daily Hermes job."""
+    cfg = _load_hermes()
+    cfg["enabled"] = False
+    _save_hermes(cfg)
+    if _scheduler and _scheduler.get_job(_HERMES_JOB):
+        _scheduler.remove_job(_HERMES_JOB)
+
+
+def get_hermes_status() -> dict:
+    """Return current Hermes config."""
+    return _load_hermes()
+
+
+async def run_hermes_now(send_fn=None, chat_id: Optional[int] = None) -> None:
+    """Trigger Hermes immediately (used by /hermes now command)."""
+    _sf  = send_fn or _send_fn
+    _cid = chat_id
+    try:
+        from agents.hermes import run_hermes
+        await run_hermes(send_fn=_sf, chat_id=_cid)
+    except Exception as exc:
+        if _sf and _cid:
+            await _sf(_cid, f"🧠 <b>Hermes error:</b> <code>{exc}</code>")
+
+
+def reload_hermes() -> None:
+    """Re-register the Hermes job on scheduler startup (survives restarts)."""
+    cfg = _load_hermes()
+    if not cfg.get("enabled") or not cfg.get("chat_id") or _scheduler is None:
+        return
+    scan_time    = cfg.get("scan_time", "09:30")
+    hour, minute = scan_time.split(":")
+    _scheduler.add_job(
+        _run_hermes_job,
+        CronTrigger(hour=int(hour), minute=int(minute), timezone="UTC"),
+        id=_HERMES_JOB,
+        replace_existing=True,
+    )
+    print(f"🧠 Hermes daily job scheduled at {scan_time} UTC")
+
+
+# ---------------------------------------------------------------------------
+# LifeOS daily check-in jobs
+# ---------------------------------------------------------------------------
+
+_MORNING_CHECKIN_JOB = "lifeos_morning_checkin"
+_EVENING_CHECKIN_JOB = "lifeos_evening_checkin"
+_LIFEOS_CONFIG_FILE  = _DATA_DIR / "lifeos_schedule.json"
+
+
+def _load_lifeos_schedule() -> dict:
+    if _LIFEOS_CONFIG_FILE.exists():
+        try:
+            return json.loads(_LIFEOS_CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"enabled": False, "chat_id": None, "morning_time": "07:00", "evening_time": "20:00"}
+
+
+def _save_lifeos_schedule(cfg: dict) -> None:
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        _LIFEOS_CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"[scheduler] Failed to save lifeos schedule: {exc}")
+
+
+async def _fire_morning_checkin() -> None:
+    cfg = _load_lifeos_schedule()
+    if not cfg.get("enabled") or not cfg.get("chat_id"):
+        return
+    from agents.lifeos_checkin import start_morning_checkin
+    first_q = start_morning_checkin(cfg["chat_id"])
+    if _send_fn:
+        await _send_fn(cfg["chat_id"], f"<b>Morning Check-in</b>\n\n{first_q}")
+
+
+async def _fire_evening_checkin() -> None:
+    cfg = _load_lifeos_schedule()
+    if not cfg.get("enabled") or not cfg.get("chat_id"):
+        return
+    from agents.lifeos_checkin import start_evening_checkin
+    first_q = start_evening_checkin(cfg["chat_id"])
+    if _send_fn:
+        await _send_fn(cfg["chat_id"], f"<b>Evening Check-in</b>\n\n{first_q}")
+
+
+def enable_lifeos_schedule(
+    chat_id: int,
+    morning_time: str = "07:00",
+    evening_time: str = "20:00",
+) -> dict:
+    """Enable automatic morning + evening check-ins for chat_id.
+
+    Times are UTC HH:MM strings.
+    """
+    cfg = {
+        "enabled":      True,
+        "chat_id":      chat_id,
+        "morning_time": morning_time,
+        "evening_time": evening_time,
+    }
+    _save_lifeos_schedule(cfg)
+    _register_lifeos_jobs(cfg)
+    return cfg
+
+
+def disable_lifeos_schedule() -> None:
+    """Disable automatic morning/evening check-ins."""
+    cfg = _load_lifeos_schedule()
+    cfg["enabled"] = False
+    _save_lifeos_schedule(cfg)
+    if _scheduler:
+        for job_id in (_MORNING_CHECKIN_JOB, _EVENING_CHECKIN_JOB):
+            if _scheduler.get_job(job_id):
+                _scheduler.remove_job(job_id)
+
+
+def _register_lifeos_jobs(cfg: dict) -> None:
+    if not _scheduler:
+        return
+    mh, mm = cfg["morning_time"].split(":")
+    eh, em = cfg["evening_time"].split(":")
+    _scheduler.add_job(
+        _fire_morning_checkin,
+        CronTrigger(hour=int(mh), minute=int(mm), timezone="UTC"),
+        id=_MORNING_CHECKIN_JOB,
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _fire_evening_checkin,
+        CronTrigger(hour=int(eh), minute=int(em), timezone="UTC"),
+        id=_EVENING_CHECKIN_JOB,
+        replace_existing=True,
+    )
+
+
+def reload_lifeos_schedule() -> None:
+    """Re-register LifeOS jobs after bot restart if they were enabled."""
+    cfg = _load_lifeos_schedule()
+    if cfg.get("enabled") and cfg.get("chat_id"):
+        _register_lifeos_jobs(cfg)

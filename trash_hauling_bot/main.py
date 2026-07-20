@@ -38,6 +38,10 @@ logging.basicConfig(
         logging.FileHandler(f"{config.data_dir}/bot.log"),
     ],
 )
+# httpx logs every Telegram poll at INFO with the full bot-token URL — that both
+# leaks the token into data/bot.log and bloats the log (~1 line / 10s). Keep
+# only warnings/errors from httpx; bot behavior is unchanged.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -53,6 +57,15 @@ async def main() -> None:
             "TRASH_BOT_CHAT_IDS is empty — bot will accept commands from ANY chat that "
             "finds the bot token. Set TRASH_BOT_CHAT_IDS in .env to lock it down."
         )
+    if not config.team_chat_ids:
+        logger.warning(
+            "TRASH_BOT_TEAM_CHAT_IDS is empty — /schedule and /cancel will not send team notifications."
+        )
+    if config.google_calendar_id == "primary" and Path(config.google_credentials_file).exists():
+        logger.warning(
+            "GOOGLE_CALENDAR_ID is 'primary' — with a service account this creates events "
+            "on the service account's own calendar, not yours. Set it to your business calendar ID."
+        )
 
     audit = AuditLogger(config.audit_log_file)
     scraper = ScraperAgent(audit)
@@ -60,9 +73,16 @@ async def main() -> None:
     cal_sync = CalendarSyncAgent(audit)
     bot = TrashHaulingBot(scraper, outreach, cal_sync, audit)
 
+    async def _scraper_job() -> None:
+        count = await scraper.run()
+        if count > 0:
+            await bot.notify_team(
+                f"{count} new lead(s) found — use /leads new to review."
+            )
+
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
-        scraper.run,
+        _scraper_job,
         "interval",
         minutes=config.scraper_interval_minutes,
         id="fb_scraper",

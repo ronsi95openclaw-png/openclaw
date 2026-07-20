@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-06-23T08:00:33.428885",
+  "source": "CryptoBot/ClawBot",
+  "mode": "read_only",
+  "signals": [],
+  "paper_watch_count": 92,
+  "paper_watch_latest": "{\"ts\": \"2026-06-22T14:00:02.747091+00:00\", \"symbol\": \"XRP_USDT\", \"timeframe\": \"1d\", \"last_close\": 1.1633, \"n_closes\": 100, \"signal\": {\"coin\": \"XRP_USDT\", \"action\": \"HOLD\", \"rsi\": 44.769410703219016, \"macd\": -0.035676685674053354, \"macd_signal_val\": -0.042013505345265656, \"macd_histogram\": 0.0063368196712123015, \"reason\": \"No liquidity sweep. swing_low=1.093600, swing_high=1.340900, close=1.163300.\", \"confidence\": \"LOW\"}}"
+}

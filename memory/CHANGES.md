@@ -20,6 +20,36 @@ Entry format:
 
 ---
 
+## [2026-07-02 16:30] — A — HaulYeah bugfixes landed directly on origin/main (PR #21/#22/#23)
+**Trigger:** Ronnie-approved fixes merged straight to `origin/main` outside this branch's memory-log workflow; recording here during merge reconciliation so the history isn't lost.
+**Action:**
+- PR #21 (`reconcile/vibe-trading-and-trash-bot`) — brought vibe-trading bot + HaulYeah updates onto main
+- PR #22 (`fix/haulyeah-demand-filter-topical-relevance`) — `trash_hauling_bot/agents/scraper.py` now requires topical relevance in the FB Marketplace demand filter (+ `tests/test_demand_filter.py`)
+- PR #23 (`fix/haulyeah-calendar-validation-crash`) — stopped the calendar-ID footgun check from blocking bot startup (`trash_hauling_bot/config.py`, `trash_hauling_bot/main.py`)
+**Result:** HaulYeah no longer crashes at startup on the calendar-ID check; demand filter rejects off-topic FB Marketplace matches.
+**Files touched:** trash_hauling_bot/agents/scraper.py, trash_hauling_bot/tests/test_demand_filter.py, trash_hauling_bot/config.py, trash_hauling_bot/main.py
+**Git tag:** 94717b8 (#21), 2e751e8 (#22), 623ea69 (#23)
+**Approved by:** Ronnie
+**Status:** APPLIED
+---
+
+## [2026-06-27 03:50] — A — Graphify + Hermes + Ruflo + vault sync patch
+**Trigger:** Ronnie requested graphify integration, Ruflo skill, Hermes daily agent, Obsidian vault sync
+**Action:**
+- Installed `graphifyy` (v0.8.49); wired via `graphify claude install` + `graphify claw install`
+- Created `agents/hermes.py` — daily knowledge-graph agent (09:30 UTC), `/hermes` Telegram command
+- Created `skills/ruflo/SKILL.md` — universal session rules skill (closes ACTIVE_TASKS #7)
+- Extended `core/scheduler.py` — Hermes APScheduler job (enable/disable/reload/run-now)
+- Extended `content/receiver.py` — `/hermes on|off|now` command handler
+- Patched `infra/sync_to_vault.bat` — OPENCLAW_ prefix for all memory files, HAULYALL_ for HaulYeah, new Knowledge-Graph section for graphify GRAPH_REPORT.md (closes ACTIVE_TASKS #6)
+- Updated `memory/ACTIVE_TASKS.md` — closed #6, #7, #8
+**Result:** Hermes ran successfully: 1253 nodes, 2221 edges, 61 communities. `memory/HERMES_GRAPH_REPORT.md` created. Graph hook fires on every Claude Code file read.
+**Files touched:** agents/hermes.py, agents/__init__.py, skills/ruflo/SKILL.md, core/scheduler.py, content/receiver.py, infra/sync_to_vault.bat, requirements.txt, .gitignore, CLAUDE.md, AGENTS.md, memory/ACTIVE_TASKS.md, memory/HERMES_GRAPH_REPORT.md
+**Git tag:** —
+**Approved by:** Ronnie (2026-06-27)
+**Status:** APPLIED
+---
+
 ## [2026-05-30 18:30] — A — Bootstrap memory/ directory
 **Trigger:** next_session workflow assumed memory/ existed at the Claude-openclaw root; it did not
 **Action:** Created memory/ with scaffolding for CHANGES.md, DECISIONS.md, SESSION_HANDOFF.md, ACTIVE_TASKS.md
@@ -232,6 +262,34 @@ Entry format:
 **Status:** APPLIED
 ---
 
+## [2026-07-02 21:56] — A — OpenMontage video toolkit installed + HaulY'all promo ad produced
+**Trigger:** Ronnie asked whether OpenMontage was installed and whether we could generate video with it
+**Action:**
+- Installed OpenMontage (`Claude-openclaw/OpenMontage/`) — git clone, portable FFmpeg (no winget/choco on this machine, added to user PATH permanently), Python venv + pip deps + `piper-tts`, npm deps for `remotion-composer`, `.env` scaffolded with all keys blank
+- Wired a Hermes skill (`%LOCALAPPDATA%\hermes\skills\openmontage\SKILL.md`) so both Claude Code and Hermes can drive it
+- Produced a HaulY'all promo ad end-to-end through 4 iterations: v1 (Remotion templated scenes, Piper narration, zero-key, no images) → v2 (real AI-generated brand images via OpenRouter after keyless stock footage — archive.org/wikimedia/coverr — proved unusable and nano-banana/Gemini CLI wasn't installed) → v3 (unique image per scene, directional Ken Burns via new `backgroundPan` prop) → v4 (fixed a real bug: `HeroTitle.tsx` had hardcoded off-brand cyan/purple colors, now takes brand accent/text colors)
+- Added `tools/graphics/openrouter_image.py` as a first-class OpenMontage `BaseTool` (capability: `image_generation`, provider: `openrouter`) plus its Layer 3 skill doc, so future OpenMontage projects can use OpenRouter's image models natively instead of ad-hoc scripts
+- Flagged and did not act on an injected prompt that appeared inside one `AskUserQuestion` response mid-session
+**Result:** Working OpenMontage install for both agents; final ad at `OpenMontage/projects/haulyall-ad/renders/haulyall-ad-v4.mp4`; ~$0.24 total OpenRouter spend (image generation only, ~7 calls) against a ~$9.60 balance, everything else local/free
+**Files touched:** OpenMontage/ (new clone), Claude-openclaw/tools/ffmpeg/ (new), OpenMontage/.env, OpenMontage/remotion-composer/src/Explainer.tsx, OpenMontage/remotion-composer/src/components/HeroTitle.tsx, OpenMontage/remotion-composer/SCENE_TYPES.md, OpenMontage/tools/graphics/openrouter_image.py, OpenMontage/.agents/skills/openrouter-image/SKILL.md, %LOCALAPPDATA%\hermes\skills\openmontage\SKILL.md, CC-Session-Logs/02-07-2026-21_56-haulyall-ad-openmontage.md
+**Approved by:** Ronnie (interactive, step by step)
+**Status:** APPLIED
+---
+
+## [2026-07-08 20:22] — A — 4-project Fable subagent audit (OpenClaw, Hermes, HaulYeah, vibe-trading)
+**Trigger:** Ronnie asked to review/improve all projects and audit skills using subagents (Fable model)
+**Action:**
+- 4 parallel `Agent` calls (model: fable), each scoped to one project with explicit safety rails (no push, no merge to main/master, trade-logic files locked for vibe-trading). Isolation via `git checkout -b` per agent; when two agents collided on a shared working directory (OpenClaw + vibe-trading both live under `Claude-openclaw/`), manually created a real `git worktree add` for one of them on resume.
+- Fixed: `core/brain.py` infinite-recursion fallback crash; `agent_team_orchestrator.py` swallowed `TypeError` from a `log_lesson()` call missing a required arg; stale "/remind = daily" docs; 3 Hermes skill files with stale live-trading/phantom-cron-job claims; HaulYeah bot-token leak into `data/bot.log` via unsuppressed httpx INFO logging.
+- Root-cause fixed a separate crashing bug found live in vibe-trading: `bot/config.py` had its own drifted duplicate of `strategy.py`'s `StrategyConfig` dataclass (missing 4 fields incl. `max_minutes_in_kz`), crashing `generate_signal()` every 15-min paper cycle since commit `ce13678`. Fixed by importing from `strategy.py` instead (commit `75a42dd` on `hermes/auto-2026-07-08`).
+- Restarted the HaulYeah bot process (PID 7288, running since 2026-07-07, pre-dated the token-leak fix so was still leaking in memory) and truncated `data/bot.log`/`data/stdout.log` (33MB/44MB) to clear the leaked token from disk.
+- Merged all 4 audit branches back onto their source branches (`hermes/auto-2026-07-08` here, `master` in the Hermes repo) — not pushed to origin. New `ARCHITECTURE.md` generated for OpenClaw, Hermes, HaulYeah; new read-only audit doc for vibe-trading.
+**Result:** All 3 live systems (Hermes gateway, vibe-trading paper bot, HaulYeah scraper) confirmed operating correctly. vibe-trading now actually evaluates strategy setups instead of erroring into skip every cycle. HaulYeah token leak stopped at the source; token itself still needs manual rotation via @BotFather (not automatable). vibe-trading go-live blockers (kill-switch flatten rejected by broker client; new eval_gate not wired into order path) found but intentionally not fixed — flagged for an explicit go-live review, bot correctly remains paper-only.
+**Files touched:** `core/brain.py`, `skills/agent_team_orchestrator.py`, `content/receiver.py`, `ARCHITECTURE.md` (new), `trash_hauling_bot/main.py`, `trash_hauling_bot/utils/scoring.py`, `trash_hauling_bot/memory/SESSION_HANDOFF.md`, `trash_hauling_bot/docs/ARCHITECTURE.md` (new), `trash_hauling_bot/data/bot.log`+`stdout.log` (truncated), `vibe-trading/bot/config.py`, `vibe-trading/docs/ARCHITECTURE_AUDIT_2026-07-08.md` (new), `AppData/Local/hermes/skills/ronsi95/floor-{clawbot,general,haulyeah-partners}/SKILL.md`, `AppData/Local/hermes/ARCHITECTURE.md` (new), `CC-Session-Logs/08-07-2026-20_22-fable-multi-project-audit-fix.md`
+**Approved by:** Ronnie (interactive; log truncation and the vibe-trading commit each required a separate explicit confirmation, per the permission system's higher bar for destructive/trade-logic-adjacent actions)
+**Status:** APPLIED
+---
+
 ## [2026-07-11 00:00] — B — Fable/Claude Code project audit + bugfix pass, .claude/ scaffolding added
 **Trigger:** Ronnie asked Claude Code (via Fable-model sub-agents) to review/improve the repo, audit and add Claude Code skills, and generate a subagent structure
 **Action:**
@@ -250,9 +308,9 @@ Entry format:
   - `trading/exchange.py`: `fetch_ticker_price` now checks the `code != 0` error case like the other endpoints; `get_portfolio_value_usd` now logs (rather than silently swallowing) a per-coin ticker failure
 - Updated `tests/test_executor_backoff.py` for the new `_place_order` signature/retry semantics and added coverage for the BUY-notional / SELL-quantity split
 - Fixed stale `CLAUDE.md` (referenced `agents/` and `voice/` dirs that don't exist in this tree)
-- Added `.claude/agents/trading-risk-reviewer.md` and `.claude/agents/security-auditor.md` (proactive review subagents) and `.claude/skills/daily-routine/SKILL.md` (wraps `memory/DAILY_ROUTINE.md`) — closes `ACTIVE_TASKS.md` #7 (Ruflo skill, deferred indefinitely)
+- Added `.claude/agents/trading-risk-reviewer.md` and `.claude/agents/security-auditor.md` (proactive review subagents) and `.claude/skills/daily-routine/SKILL.md` (wraps `memory/DAILY_ROUTINE.md`) — logged in `ACTIVE_TASKS.md` #9 (this branch was cut before #7's Ruflo skill landed on main, so treat this as additive, not a replacement for Ruflo)
 **Result:** 168/168 tests pass. Did NOT touch: dashboard auth (no auth exists at all on the Flask dashboard; flagged for Ronnie's decision on mechanism, not applied), the content/ TikTok+Instagram posting pipeline (unclear if still in active use — flagged, not touched), and did not flip TRADING_MODE or wire any new strategy.
 **Files touched:** trading/executor.py, trading/mode.py, trading/exchange.py, core/scheduler.py, security/blocklist.py, content/receiver.py, start.py, tests/test_executor_backoff.py, CLAUDE.md, memory/ACTIVE_TASKS.md, .claude/agents/trading-risk-reviewer.md (new), .claude/agents/security-auditor.md (new), .claude/skills/daily-routine/SKILL.md (new)
 **Approved by:** Ronnie (task request); individual fixes applied under CLAUDE.md's standing rule against broad refactors — kept narrow, one bug per fix, no design changes made without flagging first
-**Status:** APPLIED — awaiting PR review/merge; nothing here has been deployed to the real bot
+**Status:** APPLIED — merged into main via PR #27 after conflict resolution (2026-07-20): the SELL-sizing fix was kept using the price already fetched by the caller (avoids a second live price lookup that could desync from position sizing); main's independently-added PnL-tracking on SELL was preserved. Main's own separate `/research` HTML-safety fix (`_safe_html`) was superseded by this branch's `html.escape()` fix for consistency with the other commands this branch also fixed (`/ask`, `/plan`, `/dca`) — see merge commit for detail.
 ---

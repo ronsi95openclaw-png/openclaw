@@ -1,0 +1,79 @@
+{
+  "artifacts": [
+    {
+      "path": "artifacts/equity.csv",
+      "sha256": "25dbb9e896ec51a9cf68b616e4dd25ecf82514ac89ed9b4410466b36a55efe72",
+      "size_bytes": 139596
+    },
+    {
+      "path": "artifacts/metrics.csv",
+      "sha256": "8c072aeda8ff6594af48d825d6e89cb22e15874206d40ccc372ff09a6cb6eb5c",
+      "size_bytes": 402
+    },
+    {
+      "path": "artifacts/ohlcv_BTC-USDT.csv",
+      "sha256": "29cf71116a22ae0b247ecc79124cd13984869f30704da45e24a0a02b570887ca",
+      "size_bytes": 86028
+    },
+    {
+      "path": "artifacts/ohlcv_ETH-USDT.csv",
+      "sha256": "e5a86ba3a874fb71fcd76eb19c8c1fa1225f23d7b7352b2fc6d7da7f683a189a",
+      "size_bytes": 82877
+    },
+    {
+      "path": "artifacts/ohlcv_SOL-USDT.csv",
+      "sha256": "ddc7436b3cafdec4dd7c6edc64c5cdad5f3abbba5f3ea62addaffd7f8cdd58c5",
+      "size_bytes": 76937
+    },
+    {
+      "path": "artifacts/positions.csv",
+      "sha256": "2cda344b6210af0228f4d36c8c55d159fe5c9eb19e09d8e65d8e5762847f1756",
+      "size_bytes": 35309
+    },
+    {
+      "path": "artifacts/trades.csv",
+      "sha256": "5bb304045ea2c62d1956345ed1e0d1dab545fadba18d65f09ceb565ec6bc6bb9",
+      "size_bytes": 12161
+    }
+  ],
+  "backtest": {
+    "codes": [
+      "BTC-USDT",
+      "ETH-USDT",
+      "SOL-USDT"
+    ],
+    "end_date": "2026-06-13",
+    "engine": "daily",
+    "interval": "1D",
+    "source": "okx",
+    "start_date": "2022-06-13"
+  },
+  "data_sources": [
+    "okx"
+  ],
+  "generated_at": "2026-06-14T00:06:48.268257Z",
+  "metrics": {
+    "annual_return": -0.2877273237595851,
+    "avg_holding_days": 1.0,
+    "benchmark_return": 1.635106,
+    "calmar": -0.3872,
+    "excess_return": -2.378198,
+    "final_value": 256908.05459450514,
+    "information_ratio": -1.1874,
+    "max_consecutive_loss": 10,
+    "max_drawdown": -0.7430919454054948,
+    "profit_factor": 0.1814,
+    "profit_loss_ratio": 0.4989,
+    "sharpe": -2.2697118180544296,
+    "sortino": -0.8015,
+    "total_return": -0.7430919454054948,
+    "trade_count": 90,
+    "win_rate": 0.26666666666666666
+  },
+  "reproducibility": {
+    "config_hash": "3aefa0bd27e938124f145d068f02d3e2472306e66e5368aa3672421dd63147b8"
+  },
+  "run_dir": "runs\\suite\\SMC_1D",
+  "schema_version": "0.1",
+  "warnings": []
+}

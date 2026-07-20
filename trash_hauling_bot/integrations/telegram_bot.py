@@ -1,9 +1,11 @@
+import asyncio
+import functools
 import logging
-import os
 import traceback
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from agents.quote import estimate
 from agents.review import review_request_message
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -49,10 +51,15 @@ _HELP = """
 
 *Reviews*
 /review `<lead_id>` — Generate a post-job Google review request message (for team to copy-send)
+/quote `<description>` — Get a quick price estimate for a job description
+
+*Queue*
+/clearqueue — Wipe all pending outreach items (use if stale)
 
 *System*
 /sync — Trigger calendar sync
 /status — Show lead counts and system state
+/topleads — Top 5 highest-scored new leads
 /help — Show this message
 """
 
@@ -62,6 +69,7 @@ def _is_authorized(chat_id: int) -> bool:
 
 
 def _require_auth(func):
+    @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         # Class methods receive (self, update, ctx) — find the Update by type
         update = next((a for a in args if isinstance(a, Update)), None)
@@ -110,6 +118,9 @@ class TrashHaulingBot:
         add(CommandHandler("sync", self._cmd_sync))
         add(CommandHandler("ping", self._cmd_ping))
         add(CommandHandler("review", self._cmd_review))
+        add(CommandHandler("quote", self._cmd_quote))
+        add(CommandHandler("topleads", self._cmd_topleads))
+        add(CommandHandler("clearqueue", self._cmd_clearqueue))
         add(CallbackQueryHandler(self._on_callback))
 
     async def _cmd_ping(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -118,6 +129,53 @@ class TrashHaulingBot:
         logger.info("PING from chat_id=%s", cid)
         await update.message.reply_text(
             f"Pong! Bot is alive.\nYour chat_id: `{cid}`\nAdd it to TRASH_BOT_CHAT_IDS in the root .env",
+            parse_mode="Markdown",
+        )
+
+    @_require_auth
+    async def _cmd_topleads(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Top 5 new leads sorted by urgency + size score."""
+        leads = self._sheets.get_leads_by_status("new")
+        if not leads:
+            await update.message.reply_text("No new leads.")
+            return
+        ranked = sorted(
+            leads,
+            key=lambda l: (int(l.get("urgency_score") or 0) + int(l.get("size_score") or 0)),
+            reverse=True,
+        )
+        lines = [f"*Top Leads* (from {len(leads)} new)\n"]
+        for lead in ranked[:5]:
+            score = int(lead.get("urgency_score") or 0) + int(lead.get("size_score") or 0)
+            lines.append(
+                f"• `{lead['id']}` score={score} | {lead.get('job_type', 'N/A')} | "
+                f"{lead.get('location', 'N/A')}\n"
+                f"  {str(lead.get('description', ''))[:80]}"
+            )
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    @_require_auth
+    async def _cmd_clearqueue(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Wipe all pending outreach items."""
+        count = self._outreach.clear_queue()
+        self._audit.log("telegram", "queue_cleared", {"count": count, "by": update.effective_chat.id})
+        await update.message.reply_text(
+            f"Queue cleared — {count} item(s) removed.\n"
+            "Note: Sheets statuses are unchanged. Use /leads outreach_queued to review."
+        )
+
+    @_require_auth
+    async def _cmd_quote(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Quick price estimate from a free-text job description."""
+        if not ctx.args:
+            await update.message.reply_text("Usage: /quote <job description>\nExample: /quote couch mattress and a few bags of trash")
+            return
+        description = " ".join(ctx.args)
+        est = estimate(description)
+        await update.message.reply_text(
+            f"*Quote Estimate*\nDescription: _{description}_\n"
+            f"Tier: {est['tier']} | Range: *{est['range']}*\n"
+            f"(Base ${est['price']} — confirmed on-site)",
             parse_mode="Markdown",
         )
 
@@ -136,9 +194,16 @@ class TrashHaulingBot:
         if lead is None:
             await update.message.reply_text(f"Lead `{lead_id}` not found.", parse_mode="Markdown")
             return
+        if lead.get("status") != "completed":
+            await update.message.reply_text(
+                f"Lead `{lead_id}` is not completed (status: {lead.get('status', 'unknown')}). "
+                "Only completed jobs can request reviews.",
+                parse_mode="Markdown",
+            )
+            return
         msg = review_request_message(
             customer_name=lead.get("name", ""),
-            review_url=os.getenv("GOOGLE_REVIEW_URL", "").strip(),
+            review_url=config.google_review_url,
             business_name="HaulYeah",
         )
         await update.message.reply_text(
@@ -207,8 +272,13 @@ class TrashHaulingBot:
         if not leads:
             await update.message.reply_text(f"No leads with status `{status}`.", parse_mode="Markdown")
             return
-        lines = [f"*Leads — {status}* ({len(leads)} total)\n"]
-        for lead in leads[-10:]:
+        shown = leads[-10:]
+        header = f"*Leads — {status}* ({len(leads)} total"
+        if len(leads) > 10:
+            header += f", showing latest 10"
+        header += ")\n"
+        lines = [header]
+        for lead in shown:
             lines.append(
                 f"• `{lead['id']}` {lead.get('job_type', 'N/A')} | "
                 f"{lead.get('location', 'N/A')} | urgency {lead.get('urgency_score', '?')}/10"
@@ -257,7 +327,13 @@ class TrashHaulingBot:
         if not pending:
             await update.message.reply_text("No pending outreach confirmations.")
             return
-        for entry in pending[-5:]:
+        total = len(pending)
+        shown = pending[-5:]
+        if total > 5:
+            await update.message.reply_text(
+                f"{total} items in queue — showing last 5. Use /clearqueue to wipe stale ones."
+            )
+        for entry in shown:
             await self._send_confirmation(update.effective_chat.id, entry)
 
     @_require_auth
@@ -372,7 +448,7 @@ class TrashHaulingBot:
     async def _cmd_sync(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Syncing calendar…")
         try:
-            count = self._cal_sync.run()
+            count = await asyncio.to_thread(self._cal_sync.run)
             await update.message.reply_text(f"Sync complete — {count} event(s) created.")
         except Exception as exc:
             await update.message.reply_text(f"Sync failed: {exc}")

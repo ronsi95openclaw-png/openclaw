@@ -49,6 +49,7 @@ class Config:
     )
     google_sheet_id: str = field(default_factory=lambda: os.getenv("GOOGLE_SHEET_ID", ""))
     google_calendar_id: str = field(default_factory=lambda: os.getenv("GOOGLE_CALENDAR_ID", "primary"))
+    google_review_url: str = field(default_factory=lambda: os.getenv("GOOGLE_REVIEW_URL", ""))
 
     # Claude API — used for outreach message generation; falls back to template if unset
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
