@@ -36,7 +36,9 @@ def _run_dashboard() -> None:
     from dashboard.app import app
     port = int(os.getenv("PORT", 8080))
     print(f"📊 Dashboard → http://0.0.0.0:{port}")
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+    # threaded=True: one slow/hung request (e.g. a stalled LLM call) must not
+    # block every other dashboard request behind it on this single process.
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
 
 
 if __name__ == "__main__":

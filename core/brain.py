@@ -34,10 +34,28 @@ from typing import List, Optional
 import anthropic
 
 try:
-    from ollama import chat as ollama_chat
+    from ollama import Client as _OllamaClient
     _OLLAMA_IMPORTABLE = True
 except ImportError:
     _OLLAMA_IMPORTABLE = False
+
+# Bare `ollama.chat`/`ollama.list` use no timeout, so a daemon that dies
+# mid-connection (restart, crash) hangs the caller forever. A dedicated
+# client with timeouts bounds every Ollama call so a dead daemon fails fast
+# instead of wedging the single-threaded Flask dashboard behind it.
+OLLAMA_STATUS_TIMEOUT = 5     # seconds — list()/health checks
+OLLAMA_CHAT_TIMEOUT = 60      # seconds — actual generation
+
+_ollama_clients: dict = {}
+
+
+def _ollama_client(timeout: float):
+    """Return a shared ollama.Client for this timeout value (cached per value)."""
+    client = _ollama_clients.get(timeout)
+    if client is None:
+        client = _OllamaClient(timeout=timeout)
+        _ollama_clients[timeout] = client
+    return client
 
 try:
     from openai import OpenAI as _OpenAIClient
@@ -53,6 +71,19 @@ DEFAULT_OLLAMA_MODEL      = "qwen2.5:14b"
 DEFAULT_OPENROUTER_MODEL  = "meta-llama/llama-3.1-8b-instruct"
 CLAUDE_MODEL              = "claude-haiku-4-5"   # Haiku for complex tasks
 MAX_TOKENS                = int(os.getenv("MAX_TOKENS_PER_RESPONSE") or 500)
+
+# 9Router (NINEROUTER_BASE_URL) free-tier-first chain: try strong free OpenRouter
+# models before spending anything. Free models share upstream capacity and 429
+# under load, so each is a best-effort try, not guaranteed available.
+NINEROUTER_FREE_MODELS = [
+    "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+    "openrouter/qwen/qwen3-next-80b-a3b-instruct:free",
+    "openrouter/google/gemma-4-31b-it:free",
+]
+# Last resort once free models are all unavailable: OpenRouter's own auto-router,
+# capped so it can never pick anything expensive ($/M tokens).
+NINEROUTER_PAID_FALLBACK_MODEL = "openrouter/auto"
+NINEROUTER_MAX_PRICE = {"prompt": 0.5, "completion": 1.5}
 COMPLEXITY_THRESHOLD      = int(os.getenv("COMPLEXITY_THRESHOLD") or 50)   # word count
 CACHE_TTL_SECONDS         = 3600   # 1 hour
 
@@ -72,8 +103,7 @@ def _ollama_online() -> bool:
     if now - _OLLAMA_STATUS["ts"] < _OLLAMA_CACHE_TTL and _OLLAMA_STATUS["ok"] is not None:
         return bool(_OLLAMA_STATUS["ok"])
     try:
-        from ollama import list as _ol_list
-        _ol_list()
+        _ollama_client(OLLAMA_STATUS_TIMEOUT).list()
         _OLLAMA_STATUS.update({"ok": True, "ts": now})
         return True
     except Exception:
@@ -121,8 +151,7 @@ def _resolve_ollama_model() -> str:
         return _resolved_model
 
     try:
-        from ollama import list as _ol_list
-        models = [m.model for m in _ol_list().models]
+        models = [m.model for m in _ollama_client(OLLAMA_STATUS_TIMEOUT).list().models]
     except Exception as exc:
         raise OllamaOfflineError(f"Ollama unreachable: {exc}") from exc
 
@@ -334,7 +363,7 @@ def ask_llm(
     messages.append({"role": "user", "content": prompt})
 
     try:
-        response = ollama_chat(model=resolved, messages=messages)
+        response = _ollama_client(OLLAMA_CHAT_TIMEOUT).chat(model=resolved, messages=messages)
         result = response.message.content.strip()
         _track_usage(model=resolved)
         return result
@@ -360,17 +389,16 @@ def ask_openrouter(
     system: Optional[str] = None,
     history: Optional[List[dict]] = None,
 ) -> str:
-    """Ask a model via OpenRouter's OpenAI-compatible API."""
+    """Ask a model via OpenRouter's OpenAI-compatible API.
+
+    Routes through 9Router (NINEROUTER_BASE_URL) when configured. Unless the
+    caller pins an explicit `model`, it tries NINEROUTER_FREE_MODELS in order
+    first (free, but can 429 under shared load) and only spends money via
+    NINEROUTER_PAID_FALLBACK_MODEL ("openrouter/auto") as a last resort, with
+    NINEROUTER_MAX_PRICE capping what that fallback is allowed to pick.
+    """
     if not _openrouter_available():
         raise RuntimeError("OpenRouter API key not configured")
-
-    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    model = model or os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL)
-
-    client = _OpenAIClient(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=api_key,
-    )
 
     messages = []
     if system:
@@ -378,6 +406,39 @@ def ask_openrouter(
     if history:
         messages.extend(_compress_history(history))
     messages.append({"role": "user", "content": _compress(prompt)})
+
+    ninerouter_base_url = os.getenv("NINEROUTER_BASE_URL", "").strip()
+
+    if ninerouter_base_url and not model:
+        api_key = os.getenv("NINEROUTER_API_KEY", "").strip()
+        client = _OpenAIClient(base_url=ninerouter_base_url, api_key=api_key)
+        candidates = NINEROUTER_FREE_MODELS + [NINEROUTER_PAID_FALLBACK_MODEL]
+        last_exc = None
+        for candidate in candidates:
+            try:
+                kwargs = {"provider": {"max_price": NINEROUTER_MAX_PRICE}} if candidate == NINEROUTER_PAID_FALLBACK_MODEL else {}
+                response = client.chat.completions.create(
+                    model=candidate,
+                    messages=messages,
+                    max_tokens=MAX_TOKENS,
+                    extra_headers={"HTTP-Referer": "https://openclaw.app", "X-Title": "ClawBot"},
+                    extra_body=kwargs,
+                )
+                result = response.choices[0].message.content.strip()
+                _track_usage(model="openrouter")
+                return result
+            except Exception as exc:
+                last_exc = exc
+                continue
+        raise RuntimeError(f"OpenRouter (via 9Router) failed on all candidates: {last_exc}") from last_exc
+
+    if ninerouter_base_url:
+        api_key = os.getenv("NINEROUTER_API_KEY", "").strip()
+        client = _OpenAIClient(base_url=ninerouter_base_url, api_key=api_key)
+    else:
+        api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+        model = model or os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL)
+        client = _OpenAIClient(base_url="https://openrouter.ai/api/v1", api_key=api_key)
 
     try:
         response = client.chat.completions.create(

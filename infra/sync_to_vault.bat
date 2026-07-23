@@ -18,6 +18,8 @@ REM  source dir                                vault target                     
 call :sync "%REPO%\trash_hauling_bot\memory"  "%VAULT%\35 - HaulYA'LL"                "HaulYeah"          HAULYALL_
 call :sync "%REPO%\memory"                    "%VAULT%\20 - OpenClaw\Memory"            "OpenClaw"          OPENCLAW_
 call :sync "%REPO%\memory\strategy"           "%VAULT%\20 - OpenClaw\Memory\Strategy"   "OpenClaw-Strategy" OPENCLAW_
+call :sync "%REPO%\handoffs"                  "%VAULT%\20 - OpenClaw\Memory\Handoffs"          "OpenClaw-Handoffs"  OPENCLAW_
+call :sync "%REPO%\handoffs\compacts"         "%VAULT%\20 - OpenClaw\Memory\Handoffs\Compacts" "OpenClaw-Compacts"  OPENCLAW_
 
 call :sync_graph "%REPO%\graphify-out"        "%VAULT%\20 - OpenClaw\Knowledge-Graph"   "Hermes-Graph"
 

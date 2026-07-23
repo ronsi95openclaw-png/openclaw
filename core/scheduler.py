@@ -38,6 +38,12 @@ def start_scheduler() -> AsyncIOScheduler:
     global _scheduler
     if _scheduler and _scheduler.running:
         return _scheduler
+    # AsyncIOScheduler needs a thread-bound event loop to attach to; Python 3.13
+    # no longer auto-creates one for non-main threads (RuntimeError otherwise).
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
     _scheduler = AsyncIOScheduler(timezone="UTC")
     _scheduler.start()
     _reload_from_disk()
