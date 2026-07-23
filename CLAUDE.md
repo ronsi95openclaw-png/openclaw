@@ -19,13 +19,16 @@ APScheduler loop. Local Ollama brain with Claude API fallback. Remote: `openclaw
 ## Layout
 - `content/` — Telegram receiver + command handlers
 - `core/` — LLM brain, conversation history, scheduler, market data
-- `trading/` — exchange (Crypto.com), strategy, executor, backtest
-- `agents/` — news, sheets, auto-upgrade, code review, failure memory
+- `trading/` — exchange (Crypto.com), strategy, executor, backtest, strategies/
 - `dashboard/` — Flask dashboard
 - `security/` — whitelist auth, audit log, blocklist
-- `voice/` — Whisper transcription
+- `infra/` — one-shot ops scripts (auth verifier, candle prefetcher, watchdog, paper-watch runner)
+- `memory/` — session handoff, decisions log, active tasks (Claude Code continuity across sessions)
+- `workflows/` — saved multi-phase Claude Code prompts (daily routine, session close, vault sync)
 - `data/` — runtime logs/reports (git-ignored)
 - `trash_hauling_bot/` — separate HaulYeah lead-gen bot (its own venv; reads the consolidated root `.env` via `load_dotenv(../.env)` with namespaced `TRASH_BOT_*`/`FB_*` keys — no separate `.env.haulyeah`)
+
+There is no `agents/` or `voice/` directory in this tree yet — remove this note once either lands for real.
 
 ## Rules
 - Never hardcode secrets — use `.env`.

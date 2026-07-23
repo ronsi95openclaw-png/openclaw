@@ -290,6 +290,31 @@ Entry format:
 **Status:** APPLIED
 ---
 
+## [2026-07-11 00:00] — B — Fable/Claude Code project audit + bugfix pass, .claude/ scaffolding added
+**Trigger:** Ronnie asked Claude Code (via Fable-model sub-agents) to review/improve the repo, audit and add Claude Code skills, and generate a subagent structure
+**Action:**
+- Two Fable-model sub-agents audited trading/security/core and dashboard/content for real bugs and risk (not just style)
+- Fixed, in trading-path code (still DEMO-mode only — no live orders sent by this bot in this environment):
+  - `trading/executor.py`: MARKET SELL was sending `notional` instead of the `quantity` Crypto.com v2 requires for SELL — would have rejected every LIVE sell, i.e. the bot could enter but never exit a position
+  - `trading/executor.py`: retry-on-error loop now only retries `ConnectionError`/`ConnectTimeout` (never reached the exchange), not `ReadTimeout` (ambiguous — order may already be accepted); re-signs each attempt instead of resending a stale-nonce body
+  - `trading/executor.py` + `trading/mode.py`: mode gate flipped from "simulate if exactly DEMO" to "simulate unless exactly LIVE" — a corrupted/unexpected mode value can no longer fall through to real order placement
+  - `core/scheduler.py`: auto-trade no longer substitutes a hardcoded $1000 portfolio guess when the balance fetch fails (this both mis-sized trades and could defeat the circuit breaker) — it now halts that run and notifies instead
+  - `core/scheduler.py`: `/remind` reminders were being marked "fired" and unscheduled after the first trigger despite being documented and cron-scheduled as daily — fixed so they actually recur until `/cancel`
+  - `core/scheduler.py`: `scan_time`/reminder times are now validated *before* being persisted or scheduled (previously a bad value could get saved-but-unscheduled, or crash bot startup on reload)
+  - `core/scheduler.py`: added a lock around the daily auto-trade job so `/autotrade now` can't overlap the cron firing and double-execute signals
+  - `security/blocklist.py`: closed the trivial `curl | sh` (with spaces) bypass of the `curl|sh`/`wget|sh`/`|sh` patterns
+  - `content/receiver.py`: HTML-escaped all dynamic content (LLM responses, `/run`/`/py` command+output, user text) going into Telegram `parse_mode="HTML"` messages — untrusted `<`/`&` characters were previously breaking message delivery
+  - `start.py` + `content/receiver.py`: the bot thread (background thread under Flask's main thread per `start.py`'s design) now gets its own asyncio event loop before `AsyncIOScheduler.start()`, and skips PTB's signal-handler registration outside the main thread — previously this could silently kill the bot thread on startup while the dashboard kept running, masking a fully dead bot
+  - `trading/exchange.py`: `fetch_ticker_price` now checks the `code != 0` error case like the other endpoints; `get_portfolio_value_usd` now logs (rather than silently swallowing) a per-coin ticker failure
+- Updated `tests/test_executor_backoff.py` for the new `_place_order` signature/retry semantics and added coverage for the BUY-notional / SELL-quantity split
+- Fixed stale `CLAUDE.md` (referenced `agents/` and `voice/` dirs that don't exist in this tree)
+- Added `.claude/agents/trading-risk-reviewer.md` and `.claude/agents/security-auditor.md` (proactive review subagents) and `.claude/skills/daily-routine/SKILL.md` (wraps `memory/DAILY_ROUTINE.md`) — logged in `ACTIVE_TASKS.md` #9 (this branch was cut before #7's Ruflo skill landed on main, so treat this as additive, not a replacement for Ruflo)
+**Result:** 168/168 tests pass. Did NOT touch: dashboard auth (no auth exists at all on the Flask dashboard; flagged for Ronnie's decision on mechanism, not applied), the content/ TikTok+Instagram posting pipeline (unclear if still in active use — flagged, not touched), and did not flip TRADING_MODE or wire any new strategy.
+**Files touched:** trading/executor.py, trading/mode.py, trading/exchange.py, core/scheduler.py, security/blocklist.py, content/receiver.py, start.py, tests/test_executor_backoff.py, CLAUDE.md, memory/ACTIVE_TASKS.md, .claude/agents/trading-risk-reviewer.md (new), .claude/agents/security-auditor.md (new), .claude/skills/daily-routine/SKILL.md (new)
+**Approved by:** Ronnie (task request); individual fixes applied under CLAUDE.md's standing rule against broad refactors — kept narrow, one bug per fix, no design changes made without flagging first
+**Status:** APPLIED — merged into main via PR #27 after conflict resolution (2026-07-20): the SELL-sizing fix was kept using the price already fetched by the caller (avoids a second live price lookup that could desync from position sizing); main's independently-added PnL-tracking on SELL was preserved. Main's own separate `/research` HTML-safety fix (`_safe_html`) was superseded by this branch's `html.escape()` fix for consistency with the other commands this branch also fixed (`/ask`, `/plan`, `/dca`) — see merge commit for detail.
+---
+
 ## [2026-07-15 22:00] — B — 9Router installed + wired into ClawBot's OpenRouter path; fixed a real hang bug found while testing
 **Trigger:** Ronnie asked whether `decolua/9router` (a local AI-routing gateway) was installed, then to clone/test it, set it up, and wire it into ClawBot.
 **Action:**

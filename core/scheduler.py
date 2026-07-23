@@ -8,6 +8,7 @@ The scheduler is started once in receiver.py and shared globally.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import os
 import time
@@ -100,7 +101,12 @@ def _schedule_job(task: dict) -> None:
 
 
 async def _fire_reminder(task_id: str) -> None:
-    """Called by APScheduler when a reminder fires."""
+    """Called by APScheduler when a reminder fires.
+
+    /remind is documented (and scheduled via CronTrigger) as a daily
+    reminder — it must keep firing every day at its time until the user
+    explicitly /cancels it, not just once.
+    """
     tasks = _load_tasks()
     task = next((t for t in tasks if t["id"] == task_id), None)
     if not task or task.get("status") != "pending":
@@ -109,18 +115,25 @@ async def _fire_reminder(task_id: str) -> None:
     if _send_fn:
         text = (
             f"⏰ <b>Reminder</b>\n\n"
-            f"{task['text']}\n\n"
+            f"{html.escape(task['text'])}\n\n"
             f"<i>Scheduled for {task['time']} UTC</i>"
         )
         await _send_fn(task["chat_id"], text)
 
-    # Mark as fired
-    task["status"] = "fired"
-    _save_tasks(tasks)
 
-    # Remove from scheduler
-    if _scheduler and _scheduler.get_job(task_id):
-        _scheduler.remove_job(task_id)
+def _parse_hhmm(time_str: str) -> tuple[int, int]:
+    """Parse and validate a "HH:MM" (UTC) time string.
+
+    Raises:
+        ValueError: If time_str is not valid "HH:MM".
+    """
+    parts = time_str.strip().split(":")
+    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+        raise ValueError(f"Invalid time format '{time_str}'. Use HH:MM (UTC).")
+    hour, minute = int(parts[0]), int(parts[1])
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"Time out of range: {time_str}")
+    return hour, minute
 
 
 def add_reminder(chat_id: int, time_str: str, text: str) -> dict:
@@ -137,13 +150,7 @@ def add_reminder(chat_id: int, time_str: str, text: str) -> dict:
     Raises:
         ValueError: If time_str is not valid "HH:MM".
     """
-    # Validate time format
-    parts = time_str.strip().split(":")
-    if len(parts) != 2 or not all(p.isdigit() for p in parts):
-        raise ValueError(f"Invalid time format '{time_str}'. Use HH:MM (UTC).")
-    hour, minute = int(parts[0]), int(parts[1])
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
-        raise ValueError(f"Time out of range: {time_str}")
+    hour, minute = _parse_hhmm(time_str)
 
     tasks = _load_tasks()
     task_id = f"reminder_{chat_id}_{time.time_ns()}"
@@ -203,8 +210,22 @@ def _save_autotrade(cfg: dict) -> None:
         print(f"[scheduler] Failed to save autotrade config: {exc}")
 
 
+_autotrade_lock = asyncio.Lock()
+
+
 async def _run_autotrade() -> None:
-    """Daily auto-trade job: scan → execute HIGH signals → notify."""
+    """Daily auto-trade job: scan → execute HIGH signals → notify.
+
+    Guarded by a lock so the daily cron firing and a manual `/autotrade now`
+    can't overlap and execute the same signals twice.
+    """
+    if _autotrade_lock.locked():
+        return
+    async with _autotrade_lock:
+        await _run_autotrade_impl()
+
+
+async def _run_autotrade_impl() -> None:
     cfg = _load_autotrade()
     if not cfg.get("enabled") or not cfg.get("chat_id"):
         return
@@ -241,12 +262,16 @@ async def _run_autotrade() -> None:
                 await _send_fn(chat_id, "\n".join(lines))
             return
 
-        # Get portfolio value for position sizing
+        # Get portfolio value for position sizing. Refuse to guess a size —
+        # a wrong guess both mis-sizes trades and can defeat the circuit
+        # breaker (trading/risk.py), which compares against the real balance.
         try:
             balances      = get_account_balance()
             portfolio_usd = get_portfolio_value_usd(balances)
-        except Exception:
-            portfolio_usd = 1000.0  # fallback if balance fetch fails
+        except Exception as exc:
+            if _send_fn:
+                await _send_fn(chat_id, f"🚨 <b>Auto-Trade halted:</b> balance fetch failed, refusing to guess portfolio size (<code>{html.escape(str(exc))}</code>)")
+            return
 
         results = execute_signals(high_signals, portfolio_usd)
 
@@ -277,25 +302,30 @@ async def _run_autotrade() -> None:
 
     except Exception as exc:
         if _send_fn:
-            await _send_fn(chat_id, f"🚨 <b>Auto-Trade error:</b> <code>{exc}</code>")
+            await _send_fn(chat_id, f"🚨 <b>Auto-Trade error:</b> <code>{html.escape(str(exc))}</code>")
 
 
 def enable_autotrade(chat_id: int, scan_time: str = "08:00", timeframe: str = "4h") -> dict:
-    """Enable daily auto-trade. Returns the config."""
+    """Enable daily auto-trade. Returns the config.
+
+    Raises:
+        ValueError: If scan_time is not valid "HH:MM". Validated before the
+            config is persisted so a bad value can't end up saved-but-unscheduled.
+    """
+    hour, minute = _parse_hhmm(scan_time)
     cfg = {
         "enabled":   True,
         "chat_id":   chat_id,
-        "scan_time": scan_time,
+        "scan_time": f"{hour:02d}:{minute:02d}",
         "timeframe": timeframe,
         "enabled_at": datetime.now(timezone.utc).isoformat(),
     }
     _save_autotrade(cfg)
 
     if _scheduler:
-        hour, minute = scan_time.split(":")
         _scheduler.add_job(
             _run_autotrade,
-            CronTrigger(hour=int(hour), minute=int(minute), timezone="UTC"),
+            CronTrigger(hour=hour, minute=minute, timezone="UTC"),
             id=_AUTOTRADE_JOB,
             replace_existing=True,
         )
@@ -357,11 +387,17 @@ def reload_autotrade(from_env: bool = False) -> None:
             print(f"🤖 Auto-trade enabled from env vars (chat={chat_id}, time={cfg['scan_time']} UTC)")
 
     if cfg.get("enabled") and cfg.get("chat_id") and _scheduler:
-        scan_time = cfg.get("scan_time", "08:00")
-        hour, minute = scan_time.split(":")
+        try:
+            hour, minute = _parse_hhmm(cfg.get("scan_time", "08:00"))
+        except ValueError as exc:
+            # Don't let a bad persisted/env scan_time crash bot startup —
+            # auto-trade just stays unscheduled until re-enabled with a
+            # valid time.
+            print(f"⚠️ Auto-trade reload skipped — invalid scan_time in config: {exc}")
+            return
         _scheduler.add_job(
             _run_autotrade,
-            CronTrigger(hour=int(hour), minute=int(minute), timezone="UTC"),
+            CronTrigger(hour=hour, minute=minute, timezone="UTC"),
             id=_AUTOTRADE_JOB,
             replace_existing=True,
         )

@@ -11,7 +11,9 @@ backtest-lab/.venv-backtest/
 dist/
 build/
 .DS_Store
-.claude/
+.claude/*
+!.claude/agents/
+!.claude/skills/
 .superpowers/
 
 

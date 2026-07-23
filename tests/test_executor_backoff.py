@@ -1,12 +1,18 @@
 """Tests for trading.executor._place_order transient-network retry.
 
 The retry policy:
-  - On requests.ConnectionError or requests.Timeout, retry ONCE.
-  - On HTTPError (raise_for_status), do NOT retry — the server may have
-    accepted the order and a retry would double-fill (create-order is
-    not idempotent).
-  - After the second failure, re-raise the exception so the caller can
-    log via _log_trade.
+  - On requests.ConnectionError or requests.ConnectTimeout (the request
+    never reached the exchange), retry ONCE.
+  - On requests.ReadTimeout / other ambiguous timeouts (the request may have
+    reached the exchange and a response was just never read), do NOT retry —
+    the order may already be accepted and a retry would double-fill.
+  - On HTTPError (raise_for_status), do NOT retry — same reasoning.
+  - After the second ConnectionError/ConnectTimeout failure, re-raise the
+    exception so the caller can log via _log_trade.
+
+Also covers the MARKET order sizing: BUY sends `notional` (quote currency),
+SELL sends `quantity` (base currency, derived from notional_usd / price) —
+Crypto.com v2 rejects a SELL sent as `notional`.
 """
 from __future__ import annotations
 
@@ -42,8 +48,8 @@ def _patch_signing(monkeypatch):
     def fake_get_keys():
         return ("key", "secret")
 
-    def fake_sign(_method, _params, _key, _secret):
-        return {"signed": True}
+    def fake_sign(_method, params, _key, _secret):
+        return {"signed": True, "params": params}
 
     # The imports inside _place_order are lazy, so patch the module they live in.
     import trading.exchange as exchange
@@ -65,26 +71,42 @@ def test_place_order_retries_on_connection_error_then_succeeds(monkeypatch):
 
     monkeypatch.setattr(executor.requests, "post", fake_post)
 
-    result = executor._place_order("BTC_USDT", "BUY", 25.0)
+    result = executor._place_order("BTC_USDT", "BUY", 25.0, price=50000.0)
     assert calls["n"] == 2, "should have retried exactly once"
     assert result == {"order_id": "fake-123"}
 
 
-def test_place_order_retries_on_timeout_then_succeeds(monkeypatch):
-    """Transient Timeout on first attempt -> retry -> success."""
+def test_place_order_retries_on_connect_timeout_then_succeeds(monkeypatch):
+    """ConnectTimeout (never reached the server) on first attempt -> retry -> success."""
     calls = {"n": 0}
 
     def fake_post(url, json=None, timeout=None):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise requests.Timeout("slow")
+            raise requests.ConnectTimeout("slow to connect")
         return _FakeResponse(200)
 
     monkeypatch.setattr(executor.requests, "post", fake_post)
 
-    result = executor._place_order("ETH_USDT", "SELL", 50.0)
+    result = executor._place_order("ETH_USDT", "BUY", 50.0, price=3000.0)
     assert calls["n"] == 2
     assert result == {"order_id": "fake-123"}
+
+
+def test_place_order_does_not_retry_on_read_timeout(monkeypatch):
+    """ReadTimeout is ambiguous (order may already be accepted) -> do NOT retry."""
+    calls = {"n": 0}
+
+    def fake_post(url, json=None, timeout=None):
+        calls["n"] += 1
+        raise requests.ReadTimeout("no response in time")
+
+    monkeypatch.setattr(executor.requests, "post", fake_post)
+
+    with pytest.raises(requests.ReadTimeout):
+        executor._place_order("BTC_USDT", "BUY", 25.0, price=50000.0)
+
+    assert calls["n"] == 1, "ReadTimeout must not trigger a retry (possible double-fill)"
 
 
 def test_place_order_reraises_after_second_connection_error(monkeypatch):
@@ -98,23 +120,23 @@ def test_place_order_reraises_after_second_connection_error(monkeypatch):
     monkeypatch.setattr(executor.requests, "post", fake_post)
 
     with pytest.raises(requests.ConnectionError):
-        executor._place_order("BTC_USDT", "BUY", 25.0)
+        executor._place_order("BTC_USDT", "BUY", 25.0, price=50000.0)
 
     assert calls["n"] == 2, "must retry exactly once, then raise"
 
 
-def test_place_order_reraises_after_second_timeout(monkeypatch):
-    """Two consecutive Timeouts -> re-raise."""
+def test_place_order_reraises_after_second_connect_timeout(monkeypatch):
+    """Two consecutive ConnectTimeouts -> re-raise."""
     calls = {"n": 0}
 
     def fake_post(url, json=None, timeout=None):
         calls["n"] += 1
-        raise requests.Timeout(f"slow {calls['n']}")
+        raise requests.ConnectTimeout(f"slow {calls['n']}")
 
     monkeypatch.setattr(executor.requests, "post", fake_post)
 
-    with pytest.raises(requests.Timeout):
-        executor._place_order("BTC_USDT", "BUY", 25.0)
+    with pytest.raises(requests.ConnectTimeout):
+        executor._place_order("BTC_USDT", "BUY", 25.0, price=50000.0)
 
     assert calls["n"] == 2
 
@@ -133,7 +155,7 @@ def test_place_order_does_not_retry_on_http_error(monkeypatch):
     monkeypatch.setattr(executor.requests, "post", fake_post)
 
     with pytest.raises(requests.HTTPError):
-        executor._place_order("BTC_USDT", "BUY", 25.0)
+        executor._place_order("BTC_USDT", "BUY", 25.0, price=50000.0)
 
     assert calls["n"] == 1, "HTTPError after the wire-level success must NOT trigger retry"
 
@@ -148,7 +170,7 @@ def test_place_order_first_attempt_success_no_retry(monkeypatch):
 
     monkeypatch.setattr(executor.requests, "post", fake_post)
 
-    result = executor._place_order("BTC_USDT", "BUY", 25.0)
+    result = executor._place_order("BTC_USDT", "BUY", 25.0, price=50000.0)
     assert calls["n"] == 1
     assert result == {"order_id": "fake-123"}
 
@@ -164,6 +186,47 @@ def test_place_order_rejects_on_nonzero_code(monkeypatch):
     monkeypatch.setattr(executor.requests, "post", fake_post)
 
     with pytest.raises(ValueError, match="insufficient balance"):
-        executor._place_order("BTC_USDT", "BUY", 25.0)
+        executor._place_order("BTC_USDT", "BUY", 25.0, price=50000.0)
 
     assert calls["n"] == 1
+
+
+def test_place_order_buy_sends_notional(monkeypatch):
+    """MARKET BUY must send `notional` (quote currency), matching Crypto.com v2."""
+    sent = {}
+
+    def fake_post(url, json=None, timeout=None):
+        sent.update(json["params"])
+        return _FakeResponse(200)
+
+    monkeypatch.setattr(executor.requests, "post", fake_post)
+
+    executor._place_order("BTC_USDT", "BUY", 100.0, price=50000.0)
+    assert sent["notional"] == "100.0"
+    assert "quantity" not in sent
+
+
+def test_place_order_sell_sends_quantity(monkeypatch):
+    """MARKET SELL must send `quantity` (base currency) — `notional` is rejected by Crypto.com v2 for SELL."""
+    sent = {}
+
+    def fake_post(url, json=None, timeout=None):
+        sent.update(json["params"])
+        return _FakeResponse(200)
+
+    monkeypatch.setattr(executor.requests, "post", fake_post)
+
+    executor._place_order("BTC_USDT", "SELL", 100.0, price=50000.0)
+    assert sent["quantity"] == str(round(100.0 / 50000.0, 8))
+    assert "notional" not in sent
+
+
+def test_place_order_sell_requires_valid_price(monkeypatch):
+    """A SELL without a usable price can't be sized into a quantity — fail loudly, don't guess."""
+    def fake_post(url, json=None, timeout=None):
+        raise AssertionError("should not reach the network without a valid price")
+
+    monkeypatch.setattr(executor.requests, "post", fake_post)
+
+    with pytest.raises(ValueError):
+        executor._place_order("BTC_USDT", "SELL", 100.0, price=0)

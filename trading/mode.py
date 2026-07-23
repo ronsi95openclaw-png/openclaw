@@ -17,10 +17,17 @@ DEFAULT_MODE = "DEMO"
 
 
 def get_mode() -> str:
-    """Return current trading mode: 'DEMO' or 'LIVE'."""
+    """Return current trading mode: 'DEMO' or 'LIVE'.
+
+    Falls back to DEFAULT_MODE (DEMO) for a missing file, unparseable JSON,
+    or any value other than the two known modes — a corrupted or hand-edited
+    mode file must never be interpreted as LIVE.
+    """
     if _MODE_FILE.exists():
         try:
-            return json.loads(_MODE_FILE.read_text(encoding="utf-8")).get("mode", DEFAULT_MODE)
+            mode = json.loads(_MODE_FILE.read_text(encoding="utf-8")).get("mode", DEFAULT_MODE)
+            if mode in ("DEMO", "LIVE"):
+                return mode
         except Exception:
             pass
     return DEFAULT_MODE
